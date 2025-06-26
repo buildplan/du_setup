@@ -58,12 +58,12 @@ You can provide a configuration file (e.g., `/etc/setup_harden.conf`) to automat
 
 **Example Config**:
 ```bash
-USERNAME=ali
-HOSTNAME=doVPS
-SSH_PORT=5595
+USERNAME=
+HOSTNAME=
+SSH_PORT=2222
 TIMEZONE=Etc/UTC
 SWAP_SIZE=2G
-UFW_PORTS=80/tcp,443/tcp,51820/udp
+UFW_PORTS=2222/tcp
 AUTO_UPDATES=yes
 INSTALL_DOCKER=yes
 INSTALL_TAILSCALE=yes
