@@ -1047,12 +1047,12 @@ generate_summary() {
     echo -e "  - Firewall rules:     sudo ufw status verbose"
     echo -e "  - Time sync:          chronyc tracking"
     echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
-    echo -e "  - Swap status:        swapon --show && free -h"
+    echo -e "  - Swap status:        sudo swapon --show && free -h"
     if command -v docker >/dev/null 2>&1; then
         echo -e "  - Docker status:      docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        echo -e "  - Tailscale status:   sudo tailscale status"
+        echo -e "  - Tailscale status:   tailscale status"
     fi
     print_warning "\nA reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
