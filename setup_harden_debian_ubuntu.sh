@@ -229,6 +229,7 @@ check_system() {
 
     if [[ -f /etc/os-release ]]; then
         source /etc/os-release
+        ID=$ID  # Populate global ID variable
         if [[ $ID == "debian" && $VERSION_ID == "12" ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -600,7 +601,7 @@ EOF
     fi
 
     print_info "Testing and restarting SSH service..."
-    if sshd -t; then
+    if sshd -T | grep -q "port $SSH_PORT"; then
         if ! systemctl restart "$SSH_SERVICE"; then
             print_error "SSH service failed to restart! Reverting changes..."
             cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
@@ -608,17 +609,16 @@ EOF
             systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
             exit 1
         fi
-        # Wait a moment for the service to potentially fail
-        sleep 2
-        if systemctl is-active --quiet "$SSH_SERVICE"; then
-            print_success "SSH service restarted on port $SSH_PORT."
-        else
-            print_error "SSH service failed to start! Reverting changes..."
+        # Wait and verify port binding
+        sleep 5
+        if ! ss -tuln | grep -q ":$SSH_PORT"; then
+            print_error "SSH not listening on port $SSH_PORT after restart! Reverting changes..."
             cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
             rm -f /etc/ssh/sshd_config.d/99-hardening.conf
             systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
             exit 1
         fi
+        print_success "SSH service restarted on port $SSH_PORT."
     else
         print_error "SSH config test failed! Reverting changes..."
         cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
@@ -638,13 +638,26 @@ EOF
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
     print_info "Use: ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
 
-    if ! confirm "Was the new SSH connection successful?"; then
-        print_error "Aborting. Restoring original SSH configuration."
-        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-        exit 1
-    fi
+    # Retry loop for SSH connection test
+    local retry_count=0
+    local max_retries=3
+    while (( retry_count < max_retries )); do
+        if confirm "Was the new SSH connection successful?"; then
+            break
+        else
+            (( retry_count++ ))
+            if (( retry_count < max_retries )); then
+                print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
+                sleep 5
+            else
+                print_error "Aborting. Restoring original SSH configuration."
+                cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+                rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+                systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
+                exit 1
+            fi
+        fi
+    done
     log "SSH hardening completed."
 }
 
@@ -823,7 +836,6 @@ install_docker() {
     print_info "Configuring Docker daemon..."
     local NEW_DOCKER_CONFIG
     NEW_DOCKER_CONFIG=$(mktemp)
-    # **BUG FIX**: Corrected typo from >¼ to >
     tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
 {
   "log-driver": "json-file",
