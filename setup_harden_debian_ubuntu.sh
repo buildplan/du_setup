@@ -742,16 +742,10 @@ configure_firewall() {
 
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
-    # Collect all SSH ports (main SSH_PORT and any custom ports that are SSH-related)
-    SSH_PORTS="$SSH_PORT"
-    if [[ -n "${CUSTOM_PORTS:-}" ]]; then
-        for port in $CUSTOM_PORTS; do
-            port_num="${port%%/*}"
-            if [[ "$port_num" != "$SSH_PORT" && "$port" =~ ^[0-9]+(/tcp)?$ ]]; then
-                SSH_PORTS="$SSH_PORTS,$port_num"
-            fi
-        done
-    fi
+    
+    # Set the SSH port for Fail2Ban to monitor.
+     local SSH_PORTS_TO_MONITOR="$SSH_PORT"
+
     NEW_FAIL2BAN_CONFIG=$(mktemp)
     tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
 [DEFAULT]
@@ -761,7 +755,7 @@ maxretry = 3
 backend = auto
 [sshd]
 enabled = true
-port = $SSH_PORTS
+port = $SSH_PORTS_TO_MONITOR
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 EOF
@@ -769,8 +763,8 @@ EOF
         print_info "Fail2Ban configuration already correct. Skipping."
         rm -f "$NEW_FAIL2BAN_CONFIG"
     elif [[ -f /etc/fail2ban/jail.local ]] && grep -q "\[sshd\]" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban jail.local exists. Updating SSH ports..."
-        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS/" /etc/fail2ban/jail.local
+        print_info "Fail2Ban jail.local exists. Updating SSH port..."
+        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS_TO_MONITOR/" /etc/fail2ban/jail.local
         rm -f "$NEW_FAIL2BAN_CONFIG"
     else
         print_info "Creating Fail2Ban local jail configuration..."
@@ -782,7 +776,7 @@ EOF
     systemctl restart fail2ban
     sleep 2
     if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS."
+        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS_TO_MONITOR."
         fail2ban-client status sshd | tee -a "$LOG_FILE"
     else
         print_error "Fail2Ban service failed to start."
