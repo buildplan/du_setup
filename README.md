@@ -81,15 +81,16 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ## 🧪 Tested On
 
-* Debian 12 (Bookworm)
-* Ubuntu 20.04, 22.04, and 24.04 (LTS only)
-* VirtualBox, KVM, and common VPS providers (Hetzner, DigitalOcean, etc.)
+* Debian 12
+* Ubuntu 24.04
+* VMs, and common VPS providers (OCI, DigitalOcean, etc.)
 
 ---
 
 ## ❗ Important Notes
 
 * Always test in a VM or staging VPS before using in production.
+* Run this script before setting up anything else on brand new VM/VPS.
 * Ensure you have console or out-of-band access in case SSH becomes inaccessible.
 * A system **reboot is recommended** after running the script.
 
