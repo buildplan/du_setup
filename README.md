@@ -35,20 +35,20 @@ It is designed to be **idempotent**, **safe**, and suitable for **production env
 
 ### 1. Download the script
 
-```bash
-wget https://raw.githubusercontent.com/buildplan/learning/refs/heads/main/setup_harden_debian_ubuntu.sh
+```
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 chmod +x setup_harden_debian_ubuntu.sh
 ````
 
 ### 2. Run the script as root
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh
 ```
 
 ### 3. Optional: Run in quiet mode
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
@@ -100,7 +100,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 * **SSH Locked Out?** Use the server console and restore:
 
-  ```bash
+  ```
   cp /root/setup_harden_backup_*/sshd_config /etc/ssh/sshd_config
   systemctl restart ssh
   ```
