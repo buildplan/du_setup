@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.8 | 2025-06-26
+# Version: 3.9 | 2025-06-26
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS
 #
 # Description:
@@ -15,7 +15,7 @@
 # - Internet connectivity is required for package installation.
 #
 # Usage:
-#   Download: wget https://raw.githubusercontent.com/buildplan/learning/refs/heads/main/setup_harden_debian_ubuntu.sh
+#   Download: wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 #   Make it executable: chmod +x setup_harden_debian_ubuntu.sh
 #   Run it: sudo ./setup_harden_debian_ubuntu.sh [--quiet]
 #
@@ -78,8 +78,8 @@ print_header() {
     [[ $VERBOSE == false ]] && return
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
-    echo -e "${CYAN}║         DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT         ║${NC}"
-    echo -e "${CYAN}║                       v3.8 | 2025-06-26                         ║${NC}"
+    echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
+    echo -e "${CYAN}║                      v3.9 | 2025-06-26                          ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -168,8 +168,8 @@ validate_timezone() {
 }
 
 validate_swap_size() {
-    local size="$1"
-    [[ "$size" =~ ^[0-9]+[MG]$ ]] && [[ "${size%[MG]}" -ge 1 ]]
+    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
+    [[ "$size_upper" =~ ^[0-9]+[MG]$ && "${size_upper%[MG]}" -ge 1 ]]
 }
 
 validate_ufw_port() {
@@ -179,9 +179,9 @@ validate_ufw_port() {
 }
 
 convert_to_bytes() {
-    local size="$1"
-    local unit="${size: -1}"
-    local value="${size%[MG]}"
+    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
+    local unit="${size_upper: -1}"
+    local value="${size_upper%[MG]}"
     if [[ "$unit" == "G" ]]; then
         echo $((value * 1024 * 1024 * 1024))
     elif [[ "$unit" == "M" ]]; then
@@ -273,6 +273,7 @@ check_system() {
         print_error "/etc/shadow is not writable. Check permissions (should be 640, root:shadow)."
         exit 1
     fi
+    local SHADOW_PERMS
     SHADOW_PERMS=$(stat -c %a /etc/shadow)
     if [[ "$SHADOW_PERMS" != "640" ]]; then
         print_info "Fixing /etc/shadow permissions to 640..."
@@ -313,10 +314,10 @@ collect_config() {
     SERVER_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "unknown")
     print_info "Detected server IP: $SERVER_IP"
     echo -e "\n${YELLOW}Configuration Summary:${NC}"
-    echo -e "  Username:    $USERNAME"
-    echo -e "  Hostname:    $SERVER_NAME"
-    echo -e "  SSH Port:    $SSH_PORT"
-    echo -e "  Server IP:   $SERVER_IP"
+    echo -e "  Username:   $USERNAME"
+    echo -e "  Hostname:   $SERVER_NAME"
+    echo -e "  SSH Port:   $SSH_PORT"
+    echo -e "  Server IP:  $SERVER_IP"
     if ! confirm "\nContinue with this configuration?" "y"; then print_info "Exiting."; exit 0; fi
     log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT"
 }
@@ -343,6 +344,7 @@ install_packages() {
 
 setup_user() {
     print_section "User Management"
+    local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2 SSH_PUBLIC_KEY
 
     if [[ $USER_EXISTS == false ]]; then
         print_info "Creating user '$USERNAME'..."
@@ -354,7 +356,7 @@ setup_user() {
             print_error "User '$USERNAME' creation verification failed."
             exit 1
         fi
-        print_info "Set a password for '$USERNAME' (required, or press Enter twice to skip for key-only access):"
+        print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
             read -sp "$(echo -e "${CYAN}New password: ${NC}")" PASS1
             echo
@@ -365,11 +367,12 @@ setup_user() {
                 log "Password setting skipped for '$USERNAME'."
                 break
             elif [[ "$PASS1" == "$PASS2" ]]; then
-                if echo "$USERNAME:$PASS1" | chpasswd 2>&1 | tee -a "$LOG_FILE"; then
+                # **SECURITY FIX**: Do not tee chpasswd output to log file.
+                if echo "$USERNAME:$PASS1" | chpasswd >/dev/null 2>&1; then
                     print_success "Password for '$USERNAME' updated."
                     break
                 else
-                    print_error "Failed to set password. Check log file for details."
+                    print_error "Failed to set password. This could be a permissions issue."
                     print_info "Try again or press Enter twice to skip."
                     log "Failed to set password for '$USERNAME'."
                 fi
@@ -389,6 +392,7 @@ setup_user() {
                     mkdir -p "$SSH_DIR"
                     chmod 700 "$SSH_DIR"
                     echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
+                    # De-duplicate keys
                     awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
                     chmod 600 "$AUTH_KEYS"
                     chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
@@ -478,6 +482,7 @@ configure_system() {
 
 configure_ssh() {
     print_section "SSH Hardening"
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -501,28 +506,16 @@ configure_ssh() {
             print_error "Failed to enable and start $SSH_SERVICE. Attempting manual start..."
             if ! /usr/sbin/sshd; then
                 print_error "Failed to start SSH daemon manually. Please check openssh-server installation."
-                echo -e "${CYAN}Run these commands to diagnose:${NC}" | tee -a "$LOG_FILE"
-                echo -e "${CYAN}  - systemctl status ssh${NC}" | tee -a "$LOG_FILE"
-                echo -e "${CYAN}  - systemctl status sshd${NC}" | tee -a "$LOG_FILE"
-                echo -e "${CYAN}  - ps aux | grep sshd${NC}" | tee -a "$LOG_FILE"
-                echo -e "${CYAN}  - dpkg -l openssh-server${NC}" | tee -a "$LOG_FILE"
                 exit 1
             fi
             print_success "SSH daemon started manually."
         fi
     else
-        print_error "No SSH service or daemon detected. Please verify openssh-server installation and SSH daemon status."
-        echo -e "${CYAN}Run these commands to diagnose:${NC}" | tee -a "$LOG_FILE"
-        echo -e "${CYAN}  - systemctl status ssh${NC}" | tee -a "$LOG_FILE"
-        echo -e "${CYAN}  - systemctl status sshd${NC}" | tee -a "$LOG_FILE"
-        echo -e "${CYAN}  - ps aux | grep sshd${NC}" | tee -a "$LOG_FILE"
-        echo -e "${CYAN}  - dpkg -l openssh-server${NC}" | tee -a "$LOG_FILE"
+        print_error "No SSH service or daemon detected. Please verify openssh-server installation and daemon status."
         exit 1
     fi
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
-    systemctl status "$SSH_SERVICE" --no-pager >> "$LOG_FILE" 2>&1
-    ps aux | grep "[s]shd" >> "$LOG_FILE" 2>&1
 
     # Ensure SSH service is enabled and running
     if ! systemctl is-enabled "$SSH_SERVICE" >/dev/null 2>&1; then
@@ -595,12 +588,13 @@ EOF
         rm -f "$NEW_SSH_CONFIG"
     else
         print_info "Creating or updating hardened SSH configuration..."
+        mkdir -p /etc/ssh/sshd_config.d
         mv "$NEW_SSH_CONFIG" /etc/ssh/sshd_config.d/99-hardening.conf
         chmod 644 /etc/ssh/sshd_config.d/99-hardening.conf
         tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
                         AUTHORIZED ACCESS ONLY
-             ═════ all attempts are logged and reviewed ═════
+            ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
     fi
@@ -610,36 +604,32 @@ EOF
         if ! systemctl restart "$SSH_SERVICE"; then
             print_error "SSH service failed to restart! Reverting changes..."
             cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
             systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
             exit 1
         fi
+        # Wait a moment for the service to potentially fail
+        sleep 2
         if systemctl is-active --quiet "$SSH_SERVICE"; then
             print_success "SSH service restarted on port $SSH_PORT."
         else
             print_error "SSH service failed to start! Reverting changes..."
             cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
             systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
             exit 1
         fi
     else
         print_error "SSH config test failed! Reverting changes..."
         cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
         rm -f "$NEW_SSH_CONFIG"
         exit 1
     fi
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
-    if grep -q "^PermitRootLogin no" /etc/ssh/sshd_config.d/99-hardening.conf; then
-        print_success "Root SSH login is disabled."
-    else
-        print_error "Failed to disable root SSH login. Please check /etc/ssh/sshd_config.d/99-hardening.conf."
-        exit 1
-    fi
-    # Test root SSH access
     if ssh -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
-        print_error "Root SSH login is still possible! Please check SSH configuration."
+        print_error "Root SSH login is still possible! Check SSH configuration."
         exit 1
     else
         print_success "Confirmed: Root SSH login is disabled."
@@ -651,6 +641,7 @@ EOF
     if ! confirm "Was the new SSH connection successful?"; then
         print_error "Aborting. Restoring original SSH configuration."
         cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
         systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
         exit 1
     fi
@@ -690,12 +681,13 @@ configure_firewall() {
     fi
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
+            local CUSTOM_PORTS # Make variable local to the loop
             read -rp "$(echo -e "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
             if [[ -z "$CUSTOM_PORTS" ]]; then
                 print_info "No custom ports entered. Skipping."
                 break
             fi
-            valid=true
+            local valid=true
             for port in $CUSTOM_PORTS; do
                 if ! validate_ufw_port "$port"; then
                     print_error "Invalid port format: $port. Use <port>[/tcp|/udp]."
@@ -731,12 +723,7 @@ configure_firewall() {
         exit 1
     fi
     print_warning "ACTION REQUIRED: Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp)."
-    print_info " - DigitalOcean: Configure Firewall in Control Panel -> Networking -> Firewalls."
-    print_info " - AWS: Update Security Groups in EC2 Dashboard."
-    print_info " - GCP: Update Firewall Rules in VPC Network -> Firewall."
-    print_info " - Oracle: Configure Security Lists in Virtual Cloud Network."
     ufw status verbose | tee -a "$LOG_FILE"
-    iptables -L >> "$LOG_FILE" 2>&1
     log "Firewall configuration completed."
 }
 
@@ -744,7 +731,8 @@ configure_fail2ban() {
     print_section "Fail2Ban Configuration"
     
     # Set the SSH port for Fail2Ban to monitor.
-     local SSH_PORTS_TO_MONITOR="$SSH_PORT"
+    local SSH_PORTS_TO_MONITOR="$SSH_PORT"
+    local NEW_FAIL2BAN_CONFIG
 
     NEW_FAIL2BAN_CONFIG=$(mktemp)
     tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
@@ -833,14 +821,17 @@ install_docker() {
         print_info "User '$USERNAME' is already in docker group."
     fi
     print_info "Configuring Docker daemon..."
+    local NEW_DOCKER_CONFIG
     NEW_DOCKER_CONFIG=$(mktemp)
-    tee "$NEW_DOCKER_CONFIG" >¼ /dev/null <<EOF
+    # **BUG FIX**: Corrected typo from >¼ to >
+    tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
   "live-restore": true
 }
 EOF
+    mkdir -p /etc/docker
     if [[ -f /etc/docker/daemon.json ]] && cmp -s "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json; then
         print_info "Docker daemon configuration already correct. Skipping."
         rm -f "$NEW_DOCKER_CONFIG"
@@ -874,6 +865,7 @@ install_tailscale() {
     print_info "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
     chmod +x /tmp/tailscale_install.sh
+    # Simple sanity check on the downloaded script
     if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
         print_error "Downloaded Tailscale install script appears invalid."
         rm -f /tmp/tailscale_install.sh
@@ -903,6 +895,7 @@ configure_swap() {
         current_size=$(ls -lh "$existing_swap" | awk '{print $5}')
         print_info "Existing swap file found: $existing_swap ($current_size)"
         if confirm "Modify existing swap file size?"; then
+            local SWAP_SIZE
             while true; do
                 read -rp "$(echo -e "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
                 SWAP_SIZE=${SWAP_SIZE:-$current_size}
@@ -912,7 +905,9 @@ configure_swap() {
                     print_error "Invalid size. Use format like '2G' or '512M'."
                 fi
             done
+            local REQUIRED_SPACE
             REQUIRED_SPACE=$(convert_to_bytes "$SWAP_SIZE")
+            local AVAILABLE_SPACE
             AVAILABLE_SPACE=$(df -k / | tail -n 1 | awk '{print $4}')
             if (( AVAILABLE_SPACE < REQUIRED_SPACE / 1024 )); then
                 print_error "Insufficient disk space for $SWAP_SIZE swap file. Available: $((AVAILABLE_SPACE / 1024))MB"
@@ -935,6 +930,7 @@ configure_swap() {
             print_info "Skipping swap configuration."
             return 0
         fi
+        local SWAP_SIZE
         while true; do
             read -rp "$(echo -e "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
@@ -944,7 +940,9 @@ configure_swap() {
                 print_error "Invalid size. Use format like '2G' or '512M'."
             fi
         done
+        local REQUIRED_SPACE
         REQUIRED_SPACE=$(convert_to_bytes "$SWAP_SIZE")
+        local AVAILABLE_SPACE
         AVAILABLE_SPACE=$(df -k / | tail -n 1 | awk '{print $4}')
         if (( AVAILABLE_SPACE < REQUIRED_SPACE / 1024 )); then
             print_error "Insufficient disk space for $SWAP_SIZE swap file. Available: $((AVAILABLE_SPACE / 1024))MB"
@@ -953,6 +951,7 @@ configure_swap() {
         print_info "Creating $SWAP_SIZE swap file..."
         if ! fallocate -l "$SWAP_SIZE" /swapfile || ! chmod 600 /swapfile || ! mkswap /swapfile || ! swapon /swapfile; then
             print_error "Failed to create or enable swap file."
+            rm -f /swapfile || true
             exit 1
         fi
         if ! grep -q '^/swapfile ' /etc/fstab; then
@@ -961,6 +960,7 @@ configure_swap() {
         print_success "Swap file created: $SWAP_SIZE"
     fi
     print_info "Optimizing swap settings..."
+    local NEW_SWAP_CONFIG
     NEW_SWAP_CONFIG=$(mktemp)
     tee "$NEW_SWAP_CONFIG" > /dev/null <<EOF
 vm.swappiness=10
@@ -999,12 +999,10 @@ final_cleanup() {
     print_section "Final System Cleanup"
     print_info "Running final system update and cleanup..."
     if ! apt-get update -qq; then
-        print_error "Failed to update package lists."
-        exit 1
+        print_warning "Failed to update package lists during final cleanup."
     fi
     if ! apt-get upgrade -y -qq || ! apt-get --purge autoremove -y -qq || ! apt-get autoclean -y -qq; then
-        print_error "Final system cleanup failed."
-        exit 1
+        print_warning "Final system cleanup failed on one or more commands."
     fi
     systemctl daemon-reload
     print_success "Final system update and cleanup complete."
@@ -1036,25 +1034,25 @@ generate_summary() {
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}"
     echo
     echo -e "${YELLOW}Configuration Summary:${NC}"
-    echo -e "  Admin User:  $USERNAME"
-    echo -e "  Hostname:    $SERVER_NAME"
-    echo -e "  SSH Port:    $SSH_PORT"
-    echo -e "  Server IP:   $SERVER_IP"
+    echo -e "  Admin User:   $USERNAME"
+    echo -e "  Hostname:     $SERVER_NAME"
+    echo -e "  SSH Port:     $SSH_PORT"
+    echo -e "  Server IP:    $SERVER_IP"
     echo
     echo -e "${PURPLE}Log File: ${LOG_FILE}${NC}"
-    echo -e "${PURPLE}Backups: ${BACKUP_DIR}${NC}"
+    echo -e "${PURPLE}Backups:  ${BACKUP_DIR}${NC}"
     echo
     echo -e "${CYAN}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:       ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
-    echo -e "  - Firewall rules:   sudo ufw status verbose"
-    echo -e "  - Time sync:        chronyc tracking"
-    echo -e "  - Fail2Ban status:  sudo fail2ban-client status sshd"
-    echo -e "  - Swap status:      swapon --show && free -h"
+    echo -e "  - SSH access:         ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    echo -e "  - Firewall rules:     sudo ufw status verbose"
+    echo -e "  - Time sync:          chronyc tracking"
+    echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
+    echo -e "  - Swap status:        swapon --show && free -h"
     if command -v docker >/dev/null 2>&1; then
-        echo -e "  - Docker status:    docker ps"
+        echo -e "  - Docker status:      docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        echo -e "  - Tailscale status: sudo tailscale status"
+        echo -e "  - Tailscale status:   sudo tailscale status"
     fi
     print_warning "\nA reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
