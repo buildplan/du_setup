@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian/Ubuntu Server Setup and Hardening Script
-# Version: 4.1 | 2025-06-26
+# Version: 4.2 | 2025-06-26
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS, 24.10 (experimental)
 #
 # Purpose: Automates server setup, security hardening, and optional installations (Docker, Tailscale).
@@ -59,7 +59,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║         DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT         ║${NC}"
-    echo -e "${CYAN}║                       v4.1 | 2025-06-26                         ║${NC}"
+    echo -e "${CYAN}║                       v4.2 | 2025-06-26                         ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -472,7 +472,9 @@ load_config() {
 
     # Initialize defaults
     USERNAME="${USERNAME:-}"
-    HOSTNAME="${HOSTNAME:-}"
+    HOSTNAME="${HOSTNAME:-$(hostname)}"  # Fallback to current hostname
+    SERVER_NAME="$HOSTNAME"  # Set SERVER_NAME immediately
+    PRETTY_NAME="${PRETTY_NAME:-$HOSTNAME}"  # Set PRETTY_NAME with fallback
     SSH_PORT="${SSH_PORT:-5595}"
     TIMEZONE="${TIMEZONE:-Etc/UTC}"
     SWAP_SIZE="${SWAP_SIZE:-2G}"
@@ -505,6 +507,11 @@ load_config() {
         errors+=("Missing HOSTNAME")
     elif ! validate_hostname "$HOSTNAME"; then
         errors+=("Invalid HOSTNAME")
+        SERVER_NAME="$(hostname)"  # Fallback to current hostname if invalid
+        HOSTNAME="$SERVER_NAME"
+    fi
+    if [[ "$HOSTNAME" != *.* ]]; then
+    print_warning "Hostname '$HOSTNAME' is not an FQDN. Consider using an FQDN (e.g., $HOSTNAME.mydomain.com) for better compatibility."
     fi
     if [[ -z "$SSH_PORT" ]]; then
         errors+=("Missing SSH_PORT")
@@ -637,12 +644,20 @@ load_config() {
                 [[ ! $(validate_url "$NTFY_SERVER") ]] && prompt_ntfy_server
                 [[ -z "$NTFY_TOKEN" || ! $(validate_ntfy_token "$NTFY_TOKEN") ]] && prompt_ntfy_token
             fi
+            # Ensure SERVER_NAME and PRETTY_NAME are set after prompting
+            SERVER_NAME="$HOSTNAME"
+            PRETTY_NAME="${PRETTY_NAME:-$HOSTNAME}"
             return 0
         else
-            print_error "Invalid or missing configuration in quiet mode. Exiting."
-            exit 1
+            print_error "Invalid or missing configuration in quiet mode. Using default hostname: $HOSTNAME"
+            SERVER_NAME="$HOSTNAME"
+            PRETTY_NAME="${PRETTY_NAME:-$HOSTNAME}"
+            return 0
         fi
     fi
+    # Ensure SERVER_NAME and PRETTY_NAME are set if validation passes
+    SERVER_NAME="$HOSTNAME"
+    PRETTY_NAME="${PRETTY_NAME:-$HOSTNAME}"
     return 0
 }
 
@@ -653,7 +668,8 @@ full_interactive_config() {
     prompt_username
     prompt_hostname
     read -rp "$(echo -e "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
-    [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
+    [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$HOSTNAME"
+    SERVER_NAME="$HOSTNAME"  # Ensure SERVER_NAME is set
     prompt_ssh_port
     prompt_timezone
     prompt_swap_size
@@ -1345,6 +1361,7 @@ configure_monitoring() {
         # Backup Postfix configuration
         cp /etc/postfix/main.cf "$BACKUP_DIR/main.cf.backup" 2>/dev/null && chmod 600 "$BACKUP_DIR/main.cf.backup" || true
         cp /etc/postfix/sasl_passwd "$BACKUP_DIR/sasl_passwd.backup" 2>/dev/null && chmod 600 "$BACKUP_DIR/sasl_passwd.backup" || true
+        cp /etc/aliases "$BACKUP_DIR/aliases.backup" 2>/dev/null && chmod 600 "$BACKUP_DIR/aliases.backup" || true
 
         # Configure Postfix
         postconf -e \
@@ -1369,6 +1386,15 @@ configure_monitoring() {
         postmap /etc/postfix/sender_canonical
         postconf -e "sender_canonical_maps = hash:/etc/postfix/sender_canonical"
 
+        # Configure /etc/aliases to suppress root alias warning
+        if ! grep -q "^root:" /etc/aliases; then
+            echo "root: $SMTP_TO" >> /etc/aliases
+            newaliases
+            print_success "Configured /etc/aliases with root alias to $SMTP_TO."
+        else
+            print_info "/etc/aliases already configured."
+        fi
+
         # Reload Postfix
         if ! systemctl reload postfix; then
             print_error "Failed to reload Postfix. Check 'journalctl -u postfix'."
@@ -1385,11 +1411,13 @@ configure_monitoring() {
                 print_error "Failed to send test email. Check /var/log/mail.log for details."
                 exit 1
             fi
-        elif echo "Test email from $(hostname) at $(date)" | mail -s "Test Alert" "$SMTP_TO" && grep -q "sent" /var/log/mail.log; then
+        elif echo "Test email from $(hostname) at $(date)" | mail -s "Test Alert" "$SMTP_TO"; then
+        sleep 2
+        if tail -n 50 /var/log/mail.log | grep -qE "status=(sent|delivered|completed)"; then
             print_success "SMTP test email sent to $SMTP_TO."
         else
-            print_error "Failed to send test email. Check /var/log/mail.log for details."
-            exit 1
+        print_error "Failed to send test email. Check /var/log/mail.log for details."
+        exit 1
         fi
         log "SMTP monitoring configured."
     else
@@ -1485,12 +1513,12 @@ install_tailscale() {
         [[ -n "$TAILSCALE_LOGIN_SERVER" ]] && up_args="$up_args --login-server=$TAILSCALE_LOGIN_SERVER"
         [[ "$TAILSCALE_ACCEPT_DNS" == "yes" ]] && up_args="$up_args --accept-dns=true" || up_args="$up_args --accept-dns=false"
         [[ "$TAILSCALE_ACCEPT_ROUTES" == "yes" ]] && up_args="$up_args --accept-routes=true" || up_args="$up_args --accept-routes=false"
-        if tailscale up $up_args; then
-            print_success "Tailscale configured and started."
-        else
-            print_error "Failed to configure Tailscale. Check 'tailscale status'."
-            exit 1
-        fi
+        if tailscale up $up_args && tailscale status >/dev/null 2>&1; then
+        print_success "Tailscale configured and started."
+    else
+        print_error "Failed to configure Tailscale. Check 'tailscale status'."
+        exit 1
+    fi
     else
         print_warning "Tailscale installed but not configured. Run 'sudo tailscale up' manually."
     fi
