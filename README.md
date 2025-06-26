@@ -10,7 +10,7 @@
 
 ---
 
-## 📌 Overview
+## Overview
 
 This script automates the initial setup and security hardening of a fresh Debian or Ubuntu server. It is designed to be **idempotent**, **safe**, and suitable for **production environments**, establishing a secure baseline from which to build upon.
 
@@ -18,7 +18,7 @@ It runs interactively, guiding the user through critical choices while automatin
 
 ---
 
-## ✨ Features
+## Features
 
 - **Secure User Management:** Creates a new administrator user with `sudo` privileges and disables the root account's SSH access.
 - **SSH Hardening:** Configures the SSH server to use a custom port, disable password authentication (enforcing key-based login), and apply other security best practices.
@@ -35,7 +35,7 @@ It runs interactively, guiding the user through critical choices while automatin
 
 ---
 
-## 🚀 Installation & Usage
+## Installation & Usage
 
 ### Prerequisites
 
@@ -46,7 +46,7 @@ It runs interactively, guiding the user through critical choices while automatin
 ### 1. Download the Script
 
 ```bash
-wget [https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh](https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh)
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
@@ -68,7 +68,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ---
 
-## 🗂️ What It Does in Detail
+## What It Does in Detail
 
 | Task                    | Description                                                                 |
 | ----------------------- | --------------------------------------------------------------------------- |
@@ -86,18 +86,18 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ---
 
-## 🪵 Logs & Backups
+## Logs & Backups
 
 - **Log Files:** `/var/log/setup_harden_debian_ubuntu_*.log`
 - **Configuration Backups:** `/root/setup_harden_backup_*`
 
 ---
 
-## 🧪 Tested On
+## Tested On
 
 - Debian 12
-- Ubuntu 24.04 LTS, 22.04 LTS
-- Common cloud providers (DigitalOcean, AWS, GCP, Oracle Cloud) and local VMs.
+- Ubuntu 24.04 LTS
+- Cloud providers (DigitalOcean & Oracle Cloud) and local VMs.
 
 ---
 
@@ -110,7 +110,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ---
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### SSH Lockout Recovery
 
