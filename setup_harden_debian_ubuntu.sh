@@ -83,8 +83,6 @@ print_info() {
     echo -e "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
 }
 
-# --- USER INTERACTION ---
-
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
@@ -213,6 +211,8 @@ load_config() {
     TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-yes}"
     SMTP_SERVER="${SMTP_SERVER:-}"
     SMTP_PORT="${SMTP_PORT:-}"
+    SMTP_USER="${SMTP_USER:-}"
+    SMTP_PASS="${SMTP_PASS:-}"
     SMTP_FROM="${SMTP_FROM:-}"
     SMTP_TO="${SMTP_TO:-}"
     NTFY_SERVER="${NTFY_SERVER:-}"
@@ -264,7 +264,7 @@ load_config() {
             errors+=("Invalid TAILSCALE_LOGIN_SERVER")
         fi
         if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-            errors+=("Missing TAILSCALE_AUTH_KEY (required with TAILSCALE_LOGIN_SERVER)")
+            errors+=("Missing TAILSCALE_AUTH_KEY")
         fi
         if [[ -z "$TAILSCALE_OPERATOR" ]]; then
             errors+=("Missing TAILSCALE_OPERATOR")
@@ -272,10 +272,10 @@ load_config() {
             errors+=("Invalid TAILSCALE_OPERATOR")
         fi
         if [[ -n "$TAILSCALE_ACCEPT_DNS" && ! "$TAILSCALE_ACCEPT_DNS" =~ ^(yes|no)$ ]]; then
-            errors+=("Invalid TAILSCALE_ACCEPT_DNS (must be yes/no)")
+            errors+=("Invalid TAILSCALE_ACCEPT_DNS")
         fi
         if [[ -n "$TAILSCALE_ACCEPT_ROUTES" && ! "$TAILSCALE_ACCEPT_ROUTES" =~ ^(yes|no)$ ]]; then
-            errors+=("Invalid TAILSCALE_ACCEPT_ROUTES (must be yes/no)")
+            errors+=("Invalid TAILSCALE_ACCEPT_ROUTES")
         fi
     fi
     if [[ -n "$SMTP_SERVER" ]]; then
@@ -286,6 +286,12 @@ load_config() {
             errors+=("Missing SMTP_PORT")
         elif ! validate_smtp_port "$SMTP_PORT"; then
             errors+=("Invalid SMTP_PORT")
+        fi
+        if [[ -z "$SMTP_USER" ]]; then
+            errors+=("Missing SMTP_USER")
+        fi
+        if [[ -z "$SMTP_PASS" ]]; then
+            errors+=("Missing SMTP_PASS")
         fi
         if [[ -z "$SMTP_FROM" ]]; then
             errors+=("Missing SMTP_FROM")
@@ -346,6 +352,8 @@ load_config() {
             if [[ -n "$SMTP_SERVER" ]]; then
                 [[ ! "$SMTP_SERVER" =~ ^[a-zA-Z0-9.-]+$ ]] && prompt_smtp_server
                 [[ -z "$SMTP_PORT" || ! $(validate_smtp_port "$SMTP_PORT") ]] && prompt_smtp_port
+                [[ -z "$SMTP_USER" ]] && prompt_smtp_user
+                [[ -z "$SMTP_PASS" ]] && prompt_smtp_pass
                 [[ -z "$SMTP_FROM" || ! $(validate_email "$SMTP_FROM") ]] && prompt_smtp_from
                 [[ -z "$SMTP_TO" || ! $(validate_email "$SMTP_TO") ]] && prompt_smtp_to
             fi
@@ -361,6 +369,8 @@ load_config() {
     fi
     return 0
 }
+
+# --- USER PROMPT FUNCTIONS ---
 
 prompt_username() {
     while true; do
@@ -517,6 +527,25 @@ prompt_smtp_port() {
         SMTP_PORT=""
     fi
     PROMPTED_SETTINGS+=("SMTP_PORT")
+}
+
+prompt_smtp_user() {
+    read -rp "$(echo -e "${CYAN}Enter SMTP username: ${NC}")" SMTP_USER
+    if [[ -z "$SMTP_USER" ]]; then
+        print_error "SMTP username cannot be empty."
+        SMTP_USER=""
+    fi
+    PROMPTED_SETTINGS+=("SMTP_USER")
+}
+
+prompt_smtp_pass() {
+    read -sp "$(echo -e "${CYAN}Enter SMTP password: ${NC}")" SMTP_PASS
+    echo
+    if [[ -z "$SMTP_PASS" ]]; then
+        print_error "SMTP password cannot be empty."
+        SMTP_PASS=""
+    fi
+    PROMPTED_SETTINGS+=("SMTP_PASS")
 }
 
 prompt_smtp_from() {
@@ -704,6 +733,8 @@ full_interactive_config() {
         prompt_smtp_server
         if [[ -n "$SMTP_SERVER" ]]; then
             prompt_smtp_port
+            prompt_smtp_user
+            prompt_smtp_pass
             prompt_smtp_from
             prompt_smtp_to
         fi
@@ -965,7 +996,7 @@ EOF
         rm -f "$NEW_SSH_CONFIG"
     else
         print_info "Creating or updating hardened SSH configuration..."
-        mv "$NEW_SSH_CONFIG" /etc/ssh/sshd_config.d/99-hardening.conf
+        mv "$NEW_SSH_CONFIG" /etc/ssh/sshd_config.d/99thor-hardening.conf
         chmod 644 /etc/ssh/sshd_config.d/99-hardening.conf
         tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
@@ -1136,6 +1167,234 @@ configure_firewall() {
     log "Firewall configuration completed."
 }
 
+configure_fail2ban() {
+    print_section "Fail2Ban Configuration"
+    if ! dpkg -l fail2ban | grep -q ^ii; then
+        print_error "fail2ban package is not installed."
+        exit 1
+    fi
+    print_info "Configuring Fail2Ban..."
+    local jail_config="/etc/fail2ban/jail.d/custom.conf"
+    mkdir -p /etc/fail2ban/jail.d
+    cp /etc/fail2ban/jail.conf "$BACKUP_DIR/jail.conf.backup" 2>/dev/null || true
+    NEW_JAIL_CONFIG=$(mktemp)
+    tee "$NEW_JAIL_CONFIG" > /dev/null <<EOF
+[sshd]
+enabled = true
+port = $SSH_PORT
+maxretry = 3
+findtime = 600
+bantime = 3600
+EOF
+    if [[ -n "${UFW_PORTS:-}" ]]; then
+        for port in ${UFW_PORTS//,/ }; do
+            if [[ "$port" =~ ^[0-9]+/tcp$ ]]; then
+                port_num="${port%/tcp}"
+                echo -e "[custom-$port_num]\nenabled = true\nport = $port_num\nmaxretry = 5\nfindtime = 600\nbantime = 3600" >> "$NEW_JAIL_CONFIG"
+            fi
+        done
+    fi
+    if [[ -f "$jail_config" ]] && cmp -s "$jail_config" "$NEW_JAIL_CONFIG"; then
+        print_info "Fail2Ban configuration already correct. Skipping."
+    else
+        mv "$NEW_JAIL_CONFIG" "$jail_config"
+        chmod 644 "$jail_config"
+        systemctl restart fail2ban
+        if systemctl is-active --quiet fail2ban; then
+            print_success "Fail2Ban configured and running."
+            fail2ban-client status sshd | tee -a "$LOG_FILE"
+        else
+            print_error "Failed to start Fail2Ban service. Check 'journalctl -u fail2ban'."
+            exit 1
+        fi
+    fi
+    rm -f "$NEW_JAIL_CONFIG"
+    log "Fail2Ban configuration completed."
+}
+
+configure_auto_updates() {
+    print_section "Automatic Updates Configuration"
+    if [[ "$AUTO_UPDATES" != "yes" ]]; then
+        print_info "Skipping automatic updates configuration."
+        SKIPPED_SETTINGS+=("automatic updates")
+        return 0
+    fi
+    if ! dpkg -l unattended-upgrades | grep -q ^ii; then
+        print_error "unattended-upgrades package is not installed."
+        exit 1
+    fi
+    print_info "Configuring unattended-upgrades..."
+    local config_file="/etc/apt/apt.conf.d/50unattended-upgrades"
+    cp "$config_file" "$BACKUP_DIR/50unattended-upgrades.backup" 2>/dev/null || true
+    if ! grep -q "Unattended-Upgrade::Automatic-Reboot" "$config_file"; then
+        echo 'Unattended-Upgrade::Automatic-Reboot "true";' >> "$config_file"
+        echo 'Unattended-Upgrade::Automatic-Reboot-Time "02:00";' >> "$config_file"
+    fi
+    if ! grep -q "Unattended-Upgrade::Mail" "$config_file"; then
+        if [[ -n "${SMTP_TO:-}" ]]; then
+            echo "Unattended-Upgrade::Mail \"$SMTP_TO\";" >> "$config_file"
+            echo 'Unattended-Upgrade::MailReport "on-change";' >> "$config_file"
+        fi
+    fi
+    systemctl restart unattended-upgrades
+    if systemctl is-active --quiet unattended-upgrades; then
+        print_success "Automatic updates configured."
+    else
+        print_error "Failed to start unattended-upgrades service."
+        exit 1
+    fi
+    log "Automatic updates configuration completed."
+}
+
+configure_monitoring() {
+    print_section "System Monitoring Configuration"
+    if [[ -n "${SMTP_SERVER:-}" || -n "${NTFY_SERVER:-}" ]]; then
+        if [[ -n "${SMTP_SERVER:-}" && -n "${SMTP_PORT:-}" && -n "${SMTP_USER:-}" && -n "${SMTP_PASS:-}" && -n "${SMTP_FROM:-}" && -n "${SMTP_TO:-}" ]]; then
+            print_info "Configuring Postfix for SMTP2go..."
+            NEW_POSTFIX_CONFIG=$(mktemp)
+            tee "$NEW_POSTFIX_CONFIG" > /dev/null <<EOF
+relayhost = [$SMTP_SERVER]:$SMTP_PORT
+smtp_sasl_auth_enable = yes
+smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+smtp_sasl_security_options = noanonymous
+smtp_tls_security_level = encrypt
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+EOF
+            if [[ -f /etc/postfix/main.cf ]] && grep -q "relayhost = \[$SMTP_SERVER\]:$SMTP_PORT" /etc/postfix/main.cf; then
+                print_info "Postfix configuration already correct. Skipping."
+            else
+                cat "$NEW_POSTFIX_CONFIG" >> /etc/postfix/main.cf
+                print_info "Creating Postfix SASL password file..."
+                if [[ $VERBOSE == true && ( -z "$SMTP_USER" || -z "$SMTP_PASS" ) ]]; then
+                    [[ -z "$SMTP_USER" ]] && prompt_smtp_user
+                    [[ -z "$SMTP_PASS" ]] && prompt_smtp_pass
+                fi
+                if [[ -z "$SMTP_USER" || -z "$SMTP_PASS" ]]; then
+                    print_error "SMTP credentials missing. Skipping SMTP configuration."
+                    SKIPPED_SETTINGS+=("SMTP monitoring")
+                    SMTP_SERVER=""
+                    rm -f "$NEW_POSTFIX_CONFIG"
+                    return
+                fi
+                echo "[$SMTP_SERVER]:$SMTP_PORT $SMTP_USER:$SMTP_PASS" > /etc/postfix/sasl_passwd
+                chmod 600 /etc/postfix/sasl_passwd
+                postmap /etc/postfix/sasl_passwd
+                systemctl restart postfix
+                print_info "Testing SMTP configuration..."
+                if echo "Test email from $(hostname)" | mail -s "Test Alert" "$SMTP_TO" 2>&1 | tee -a "$LOG_FILE"; then
+                    print_success "SMTP test email sent to $SMTP_TO."
+                else
+                    print_error "Failed to send test email. Check /var/log/mail.log."
+                fi
+            fi
+            rm -f "$NEW_POSTFIX_CONFIG"
+        else
+            print_info "Incomplete SMTP configuration. Skipping SMTP."
+            SKIPPED_SETTINGS+=("SMTP monitoring")
+            SMTP_SERVER=""
+        fi
+        if [[ -n "${NTFY_SERVER:-}" && -n "${NTFY_TOKEN:-}" ]]; then
+            print_info "Configuring ntfy notifications..."
+            curl -s -o /dev/null -H "Authorization: Bearer $NTFY_TOKEN" "$NTFY_SERVER" || {
+                print_error "Failed to connect to ntfy server. Check NTFY_SERVER and NTFY_TOKEN."
+                SKIPPED_SETTINGS+=("ntfy monitoring")
+                NTFY_SERVER=""
+                NTFY_TOKEN=""
+            }
+        elif [[ -n "${NTFY_SERVER:-}" && -z "${NTFY_TOKEN:-}" && $VERBOSE == true ]]; then
+            prompt_ntfy_token
+            if [[ -n "${NTFY_TOKEN:-}" ]]; then
+                print_info "Configuring ntfy notifications..."
+                curl -s -o /dev/null -H "Authorization: Bearer $NTFY_TOKEN" "$NTFY_SERVER" || {
+                    print_error "Failed to connect to ntfy server. Check NTFY_SERVER and NTFY_TOKEN."
+                    SKIPPED_SETTINGS+=("ntfy monitoring")
+                    NTFY_SERVER=""
+                    NTFY_TOKEN=""
+                }
+            else
+                print_info "No ntfy token provided. Skipping ntfy."
+                SKIPPED_SETTINGS+=("ntfy monitoring")
+                NTFY_SERVER=""
+            fi
+        else
+            print_info "Incomplete ntfy configuration. Skipping ntfy."
+            SKIPPED_SETTINGS+=("ntfy monitoring")
+            NTFY_SERVER=""
+        fi
+        print_info "Setting up disk space monitoring and rsync backup cron jobs..."
+        local cron_file="/etc/cron.d/setup_harden_monitoring"
+        NEW_CRON_CONFIG=$(mktemp)
+        tee "$NEW_CRON_CONFIG" > /dev/null <<'EOF'
+# Disk space monitoring (alert at 90% usage)
+*/15 * * * * root df -h / | awk 'NR==2 {if ($5+0 >= 90) {print "Disk usage critical on '"$(hostname)"': " $0}}' | while read -r line; do [[ -n "${SMTP_TO:-}" ]] && echo "$line" | mail -s "Disk Alert" "${SMTP_TO}"; [[ -n "${NTFY_SERVER:-}" && -n "${NTFY_TOKEN:-}" ]] && curl -s -H "Authorization: Bearer ${NTFY_TOKEN}" -d "$line" "${NTFY_SERVER}"; done
+# Rsync backup to /root/backup (daily at 1am)
+0 1 * * * root rsync -a --delete --exclude '/root/backup' / /root/backup && { [[ -n "${SMTP_TO:-}" ]] && echo "Rsync backup completed on $(hostname)" | mail -s "Backup Complete" "${SMTP_TO}"; [[ -n "${NTFY_SERVER:-}" && -n "${NTFY_TOKEN:-}" ]] && curl -s -H "Authorization: Bearer ${NTFY_TOKEN}" -d "Rsync backup completed on $(hostname)" "${NTFY_SERVER}"; }
+EOF
+        if [[ -f "$cron_file" ]] && cmp -s "$cron_file" "$NEW_CRON_CONFIG"; then
+            print_info "Cron jobs already configured. Skipping."
+        else
+            mv "$NEW_CRON_CONFIG" "$cron_file"
+            chmod 644 "$cron_file"
+            print_success "Disk space and backup cron jobs configured."
+        fi
+        rm -f "$NEW_CRON_CONFIG"
+    else
+        print_info "Skipping system monitoring configuration (no SMTP or ntfy settings provided)."
+        SKIPPED_SETTINGS+=("system monitoring")
+    fi
+    log "System monitoring configuration completed."
+}
+
+install_docker() {
+    if [[ "$INSTALL_DOCKER" != "yes" ]]; then
+        print_info "Skipping Docker installation."
+        SKIPPED_SETTINGS+=("Docker installation")
+        return 0
+    fi
+    print_section "Docker Installation"
+    if command -v docker >/dev/null 2>&1; then
+        print_info "Docker already installed."
+        if ! groups "$USERNAME" | grep -qw docker; then
+            print_info "Adding '$USERNAME' to docker group..."
+            usermod -aG docker "$USERNAME"
+            print_success "User '$USERNAME' added to docker group."
+        else
+            print_info "User '$USERNAME' already in docker group."
+        fi
+        return 0
+    fi
+    print_info "Installing Docker..."
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    chmod +x /tmp/get-docker.sh
+    if ! grep -q "docker" /tmp/get-docker.sh; then
+        print_error "Downloaded Docker install script appears invalid."
+        rm -f /tmp/get-docker.sh
+        exit 1
+    fi
+    if ! sh /tmp/get-docker.sh; then
+        print_error "Failed to install Docker."
+        rm -f /tmp/get-docker.sh
+        exit 1
+    fi
+    rm -f /tmp/get-docker.sh
+    systemctl enable docker
+    systemctl start docker
+    print_info "Adding '$USERNAME' to docker group..."
+    usermod -aG docker "$USERNAME"
+    if groups "$USERNAME" | grep -qw docker; then
+        print_success "User '$USERNAME' added to docker group."
+    else
+        print_error "Failed to add '$USERNAME' to docker group."
+        exit 1
+    fi
+    if ! docker ps >/dev/null 2>&1; then
+        print_error "Docker service is not running or accessible. Check 'systemctl status docker'."
+        exit 1
+    fi
+    print_success "Docker installation completed."
+    log "Docker installation and configuration completed."
+}
+
 install_tailscale() {
     if [[ "$INSTALL_TAILSCALE" != "yes" ]]; then
         print_info "Skipping Tailscale installation."
@@ -1153,35 +1412,32 @@ install_tailscale() {
             [[ -n "${TAILSCALE_AUTH_KEY:-}" ]] && ts_cmd="$ts_cmd --authkey=$TAILSCALE_AUTH_KEY"
             ts_cmd="$ts_cmd --hostname=$SERVER_NAME"
             if eval "$ts_cmd" 2>&1 | tee -a "$LOG_FILE"; then
-                if sudo tailscale status | grep -q "connected"; then
-                    print_success "Tailscale connected successfully."
+                if tailscale status | grep -q "$SERVER_NAME"; then
+                    print_success "Tailscale configured and connected."
+                    tailscale status | tee -a "$LOG_FILE"
                 else
-                    print_error "Tailscale connection failed. Run 'sudo tailscale up' manually."
+                    print_error "Tailscale failed to connect. Check 'tailscale status' and log file."
+                    exit 1
                 fi
             else
-                print_error "Failed to run Tailscale up. Check log for details."
+                print_error "Failed to configure Tailscale. Check log file."
+                exit 1
             fi
         else
-            print_info "Incomplete Tailscale configuration. Skipping Headscale setup."
-            SKIPPED_SETTINGS+=("Tailscale Headscale configuration")
+            print_info "Tailscale configuration incomplete. Skipping configuration."
+            SKIPPED_SETTINGS+=("Tailscale configuration")
         fi
         return 0
     fi
     print_info "Installing Tailscale..."
-    curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-    chmod +x /tmp/tailscale_install.sh
-    if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-        print_error "Downloaded Tailscale install script appears invalid."
-        rm -f /tmp/tailscale_install.sh
-        exit 1
-    fi
-    if ! /tmp/tailscale_install.sh; then
+    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.gpg | gpg --dearmor -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.list -o /etc/apt/sources.list.d/tailscale.list
+    if ! apt-get update -qq || ! apt-get install -y -qq tailscale; then
         print_error "Failed to install Tailscale."
-        rm -f /tmp/tailscale_install.sh
         exit 1
     fi
-    rm -f /tmp/tailscale_install.sh
-    systemctl enable --now tailscaled
+    systemctl enable tailscaled
+    systemctl start tailscaled
     if [[ -n "${TAILSCALE_LOGIN_SERVER:-}" && -n "${TAILSCALE_AUTH_KEY:-}" && -n "${TAILSCALE_OPERATOR:-}" ]]; then
         print_info "Configuring Tailscale with Headscale..."
         local ts_cmd="tailscale up --login-server=$TAILSCALE_LOGIN_SERVER --operator=$TAILSCALE_OPERATOR"
@@ -1190,17 +1446,20 @@ install_tailscale() {
         [[ -n "${TAILSCALE_AUTH_KEY:-}" ]] && ts_cmd="$ts_cmd --authkey=$TAILSCALE_AUTH_KEY"
         ts_cmd="$ts_cmd --hostname=$SERVER_NAME"
         if eval "$ts_cmd" 2>&1 | tee -a "$LOG_FILE"; then
-            if sudo tailscale status | grep -q "connected"; then
-                print_success "Tailscale connected successfully."
+            if tailscale status | grep -q "$SERVER_NAME"; then
+                print_success "Tailscale configured and connected."
+                tailscale status | tee -a "$LOG_FILE"
             else
-                print_error "Tailscale connection failed. Run 'sudo tailscale up' manually."
+                print_error "Tailscale failed to connect. Check 'tailscale status' and log file."
+                exit 1
             fi
         else
-            print_error "Failed to run Tailscale up. Check log for details."
+            print_error "Failed to configure Tailscale. Check log file."
+            exit 1
         fi
     else
-        print_info "Incomplete Tailscale configuration. Skipping Headscale setup."
-        SKIPPED_SETTINGS+=("Tailscale Headscale configuration")
+        print_info "Tailscale installed but not configured (missing login server, auth key, or operator)."
+        SKIPPED_SETTINGS+=("Tailscale configuration")
     fi
     print_success "Tailscale installation completed."
     log "Tailscale installation and configuration completed."
@@ -1209,7 +1468,7 @@ install_tailscale() {
 configure_swap() {
     print_section "Swap Configuration"
     if [[ "$IS_CONTAINER" == true ]]; then
-        print_info "Container environment detected. Skipping swap configuration."
+        print_info "Skipping swap configuration in container environment."
         SKIPPED_SETTINGS+=("swap configuration")
         return 0
     fi
@@ -1223,47 +1482,36 @@ configure_swap() {
         SKIPPED_SETTINGS+=("swap configuration")
         return 0
     fi
+    local swap_size_bytes=$(convert_to_bytes "$SWAP_SIZE")
     if [[ -f /swapfile ]]; then
-        CURRENT_SWAP_SIZE=$(ls -lh /swapfile | awk '{print $5}')
-        print_info "Swap file already exists with size $CURRENT_SWAP_SIZE."
-        if [[ "$CURRENT_SWAP_SIZE" == "$SWAP_SIZE" ]]; then
-            print_info "Swap size matches requested size. Skipping."
+        current_size=$(ls -l /swapfile | awk '{print $5}')
+        if [[ "$current_size" -eq "$swap_size_bytes" ]]; then
+            print_info "Swap file already exists with correct size ($SWAP_SIZE)."
             return 0
         else
-            print_info "Removing existing swap file to create new one..."
+            print_info "Removing existing swap file..."
             swapoff /swapfile 2>/dev/null || true
             rm -f /swapfile
-            sed -i '/\/swapfile/d' /etc/fstab
         fi
     fi
     print_info "Creating swap file of size $SWAP_SIZE..."
-    SWAP_BYTES=$(convert_to_bytes "$SWAP_SIZE")
-    if [[ $SWAP_BYTES -eq 0 ]]; then
-        print_error "Invalid swap size calculation. Skipping."
-        SKIPPED_SETTINGS+=("swap configuration")
-        return 0
-    fi
-    if ! fallocate -l "$SWAP_SIZE" /swapfile; then
+    if ! fallocate -l "$swap_size_bytes" /swapfile; then
         print_error "Failed to create swap file. Check disk space."
         exit 1
     fi
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
-    if ! grep -q "/swapfile" /etc/fstab; then
+    if ! grep -q "^/swapfile" /etc/fstab; then
         echo "/swapfile none swap sw 0 0" >> /etc/fstab
     fi
-    print_info "Configuring swappiness..."
     sysctl vm.swappiness=10
-    if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
-        echo "vm.swappiness=10" >> /etc/sysctl.conf
+    echo "vm.swappiness=10" >> /etc/sysctl.conf
+    if free | grep -q "Swap:"; then
+        print_success "Swap configured: $SWAP_SIZE"
+        free -h | tee -a "$LOG_FILE"
     else
-        sed -i 's/.*vm\.swappiness.*/vm.swappiness=10/' /etc/sysctl.conf
-    fi
-    if swapon --show | grep -q "/swapfile"; then
-        print_success "Swap file of $SWAP_SIZE configured."
-    else
-        print_error "Swap activation failed. Check 'swapon --show'."
+        print_error "Failed to configure swap. Check 'free -h' and log file."
         exit 1
     fi
     log "Swap configuration completed."
@@ -1275,75 +1523,66 @@ configure_time() {
         print_error "chrony package is not installed."
         exit 1
     fi
+    print_info "Configuring time synchronization with chrony..."
     systemctl enable chrony
-    systemctl restart chrony
-    sleep 2
+    systemctl start chrony
     if systemctl is-active --quiet chrony; then
-        print_success "Time synchronization enabled with chrony."
-        chronyc sources | tee -a "$LOG_FILE"
+        print_success "Time synchronization configured."
+        chronyc tracking | tee -a "$LOG_FILE"
     else
-        print_error "Failed to start chrony service."
+        print_error "Failed to start chrony service. Check 'journalctl -u chrony'."
         exit 1
     fi
     log "Time synchronization configuration completed."
 }
 
 cleanup() {
-    print_section "System Cleanup"
-    print_info "Cleaning up package cache..."
-    apt-get autoremove -y -qq
-    apt-get autoclean -y -qq
-    print_info "Removing temporary files..."
-    find /tmp -type f -atime +1 -delete
-    print_info "Clearing log files..."
+    print_section "Cleanup"
+    print_info "Cleaning up package cache and temporary files..."
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+    rm -f /tmp/*.sh
     find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
-    print_success "System cleanup completed."
-    log "System cleanup completed."
+    print_success "Cleanup completed."
+    log "Cleanup completed."
 }
 
 print_summary() {
     print_section "Setup Summary"
     echo -e "${GREEN}Setup completed successfully!${NC}" | tee -a "$LOG_FILE"
-    echo -e "${CYAN}Configuration Details:${NC}" | tee -a "$LOG_FILE"
-    echo -e "  - Username: $USERNAME" | tee -a "$LOG_FILE"
-    echo -e "  - Hostname: $SERVER_NAME" | tee -a "$LOG_FILE"
-    echo -e "  - SSH Port: $SSH_PORT" | tee -a "$LOG_FILE"
-    echo -e "  - Server IP: $SERVER_IP" | tee -a "$LOG_FILE"
-    echo -e "  - Timezone: $TIMEZONE" | tee -a "$LOG_FILE"
-    [[ -n "${SWAP_SIZE:-}" && "$IS_CONTAINER" == false ]] && echo -e "  - Swap Size: $SWAP_SIZE" | tee -a "$LOG_FILE"
-    [[ -n "${UFW_PORTS:-}" ]] && echo -e "  - UFW Ports: $UFW_PORTS" | tee -a "$LOG_FILE"
-    [[ "$AUTO_UPDATES" == "yes" ]] && echo -e "  - Automatic Updates: Enabled" | tee -a "$LOG_FILE"
-    [[ "$INSTALL_DOCKER" == "yes" ]] && echo -e "  - Docker: Installed" | tee -a "$LOG_FILE"
-    [[ "$INSTALL_TAILSCALE" == "yes" ]] && echo -e "  - Tailscale: Installed" | tee -a "$LOG_FILE"
-    [[ -n "${TAILSCALE_LOGIN_SERVER:-}" ]] && echo -e "  - Tailscale Login Server: $TAILSCALE_LOGIN_SERVER" | tee -a "$LOG_FILE"
-    [[ -n "${SMTP_SERVER:-}" ]] && echo -e "  - SMTP Server: $SMTP_SERVER:$SMTP_PORT" | tee -a "$LOG_FILE"
-    [[ -n "${NTFY_SERVER:-}" ]] && echo -e "  - ntfy Server: $NTFY_SERVER" | tee -a "$LOG_FILE"
+    echo -e "\n${YELLOW}Configuration Applied:${NC}"
+    echo -e "  Username:    $USERNAME"
+    echo -e "  Hostname:    $SERVER_NAME"
+    echo -e "  SSH Port:    $SSH_PORT"
+    echo -e "  Server IP:   $SERVER_IP"
+    echo -e "  Timezone:    $TIMEZONE"
+    [[ -n "${SWAP_SIZE:-}" && "$IS_CONTAINER" == false ]] && echo -e "  Swap Size:   $SWAP_SIZE"
+    [[ -n "${UFW_PORTS:-}" ]] && echo -e "  UFW Ports:   $UFW_PORTS"
+    [[ "$AUTO_UPDATES" == "yes" ]] && echo -e "  Auto Updates: Enabled"
+    [[ "$INSTALL_DOCKER" == "yes" ]] && echo -e "  Docker:      Installed"
+    [[ "$INSTALL_TAILSCALE" == "yes" ]] && echo -e "  Tailscale:   Installed"
+    [[ -n "${TAILSCALE_LOGIN_SERVER:-}" ]] && echo -e "  Tailscale Server: $TAILSCALE_LOGIN_SERVER"
+    [[ -n "${SMTP_SERVER:-}" ]] && echo -e "  SMTP Server: $SMTP_SERVER"
+    [[ -n "${NTFY_SERVER:-}" ]] && echo -e "  ntfy Server: $NTFY_SERVER"
     if [[ ${#PROMPTED_SETTINGS[@]} -gt 0 ]]; then
-        echo -e "  - Prompted Settings: ${PROMPTED_SETTINGS[*]}" | tee -a "$LOG_FILE"
+        echo -e "\n${CYAN}Prompted Settings:${NC} ${PROMPTED_SETTINGS[*]}"
     fi
     if [[ ${#SKIPPED_SETTINGS[@]} -gt 0 ]]; then
-        echo -e "  - Skipped Settings: ${SKIPPED_SETTINGS[*]}" | tee -a "$LOG_FILE"
+        echo -e "\n${YELLOW}Skipped Settings:${NC} ${SKIPPED_SETTINGS[*]}"
     fi
-    echo -e "\n${YELLOW}Log file: $LOG_FILE${NC}" | tee -a "$LOG_FILE"
-    echo -e "${YELLOW}Backup directory: $BACKUP_DIR${NC}" | tee -a "$LOG_FILE"
-    echo -e "\n${CYAN}Verification Steps:${NC}" | tee -a "$LOG_FILE"
-    echo -e "  1. Verify SSH: ssh -p $SSH_PORT $USERNAME@$SERVER_IP" | tee -a "$LOG_FILE"
-    echo -e "  2. Check firewall: sudo ufw status verbose" | tee -a "$LOG_FILE"
-    echo -e "  3. Check services: systemctl status ssh fail2ban chrony" | tee -a "$LOG_FILE"
-    [[ "$INSTALL_DOCKER" == "yes" ]] && echo -e "  3.1 Check Docker: systemctl status docker; docker ps" | tee -a "$LOG_FILE"
-    [[ "$INSTALL_TAILSCALE" == "yes" ]] && echo -e "  3.2 Check Tailscale: sudo tailscale status" | tee -a "$LOG_FILE"
-    [[ -n "${SMTP_SERVER:-}" ]] && echo -e "  3.3 Check Postfix: systemctl status postfix; tail /var/log/mail.log" | tee -a "$LOG_FILE"
-    echo -e "\n${YELLOW}ACTION REQUIRED:${NC}" | tee -a "$LOG_FILE"
-    echo -e "  - Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp)." | tee -a "$LOG_FILE"
-    echo -e "  - Reboot recommended: sudo reboot" | tee -a "$LOG_FILE"
+    echo -e "\n${YELLOW}Log File:${NC} $LOG_FILE"
+    echo -e "${YELLOW}Backups:${NC} $BACKUP_DIR"
+    echo -e "\n${YELLOW}Next Steps:${NC}"
+    echo -e " 1. Verify SSH: ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    echo -e " 2. Check Firewall: sudo ufw status verbose"
+    echo -e " 3. Check Services: systemctl status ssh fail2ban chrony docker tailscaled postfix"
+    echo -e " 4. Reboot (recommended): sudo reboot"
+    echo -e "\n${YELLOW}Note:${NC} If using a VPS (e.g., DigitalOcean, AWS), ensure the edge firewall allows port $SSH_PORT and other configured ports."
     log "Setup summary completed."
 }
 
 main() {
     print_header
-    mkdir -p "$(dirname "$LOG_FILE")"
-    touch "$LOG_FILE"
-    chmod 640 "$LOG_FILE"
     check_system
     check_dependencies
     collect_config
@@ -1363,4 +1602,6 @@ main() {
     print_summary
 }
 
+# Execute main function
 main
+```
