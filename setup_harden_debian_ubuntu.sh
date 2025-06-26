@@ -491,22 +491,21 @@ configure_ssh() {
         exit 1
     fi
 
-    # Detect SSH service name and handle socket activation
-    if [[ $ID == "ubuntu" ]] && { systemctl is-enabled ssh.service >/dev/null 2>&1 || systemctl is-active ssh.service >/dev/null 2>&1; }; then
+    # Detect SSH service name, preserve socket activation on Ubuntu if active
+    if [[ $ID == "ubuntu" ]] && systemctl is-active ssh.socket >/dev/null 2>&1; then
+        SSH_SERVICE="ssh.socket"
+        print_info "Using SSH socket activation: $SSH_SERVICE"
+    elif [[ $ID == "ubuntu" ]] && { systemctl is-enabled ssh.service >/dev/null 2>&1 || systemctl is-active ssh.service >/dev/null 2>&1; }; then
         SSH_SERVICE="ssh.service"
     elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
         SSH_SERVICE="sshd.service"
     elif ps aux | grep -q "[s]shd"; then
-        print_warning "SSH daemon running but no standard service detected. Checking for socket activation..."
-        if systemctl is-active ssh.socket >/dev/null 2>&1; then
-            print_info "Disabling ssh.socket to enable ssh.service..."
-            systemctl disable --now ssh.socket
-        fi
-        SSH_SERVICE="ssh.service"
+        print_warning "SSH daemon running but no standard service detected."
+        SSH_SERVICE="ssh.service"  # Default for Debian
         if ! systemctl enable --now "$SSH_SERVICE" >/dev/null 2>&1; then
             print_error "Failed to enable and start $SSH_SERVICE. Attempting manual start..."
             if ! /usr/sbin/sshd; then
-                print_error "Failed to start SSH daemon manually. Please check openssh-server installation."
+                print_error "Failed to start SSH daemon manually."
                 exit 1
             fi
             print_success "SSH daemon started manually."
@@ -571,10 +570,20 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Check if SSH config needs updating
+    # Use systemd drop-in for port override, preserving Ubuntu's socket activation
     NEW_SSH_CONFIG=$(mktemp)
     tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
-Port $SSH_PORT
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/sshd -D -p $SSH_PORT
+EOF
+    mkdir -p /etc/systemd/system/ssh.service.d
+    mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
+    chmod 644 /etc/systemd/system/ssh.service.d/override.conf
+
+    # Apply additional hardening via sshd_config.d
+    NEW_SSH_CONFIG=$(mktemp)
+    tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -600,31 +609,29 @@ EOF
 EOF
     fi
 
-    print_info "Testing and restarting SSH service..."
-    if sshd -T | grep -q "port $SSH_PORT"; then
-        if ! systemctl restart "$SSH_SERVICE"; then
-            print_error "SSH service failed to restart! Reverting changes..."
-            cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-            systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-            exit 1
-        fi
-        # Wait and verify port binding
-        sleep 5
-        if ! ss -tuln | grep -q ":$SSH_PORT"; then
-            print_error "SSH not listening on port $SSH_PORT after restart! Reverting changes..."
-            cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-            systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-            exit 1
-        fi
-        print_success "SSH service restarted on port $SSH_PORT."
-    else
-        print_error "SSH config test failed! Reverting changes..."
+    print_info "Reloading systemd and restarting SSH service..."
+    systemctl daemon-reload
+    if ! systemctl restart "$SSH_SERVICE"; then
+        print_error "SSH service failed to restart! Reverting changes..."
+        rm -f /etc/systemd/system/ssh.service.d/override.conf
         cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f "$NEW_SSH_CONFIG"
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+        systemctl daemon-reload
+        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
         exit 1
     fi
+    # Wait and verify port binding
+    sleep 5
+    if ! ss -tuln | grep -q ":$SSH_PORT"; then
+        print_error "SSH not listening on port $SSH_PORT after restart! Reverting changes..."
+        rm -f /etc/systemd/system/ssh.service.d/override.conf
+        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+        systemctl daemon-reload
+        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
+        exit 1
+    fi
+    print_success "SSH service restarted on port $SSH_PORT."
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
@@ -651,8 +658,10 @@ EOF
                 sleep 5
             else
                 print_error "Aborting. Restoring original SSH configuration."
+                rm -f /etc/systemd/system/ssh.service.d/override.conf
                 cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
                 rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+                systemctl daemon-reload
                 systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
                 exit 1
             fi
