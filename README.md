@@ -1,6 +1,6 @@
 # Debian/Ubuntu Server Setup and Hardening Script
 
-**Version**: 4.0 | **Date**: 2025-06-26  
+**Version**: 4.1 | **Date**: 2025-06-26  
 **Compatible with**: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS, 24.10 (experimental)
 
 ## Overview
