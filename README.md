@@ -33,7 +33,7 @@ This Bash script automates the provisioning and hardening of a Debian 12 or Ubun
 
 1. **Download the Script**:
    ```bash
-   wget https://raw.githubusercontent.com/buildplan/learning/refs/heads/main/setup_harden_debian_ubuntu.sh
+   wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
    chmod +x setup_harden_debian_ubuntu.sh
    ```
 
