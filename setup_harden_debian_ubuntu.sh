@@ -511,7 +511,7 @@ load_config() {
         HOSTNAME="$SERVER_NAME"
     fi
     if [[ "$HOSTNAME" != *.* ]]; then
-    print_warning "Hostname '$HOSTNAME' is not an FQDN. Consider using an FQDN (e.g., $HOSTNAME.mydomain.com) for better compatibility."
+        print_warning "Hostname '$HOSTNAME' is not an FQDN. Consider using an FQDN (e.g., $HOSTNAME.mydomain.com) for better compatibility."
     fi
     if [[ -z "$SSH_PORT" ]]; then
         errors+=("Missing SSH_PORT")
@@ -1412,12 +1412,13 @@ configure_monitoring() {
                 exit 1
             fi
         elif echo "Test email from $(hostname) at $(date)" | mail -s "Test Alert" "$SMTP_TO"; then
-        sleep 2
-        if tail -n 50 /var/log/mail.log | grep -qE "status=(sent|delivered|completed)"; then
-            print_success "SMTP test email sent to $SMTP_TO."
-        else
-        print_error "Failed to send test email. Check /var/log/mail.log for details."
-        exit 1
+            sleep 2
+            if tail -n 50 /var/log/mail.log | grep -qE "status=(sent|delivered|completed)"; then
+                print_success "SMTP test email sent to $SMTP_TO."
+            else
+                print_error "Failed to send test email. Check /var/log/mail.log for details."
+                exit 1
+            fi
         fi
         log "SMTP monitoring configured."
     else
@@ -1462,6 +1463,7 @@ EOF
         print_success "Monitoring cron job configured."
     fi
     log "Monitoring configuration completed."
+}
 
 # Install Docker Engine
 install_docker() {
@@ -1513,11 +1515,11 @@ install_tailscale() {
         [[ "$TAILSCALE_ACCEPT_DNS" == "yes" ]] && up_args="$up_args --accept-dns=true" || up_args="$up_args --accept-dns=false"
         [[ "$TAILSCALE_ACCEPT_ROUTES" == "yes" ]] && up_args="$up_args --accept-routes=true" || up_args="$up_args --accept-routes=false"
         if tailscale up $up_args && tailscale status >/dev/null 2>&1; then
-        print_success "Tailscale configured and started."
-    else
-        print_error "Failed to configure Tailscale. Check 'tailscale status'."
-        exit 1
-    fi
+            print_success "Tailscale configured and started."
+        else
+            print_error "Failed to configure Tailscale. Check 'tailscale status'."
+            exit 1
+        fi
     else
         print_warning "Tailscale installed but not configured. Run 'sudo tailscale up' manually."
     fi
