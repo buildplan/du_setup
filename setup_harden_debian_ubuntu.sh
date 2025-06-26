@@ -1462,7 +1462,6 @@ EOF
         print_success "Monitoring cron job configured."
     fi
     log "Monitoring configuration completed."
-}
 
 # Install Docker Engine
 install_docker() {
