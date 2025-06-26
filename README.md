@@ -33,7 +33,7 @@ This Bash script automates the provisioning and hardening of a Debian 12 or Ubun
 
 1. **Download the Script**:
    ```bash
-   wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
+   wget https://raw.githubusercontent.com/buildplan/learning/refs/heads/main/setup_harden_debian_ubuntu.sh
    chmod +x setup_harden_debian_ubuntu.sh
    ```
 
@@ -74,6 +74,8 @@ TAILSCALE_ACCEPT_DNS=yes
 TAILSCALE_ACCEPT_ROUTES=yes
 SMTP_SERVER=mail.smtp2go.com
 SMTP_PORT=587
+SMTP_USER=smtp2go_username
+SMTP_PASS=smtp2go_password
 SMTP_FROM=alerts@mydomain.com
 SMTP_TO=admin@mydomain.com
 NTFY_SERVER=https://ntfy.mydomain.com/ovps
@@ -83,6 +85,7 @@ NTFY_TOKEN=tk_xxxxxxxxxxxxxxxxxxxxxxxx
 **Configuration Notes**:
 - **Required Variables**: `USERNAME`, `HOSTNAME`, `SSH_PORT`. If missing, the script will prompt (non-quiet mode) or fail (quiet mode).
 - **Optional Variables**: All others (e.g., `UFW_PORTS`, `SMTP_*`, `NTFY_*`, `TAILSCALE_*`). If partially provided, the script prompts for missing values or skips the feature in quiet mode.
+- **SMTP Credentials**: `SMTP_USER` and `SMTP_PASS` are required for SMTP authentication when `SMTP_SERVER` is specified. In non-quiet mode, the script prompts for these if missing. In quiet mode, SMTP configuration is skipped if these are not provided.
 - **Validation**: The script validates all inputs (e.g., username format, port numbers, URLs). Invalid values trigger prompts or skipping.
 
 ## Flexible Configuration Handling
