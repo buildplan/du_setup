@@ -65,7 +65,7 @@ sudo ./setup_harden_debian_ubuntu.sh
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
-> 🔒 **Critical Safety Check:** The script will pause and require you to test your new SSH connection from a separate terminal before it proceeds to disable old access methods. **Do not skip this step!**
+> :warning: **Critical Safety Check:** The script will pause and require you to test your new SSH connection from a separate terminal before it proceeds to disable old access methods. **Do not skip this step!**
 
 ---
 
@@ -102,7 +102,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ---
 
-## ❗ Important Notes
+## :exclamation: Important Notes
 
 - **Run this on a fresh system.** While idempotent, the script is designed for initial provisioning.
 - **A system reboot is required** after the script completes to ensure all changes, especially to the kernel and services, are applied cleanly.
