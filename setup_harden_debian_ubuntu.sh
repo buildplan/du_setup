@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.11 | 2025-06-27
+# Version: 3.12 | 2025-06-27
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
 # Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
 #
@@ -80,7 +80,8 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.11 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                     v3.12 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -387,27 +388,32 @@ setup_user() {
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
 
-        if confirm "Add an SSH public key from your local machine now?"; then
-            while true; do
-                read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
-                if validate_ssh_key "$SSH_PUBLIC_KEY"; then
-                    mkdir -p "$SSH_DIR"
-                    chmod 700 "$SSH_DIR"
-                    echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
-                    # De-duplicate keys
-                    awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
-                    chmod 600 "$AUTH_KEYS"
-                    chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
-                    print_success "SSH public key added."
-                    log "Added SSH public key for '$USERNAME'."
-                    LOCAL_KEY_ADDED=true
-                    break
-                else
-                    print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
-                    if ! confirm "Try again?"; then print_info "Skipping SSH key addition."; break; fi
-                fi
-            done
-        fi
+        if confirm "Add SSH public key(s) from your local machine now?"; then
+        while true; do # Loop to allow adding multiple keys
+            local SSH_PUBLIC_KEY # Declare locally to avoid issues
+            read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+
+            if validate_ssh_key "$SSH_PUBLIC_KEY"; then
+                mkdir -p "$SSH_DIR"
+                chmod 700 "$SSH_DIR"
+                echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
+                # De-duplicate keys after adding the new one
+                awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
+                chmod 600 "$AUTH_KEYS"
+                chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+                print_success "SSH public key added."
+                log "Added SSH public key for '$USERNAME'."
+                LOCAL_KEY_ADDED=true # Set this flag to true since at least one key was added
+            else
+                print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
+            fi
+
+            if ! confirm "Do you have another SSH public key to add?" "n"; then
+                print_info "Finished adding SSH keys."
+                break # User answered 'n', break the loop
+            fi
+        done
+    fi
         print_success "User '$USERNAME' created."
     else
         print_info "Using existing user: $USERNAME"
