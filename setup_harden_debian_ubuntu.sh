@@ -1136,6 +1136,7 @@ generate_summary() {
     echo -e "  - Time sync:          chronyc tracking"
     echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
     echo -e "  - Swap status:        sudo swapon --show && free -h"
+    echo -e "  - Hostname:  	     hostnamectl"
     if command -v docker >/dev/null 2>&1; then
         echo -e "  - Docker status:      docker ps"
     fi
