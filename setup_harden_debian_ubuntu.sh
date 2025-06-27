@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.12 | 2025-06-27
+# Version: 3.13 | 2025-06-27
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
 # Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
 #
@@ -80,7 +80,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.12 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                     v3.13 | 2025-06-27                          ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
