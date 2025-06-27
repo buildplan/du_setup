@@ -610,7 +610,7 @@ EOF
         chmod 644 /etc/ssh/sshd_config.d/99-hardening.conf
         tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
-                        🔒AUTHORIZED ACCESS ONLY
+                       🔒AUTHORIZED ACCESS ONLY
             ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
