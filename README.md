@@ -140,6 +140,6 @@ If you are locked out of SSH, use your provider's web console to perform the fol
 
 ---
 
-## MIT License
+## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE "LICENCE") License
 
 This script is open-source and provided "as is" without warranty. Use at your own risk.
