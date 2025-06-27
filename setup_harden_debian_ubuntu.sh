@@ -2,7 +2,8 @@
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 3.10 | 2025-06-27
-# Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS
+# Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
+# Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
 #
 # Description:
 # This script provisions and hardens a fresh Debian 12 or Ubuntu server with essential security
@@ -79,7 +80,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.10 | 2025-06-26                          ║${NC}"
+    echo -e "${CYAN}║                     v3.10 | 2025-06-27                          ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -560,7 +561,7 @@ configure_ssh() {
 
     print_warning "SSH Key Authentication Required for Next Steps!"
     echo -e "${CYAN}Test SSH access from a SEPARATE terminal now: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP${NC}"
-    
+
     if ! confirm "Can you successfully log in using your SSH key?"; then
         print_error "SSH key authentication is mandatory to proceed. Please fix and re-run."
         exit 1
@@ -751,7 +752,7 @@ configure_firewall() {
 
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
-    
+
     # Set the SSH port for Fail2Ban to monitor.
     local SSH_PORTS_TO_MONITOR="$SSH_PORT"
     local NEW_FAIL2BAN_CONFIG
