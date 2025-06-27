@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.12 | 2025-06-27
+# Version: 3.13 | 2025-06-27
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
 # Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
 #
@@ -80,7 +80,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.12 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                     v3.13 | 2025-06-27                          ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -577,17 +577,31 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Use systemd drop-in for port override, preserving Ubuntu's socket activation
-    NEW_SSH_CONFIG=$(mktemp)
-    tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
+    # Apply port override based on SSH service type
+    if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
+        print_info "Configuring SSH socket to listen on port $SSH_PORT..."
+        NEW_SSH_CONFIG=$(mktemp)
+        tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
+[Socket]
+ListenStream=
+ListenStream=$SSH_PORT
+EOF
+        mkdir -p /etc/systemd/system/ssh.socket.d
+        mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.socket.d/override.conf
+        chmod 644 /etc/systemd/system/ssh.socket.d/override.conf
+    else
+        print_info "Configuring SSH service to listen on port $SSH_PORT..."
+        NEW_SSH_CONFIG=$(mktemp)
+        tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
 [Service]
 ExecStart=
 ExecStart=/usr/sbin/sshd -D -p $SSH_PORT
 EOF
-    mkdir -p /etc/systemd/system/ssh.service.d
-    mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
-    chmod 644 /etc/systemd/system/ssh.service.d/override.conf
-
+        mkdir -p /etc/systemd/system/ssh.service.d
+        mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
+        chmod 644 /etc/systemd/system/ssh.service.d/override.conf
+    fi
+    
     # Apply additional hardening via sshd_config.d
     NEW_SSH_CONFIG=$(mktemp)
     tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
@@ -1122,6 +1136,7 @@ generate_summary() {
     echo -e "  - Time sync:          chronyc tracking"
     echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
     echo -e "  - Swap status:        sudo swapon --show && free -h"
+    echo -e "  - Hostname:  	     hostnamectl"
     if command -v docker >/dev/null 2>&1; then
         echo -e "  - Docker status:      docker ps"
     fi
