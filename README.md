@@ -5,9 +5,9 @@
 **Last Updated:** 2025-06-27
 
 **Compatible With:**
-- Debian 12 (Bookworm)
-- Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS, 24.10
-- Tested on Debian 12, Ubuntu 24.04 and Ubuntu 24.10
+- Debian 12
+- Ubuntu 20.04, 22.04, 24.04, 24.10
+- Tested on Debian 12, Ubuntu 24.04 and 24.10
 
 ---
 
@@ -59,13 +59,13 @@ It is highly recommended to run the script interactively the first time.
 sudo ./setup_harden_debian_ubuntu.sh
 ```
 
-### 3. Run in Quiet Mode (for automation)
+### 3. Run in Quiet Mode (for automation - not recmmended)
 
 ```bash
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
-> 🔒 **Critical Safety Check:** The script will pause and require you to test your new SSH connection from a separate terminal before it proceeds to disable old access methods. **Do not skip this step!**
+> :warning: **Critical Safety Check:** The script will pause and require you to test your new SSH connection from a separate terminal before it proceeds to disable old access methods. **Do not skip this step!**
 
 ---
 
@@ -102,7 +102,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ---
 
-## ❗ Important Notes
+## :exclamation: Important Notes
 
 - **Run this on a fresh system.** While idempotent, the script is designed for initial provisioning.
 - **A system reboot is required** after the script completes to ensure all changes, especially to the kernel and services, are applied cleanly.
@@ -140,6 +140,6 @@ If you are locked out of SSH, use your provider's web console to perform the fol
 
 ---
 
-## 📝 License
+## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE "LICENCE") License
 
 This script is open-source and provided "as is" without warranty. Use at your own risk.
