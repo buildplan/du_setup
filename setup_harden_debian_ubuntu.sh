@@ -976,7 +976,7 @@ configure_swap() {
             rm -f /swapfile || true
             exit 1
         fi
-        if ! grep -q '^607swapfile ' /etc/fstab; then
+	if ! grep -q '^/swapfile ' /etc/fstab; then
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
         fi
         print_success "Swap file created: $SWAP_SIZE"
