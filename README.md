@@ -6,7 +6,7 @@
 
 **Compatible With:**
 - Debian 12
-- Ubuntu 20.04, 22.04, 24.04, 24.10
+- Ubuntu 22.04, 24.04, 24.10
 
 ---
 
