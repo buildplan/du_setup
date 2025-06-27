@@ -46,7 +46,7 @@ It runs interactively, guiding the user through critical choices while automatin
 
 ### 1. Download the Script
 
-```bash
+```
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 chmod +x setup_harden_debian_ubuntu.sh
 ```
@@ -55,13 +55,13 @@ chmod +x setup_harden_debian_ubuntu.sh
 
 It is highly recommended to run the script interactively the first time.
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh
 ```
 
 ### 3. Run in Quiet Mode (for automation - not recmmended)
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
@@ -118,13 +118,13 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 If you are locked out of SSH, use your provider's web console to perform the following steps:
 
 1.  **Remove the hardened configuration:**
-    ```bash
+    ```
     # This file overrides the main config, so it must be removed.
     rm /etc/ssh/sshd_config.d/99-hardening.conf
     ```
 
 2.  **Restore the original `sshd_config` file:**
-    ```bash
+    ```
     # Find the latest backup directory
     LATEST_BACKUP=$(ls -td /root/setup_harden_backup_* | head -1)
     
@@ -133,7 +133,7 @@ If you are locked out of SSH, use your provider's web console to perform the fol
     ```
 
 3.  **Restart the SSH service:**
-    ```bash
+    ```
     systemctl restart ssh
     ```
     You should now be able to log in using the original port (usually 22) and credentials.
