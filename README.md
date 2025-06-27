@@ -7,7 +7,6 @@
 **Compatible With:**
 - Debian 12
 - Ubuntu 20.04, 22.04, 24.04, 24.10
-- Tested on Debian 12, Ubuntu 24.04 and 24.10
 
 ---
 
@@ -97,8 +96,8 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 ## Tested On
 
 - Debian 12
-- Ubuntu 24.04 LTS
-- Cloud providers (DigitalOcean & Oracle Cloud) and local VMs.
+- Ubuntu 24.04 and 24.10
+- Cloud providers (DigitalOcean, Oracle Cloud, Hetzner, Netcup) and local VMs.
 
 ---
 
