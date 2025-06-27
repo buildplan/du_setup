@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.9 | 2025-06-26
+# Version: 3.10 | 2025-06-27
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS
 #
 # Description:
@@ -79,7 +79,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v3.9 | 2025-06-26                          ║${NC}"
+    echo -e "${CYAN}║                     v3.10 | 2025-06-26                          ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -229,6 +229,7 @@ check_system() {
 
     if [[ -f /etc/os-release ]]; then
         source /etc/os-release
+        ID=$ID  # Populate global ID variable
         if [[ $ID == "debian" && $VERSION_ID == "12" ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -490,22 +491,21 @@ configure_ssh() {
         exit 1
     fi
 
-    # Detect SSH service name and handle socket activation
-    if [[ $ID == "ubuntu" ]] && { systemctl is-enabled ssh.service >/dev/null 2>&1 || systemctl is-active ssh.service >/dev/null 2>&1; }; then
+    # Detect SSH service name, preserve socket activation on Ubuntu if active
+    if [[ $ID == "ubuntu" ]] && systemctl is-active ssh.socket >/dev/null 2>&1; then
+        SSH_SERVICE="ssh.socket"
+        print_info "Using SSH socket activation: $SSH_SERVICE"
+    elif [[ $ID == "ubuntu" ]] && { systemctl is-enabled ssh.service >/dev/null 2>&1 || systemctl is-active ssh.service >/dev/null 2>&1; }; then
         SSH_SERVICE="ssh.service"
     elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
         SSH_SERVICE="sshd.service"
     elif ps aux | grep -q "[s]shd"; then
-        print_warning "SSH daemon running but no standard service detected. Checking for socket activation..."
-        if systemctl is-active ssh.socket >/dev/null 2>&1; then
-            print_info "Disabling ssh.socket to enable ssh.service..."
-            systemctl disable --now ssh.socket
-        fi
-        SSH_SERVICE="ssh.service"
+        print_warning "SSH daemon running but no standard service detected."
+        SSH_SERVICE="ssh.service"  # Default for Debian
         if ! systemctl enable --now "$SSH_SERVICE" >/dev/null 2>&1; then
             print_error "Failed to enable and start $SSH_SERVICE. Attempting manual start..."
             if ! /usr/sbin/sshd; then
-                print_error "Failed to start SSH daemon manually. Please check openssh-server installation."
+                print_error "Failed to start SSH daemon manually."
                 exit 1
             fi
             print_success "SSH daemon started manually."
@@ -570,10 +570,20 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Check if SSH config needs updating
+    # Use systemd drop-in for port override, preserving Ubuntu's socket activation
     NEW_SSH_CONFIG=$(mktemp)
     tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
-Port $SSH_PORT
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/sshd -D -p $SSH_PORT
+EOF
+    mkdir -p /etc/systemd/system/ssh.service.d
+    mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
+    chmod 644 /etc/systemd/system/ssh.service.d/override.conf
+
+    # Apply additional hardening via sshd_config.d
+    NEW_SSH_CONFIG=$(mktemp)
+    tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -599,32 +609,29 @@ EOF
 EOF
     fi
 
-    print_info "Testing and restarting SSH service..."
-    if sshd -t; then
-        if ! systemctl restart "$SSH_SERVICE"; then
-            print_error "SSH service failed to restart! Reverting changes..."
-            cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-            systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-            exit 1
-        fi
-        # Wait a moment for the service to potentially fail
-        sleep 2
-        if systemctl is-active --quiet "$SSH_SERVICE"; then
-            print_success "SSH service restarted on port $SSH_PORT."
-        else
-            print_error "SSH service failed to start! Reverting changes..."
-            cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-            systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-            exit 1
-        fi
-    else
-        print_error "SSH config test failed! Reverting changes..."
+    print_info "Reloading systemd and restarting SSH service..."
+    systemctl daemon-reload
+    if ! systemctl restart "$SSH_SERVICE"; then
+        print_error "SSH service failed to restart! Reverting changes..."
+        rm -f /etc/systemd/system/ssh.service.d/override.conf
         cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f "$NEW_SSH_CONFIG"
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+        systemctl daemon-reload
+        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
         exit 1
     fi
+    # Wait and verify port binding
+    sleep 5
+    if ! ss -tuln | grep -q ":$SSH_PORT"; then
+        print_error "SSH not listening on port $SSH_PORT after restart! Reverting changes..."
+        rm -f /etc/systemd/system/ssh.service.d/override.conf
+        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+        systemctl daemon-reload
+        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
+        exit 1
+    fi
+    print_success "SSH service restarted on port $SSH_PORT."
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
@@ -638,13 +645,28 @@ EOF
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
     print_info "Use: ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
 
-    if ! confirm "Was the new SSH connection successful?"; then
-        print_error "Aborting. Restoring original SSH configuration."
-        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-        exit 1
-    fi
+    # Retry loop for SSH connection test
+    local retry_count=0
+    local max_retries=3
+    while (( retry_count < max_retries )); do
+        if confirm "Was the new SSH connection successful?"; then
+            break
+        else
+            (( retry_count++ ))
+            if (( retry_count < max_retries )); then
+                print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
+                sleep 5
+            else
+                print_error "Aborting. Restoring original SSH configuration."
+                rm -f /etc/systemd/system/ssh.service.d/override.conf
+                cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+                rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+                systemctl daemon-reload
+                systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
+                exit 1
+            fi
+        fi
+    done
     log "SSH hardening completed."
 }
 
@@ -823,7 +845,6 @@ install_docker() {
     print_info "Configuring Docker daemon..."
     local NEW_DOCKER_CONFIG
     NEW_DOCKER_CONFIG=$(mktemp)
-    # **BUG FIX**: Corrected typo from >¼ to >
     tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
 {
   "log-driver": "json-file",
