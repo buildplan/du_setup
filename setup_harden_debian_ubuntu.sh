@@ -976,8 +976,12 @@ configure_swap() {
             rm -f /swapfile || true
             exit 1
         fi
-	if ! grep -q '^/swapfile ' /etc/fstab; then
+        # Check for existing swap entry in /etc/fstab to prevent duplicates
+        if grep -q '^/swapfile ' /etc/fstab; then
+            print_info "Swap entry already exists in /etc/fstab. Skipping."
+        else
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            print_success "Swap entry added to /etc/fstab."
         fi
         print_success "Swap file created: $SWAP_SIZE"
     fi
@@ -1014,13 +1018,29 @@ configure_swap() {
 vm.swappiness=$SWAPPINESS
 vm.vfs_cache_pressure=$CACHE_PRESSURE
 EOF
+    # Check if sysctl settings are already correct to prevent duplicates
     if [[ -f /etc/sysctl.d/99-swap.conf ]] && cmp -s "$NEW_SWAP_CONFIG" /etc/sysctl.d/99-swap.conf; then
-        print_info "Swap settings already correct. Skipping."
+        print_info "Swap settings already correct in /etc/sysctl.d/99-swap.conf. Skipping."
         rm -f "$NEW_SWAP_CONFIG"
     else
+        # Check for conflicting settings in /etc/sysctl.conf or other sysctl files
+        local sysctl_conflicts=false
+        for file in /etc/sysctl.conf /etc/sysctl.d/*.conf; do
+            if [[ -f "$file" && "$file" != "/etc/sysctl.d/99-swap.conf" ]]; then
+                if grep -E '^(vm\.swappiness|vm\.vfs_cache_pressure)=' "$file" >/dev/null; then
+                    print_warning "Existing swap settings found in $file. Manual review recommended."
+                    sysctl_conflicts=true
+                fi
+            fi
+        done
         mv "$NEW_SWAP_CONFIG" /etc/sysctl.d/99-swap.conf
         chmod 644 /etc/sysctl.d/99-swap.conf
         sysctl -p /etc/sysctl.d/99-swap.conf >/dev/null
+        if [[ $sysctl_conflicts == true ]]; then
+            print_warning "Potential conflicting sysctl settings detected. Verify with 'sysctl -a | grep -E \"vm\.swappiness|vm\.vfs_cache_pressure\"'."
+        else
+            print_success "Swap settings applied to /etc/sysctl.d/99-swap.conf."
+        fi
     fi
     print_success "Swap configured successfully."
     swapon --show | tee -a "$LOG_FILE"
