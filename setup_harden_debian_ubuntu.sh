@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.10 | 2025-06-27
+# Version: 3.11 | 2025-06-27
 # Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
 # Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
 #
@@ -80,7 +80,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.10 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                     v3.11 | 2025-06-27                          ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
 }
@@ -97,7 +97,7 @@ print_success() {
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
+	    echo -e "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_warning() {
@@ -976,17 +976,43 @@ configure_swap() {
             rm -f /swapfile || true
             exit 1
         fi
-        if ! grep -q '^/swapfile ' /etc/fstab; then
+	if ! grep -q '^/swapfile ' /etc/fstab; then
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
         fi
         print_success "Swap file created: $SWAP_SIZE"
     fi
-    print_info "Optimizing swap settings..."
+    print_info "Configuring swap settings..."
+    local SWAPPINESS=10
+    local CACHE_PRESSURE=50
+    if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
+        while true; do
+            read -rp "$(echo -e "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
+            INPUT_SWAPPINESS=${INPUT_SWAPPINESS:-$SWAPPINESS}
+            if [[ "$INPUT_SWAPPINESS" =~ ^[0-9]+$ && "$INPUT_SWAPPINESS" -ge 0 && "$INPUT_SWAPPINESS" -le 100 ]]; then
+                SWAPPINESS=$INPUT_SWAPPINESS
+                break
+            else
+                print_error "Invalid value for vm.swappiness. Must be between 0 and 100."
+            fi
+        done
+        while true; do
+            read -rp "$(echo -e "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
+            INPUT_CACHE_PRESSURE=${INPUT_CACHE_PRESSURE:-$CACHE_PRESSURE}
+            if [[ "$INPUT_CACHE_PRESSURE" =~ ^[0-9]+$ && "$INPUT_CACHE_PRESSURE" -ge 1 && "$INPUT_CACHE_PRESSURE" -le 1000 ]]; then
+                CACHE_PRESSURE=$INPUT_CACHE_PRESSURE
+                break
+            else
+                print_error "Invalid value for vm.vfs_cache_pressure. Must be between 1 and 1000."
+            fi
+        done
+    else
+        print_info "Using default swap settings (vm.swappiness=$SWAPPINESS, vm.vfs_cache_pressure=$CACHE_PRESSURE)."
+    fi
     local NEW_SWAP_CONFIG
     NEW_SWAP_CONFIG=$(mktemp)
     tee "$NEW_SWAP_CONFIG" > /dev/null <<EOF
-vm.swappiness=10
-vm.vfs_cache_pressure=50
+vm.swappiness=$SWAPPINESS
+vm.vfs_cache_pressure=$CACHE_PRESSURE
 EOF
     if [[ -f /etc/sysctl.d/99-swap.conf ]] && cmp -s "$NEW_SWAP_CONFIG" /etc/sysctl.d/99-swap.conf; then
         print_info "Swap settings already correct. Skipping."
