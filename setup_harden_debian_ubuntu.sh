@@ -786,6 +786,12 @@ setup_backup() {
         return 0
     fi
 
+    # Validate USERNAME
+    if [[ -z "${USERNAME:-}" || ! id "$USERNAME" >/dev/null 2>&1 ]]; then
+        print_error "Invalid or unset USERNAME. Please run user setup first."
+        exit 1
+    fi
+
     print_warning "The backup cron job will run as root to ensure access to all files in /home/$USERNAME."
     print_info "This requires copying the root SSH key to the remote server after script completion."
 
@@ -796,18 +802,51 @@ setup_backup() {
         print_info "Generating SSH key for root..."
         mkdir -p "$ROOT_SSH_DIR"
         chmod 700 "$ROOT_SSH_DIR"
-        ssh-keygen -t ed25519 -f "$ROOT_SSH_KEY" -N "" -q
+        ssh-keygen -t ed25519 -f "$ROOT_SSH_KEY" -N "" -q || {
+            print_error "Failed to generate SSH key."
+            exit 1
+        }
         chown -R root:root "$ROOT_SSH_DIR"
         print_success "Root SSH key generated."
     else
         print_info "Root SSH key already exists at $ROOT_SSH_KEY."
     fi
 
+    # Clean up stale backup artifacts from previous runs
+    local BACKUP_SCRIPT="/root/backup.sh"
+    local EXCLUDE_FILE="/root/backup_exclude.txt"
+    local CRON_FILE=$(mktemp)
+    if [[ -f "$BACKUP_SCRIPT" ]]; then
+        print_info "Found existing backup script at $BACKUP_SCRIPT. It will be replaced."
+        rm -f "$BACKUP_SCRIPT" || {
+            print_error "Failed to remove stale backup script."
+            exit 1
+        }
+    fi
+    if [[ -f "$EXCLUDE_FILE" ]]; then
+        print_info "Found existing exclude file مهم at $EXCLUDE_FILE. It will be replaced."
+        rm -f "$EXCLUDE_FILE" || {
+            print_error "Failed to remove stale exclude file."
+            exit 1
+        }
+    fi
+    # Remove existing backup cron job
+    crontab -u root -l > "$CRON_FILE" 2>/dev/null || true
+    if grep -q "$BACKUP_SCRIPT" "$CRON_FILE"; then
+        print_info "Removing existing backup cron job..."
+        sed -i "\|$BACKUP_SCRIPT|d" "$CRON_FILE"
+        crontab -u root "$CRON_FILE" || {
+            print_error "Failed to update crontab."
+            exit 1
+        }
+    fi
+    rm -f "$CRON_FILE"
+
     # Ask for backup destination details with retry logic
     local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_DIR
     local retry_count=0
     local max_retries=3
-    while true; do
+    while [[ $retry_count -lt $max_retries ]]; do
         read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
         BACKUP_DEST=${BACKUP_DEST:-user@host}
         if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
@@ -815,20 +854,34 @@ setup_backup() {
         else
             print_error "Invalid backup destination format. Expected user@host."
             (( retry_count++ ))
-            if [[ $retry_count -lt $max_retries ]]; then
-                print_info "Please try again ($retry_count/$max_retries attempts)."
-            else
-                print_warning "Maximum retries ($max_retries) reached for backup destination."
-                if confirm "Proceed with potentially invalid destination '$BACKUP_DEST'?" "n"; then
-                    print_info "Proceeding with user-provided destination: $BACKUP_DEST"
-                    break
-                else
-                    print_info "Resetting retries. Please enter a valid backup destination."
-                    retry_count=0
-                fi
-            fi
+            print_info "Please try again ($retry_count/$max_retries attempts)."
         fi
     done
+    # If max retries reached, ask for confirmation
+    if [[ $retry_count -ge $max_retries && ! "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
+        if confirm "Proceed with potentially invalid destination '$BACKUP_DEST'?" "n"; then
+            print_info "Proceeding with user-provided destination: $BACKUP_DEST"
+        else
+            print_info "Resetting retries. Please enter a valid backup destination."
+            retry_count=0
+            while [[ $retry_count -lt $max_retries ]]; do
+                read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
+                BACKUP_DEST=${BACKUP_DEST:-user@host}
+                if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
+                    break
+                else
+                    print_error "Invalid backup destination format. Expected user@host."
+                    (( retry_count++ ))
+                    print_info "Please try again ($retry_count/$max_retries attempts)."
+                fi
+            done
+            # Final check after retry
+            if [[ ! "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
+                print_error "Invalid backup destination format after retries. Exiting."
+                exit 1
+            fi
+        fi
+    fi
     read -rp "$(echo -e "${CYAN}Enter SSH port for backup destination [22]: ${NC}")" BACKUP_PORT
     read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/myvps_backup/): ${NC}")" REMOTE_BACKUP_DIR
     BACKUP_PORT=${BACKUP_PORT:-22}
@@ -878,7 +931,6 @@ setup_backup() {
     fi
 
     # Create exclude file
-    local EXCLUDE_FILE="/root/backup_exclude.txt"
     print_info "Creating rsync exclude file at $EXCLUDE_FILE..."
     cat > "$EXCLUDE_FILE" <<EOF
 .ansible/
@@ -906,7 +958,10 @@ EOF
             echo "$item" >> "$EXCLUDE_FILE"
         done
     fi
-    chmod 600 "$EXCLUDE_FILE"
+    chmod 600 "$EXCLUDE_FILE" || {
+        print_error "Failed to set permissions on exclude file."
+        exit 1
+    }
     print_success "Rsync exclude file created."
 
     # Ask for cron schedule
@@ -947,7 +1002,6 @@ EOF
     fi
 
     # Create backup script
-    local BACKUP_SCRIPT="/root/backup.sh"
     print_info "Creating backup script at $BACKUP_SCRIPT..."
     cat > "$BACKUP_SCRIPT" <<EOF
 #!/bin/bash
@@ -1090,19 +1144,25 @@ else
 fi
 echo "[$("$DATE_CMD" '+%Y-%m-%d %H:%M:%S')] Run Finished" >> "$LOG_FILE"
 EOF
-    chmod 700 "$BACKUP_SCRIPT"
+    chmod 700 "$BACKUP_SCRIPT" || {
+        print_error "Failed to set permissions on backup script."
+        exit 1
+    }
     print_success "Backup script created at $BACKUP_SCRIPT."
 
     # Add to crontab
     print_info "Adding cron job for root..."
-    local CRON_FILE=$(mktemp)
+    CRON_FILE=$(mktemp)
     crontab -u root -l > "$CRON_FILE" 2>/dev/null || true
     if grep -q "$BACKUP_SCRIPT" "$CRON_FILE"; then
         print_info "Cron job for $BACKUP_SCRIPT already exists. Updating schedule..."
         sed -i "\|$BACKUP_SCRIPT|d" "$CRON_FILE"
     fi
     echo "$CRON_SCHEDULE $BACKUP_SCRIPT" >> "$CRON_FILE"
-    crontab -u root "$CRON_FILE"
+    crontab -u root "$CRON_FILE" || {
+        print_error "Failed to update crontab."
+        exit 1
+    }
     rm -f "$CRON_FILE"
     print_success "Cron job added for root: $CRON_SCHEDULE $BACKUP_SCRIPT"
     log "Backup configuration completed."
