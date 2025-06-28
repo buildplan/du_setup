@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.1 | 2025-06-28
+# Version: 4.2 | 2025-06-28
 # Changelog:
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
@@ -82,7 +82,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.1 | 2025-06-28                           ║${NC}"
+    echo -e "${CYAN}║                     v4.2 | 2025-06-28                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -977,23 +977,38 @@ install_tailscale() {
         echo -e "${CYAN}  $TS_COMMAND${NC}"
         log "Tailscale connection failed: $TS_COMMAND"
     else
-        print_success "Tailscale connected successfully."
-        log "Tailscale connected: $TS_COMMAND"
+        # Verify connection status
+        if tailscale status --json 2>/dev/null | grep -q '"Online":true.*"Active":true'; then
+            print_success "Tailscale connected successfully."
+            log "Tailscale connected: $TS_COMMAND"
+        else
+            print_warning "Tailscale connection attempt succeeded, but node is not online or active."
+            print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+            echo -e "${CYAN}  $TS_COMMAND${NC}"
+            log "Tailscale connection not verified: $TS_COMMAND"
+        fi
     fi
 
     # --- Configure Additional Flags ---
-    if confirm "Configure additional Tailscale options (SSH, exit node, DNS, routes)?"; then
-        local TS_FLAGS=""
-        if confirm "Enable Tailscale SSH (--ssh)?"; then
+    print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
+    echo -e "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
+    echo -e "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
+    echo -e "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
+    echo -e "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
+    echo -e "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
+    read -rp "  " TS_FLAG_CHOICES
+    local TS_FLAGS=""
+    if [[ -n "$TS_FLAG_CHOICES" ]]; then
+        if echo "$TS_FLAG_CHOICES" | grep -q "1"; then
             TS_FLAGS="$TS_FLAGS --ssh"
         fi
-        if confirm "Advertise as an exit node (--advertise-exit-node)?"; then
+        if echo "$TS_FLAG_CHOICES" | grep -q "2"; then
             TS_FLAGS="$TS_FLAGS --advertise-exit-node"
         fi
-        if confirm "Accept Tailscale DNS settings (--accept-dns)?"; then
+        if echo "$TS_FLAG_CHOICES" | grep -q "3"; then
             TS_FLAGS="$TS_FLAGS --accept-dns"
         fi
-        if confirm "Accept advertised routes (--accept-routes)?"; then
+        if echo "$TS_FLAG_CHOICES" | grep -q "4"; then
             TS_FLAGS="$TS_FLAGS --accept-routes"
         fi
         if [[ -n "$TS_FLAGS" ]]; then
@@ -1009,13 +1024,24 @@ install_tailscale() {
                 echo -e "${CYAN}  $TS_COMMAND${NC}"
                 log "Tailscale reconfiguration failed: $TS_COMMAND"
             else
-                print_success "Tailscale reconfigured with additional options."
-                log "Tailscale reconfigured: $TS_COMMAND"
+                # Verify reconfiguration status
+                if tailscale status --json 2>/dev/null | grep -q '"Online":true.*"Active":true'; then
+                    print_success "Tailscale reconfigured with additional options."
+                    log "Tailscale reconfigured: $TS_COMMAND"
+                else
+                    print_warning "Tailscale reconfiguration attempt succeeded, but node is not online or active."
+                    print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+                    echo -e "${CYAN}  $TS_COMMAND${NC}"
+                    log "Tailscale reconfiguration not verified: $TS_COMMAND"
+                fi
             fi
         else
-            print_info "No additional Tailscale options selected."
-            log "No additional Tailscale options applied."
+            print_info "No valid Tailscale options selected."
+            log "No valid Tailscale options selected."
         fi
+    else
+        print_info "No additional Tailscale options selected."
+        log "No additional Tailscale options applied."
     fi
     print_success "Tailscale setup complete."
     print_info "Verify status: tailscale status"
