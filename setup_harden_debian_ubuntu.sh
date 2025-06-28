@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4-rc | 2025-06-28
+# Version: 4-rc1 | 2025-06-28
 # Changelog:
-# - v4.1: Generalized backup configuration to support any rsync-compatible SSH destination, renamed setup_hetzner_backup to setup_backup.
+# - v4.0: Generalized backup configuration to support any rsync-compatible SSH destination, renamed setup_hetzner_backup to setup_backup.
 # - v4.0: Added Hetzner Storage Box backup configuration with root SSH key automation, cron job scheduling, ntfy/Discord notifications, and exclude file defaults.
 # - v4.0: Enhanced generate_summary to include backup details (script path, cron schedule, notifications).
 # - v4.0: Tested on Debian 12, Ubuntu 20.04, 22.04, 24.04, and 24.10 (experimental) at DigitalOcean, Oracle Cloud, Netcup, Hetzner, and local VMs.
@@ -83,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4-rc | 2025-06-28                          ║${NC}"
+    echo -e "${CYAN}║                     v4-rc1 | 2025-06-28                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -967,7 +967,7 @@ setup_backup() {
     fi
 
     # --- Collect Backup Destination Details ---
-    local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH
+    local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH SSH_COPY_ID_FLAGS=""
     read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
     read -rp "$(echo -e "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
     read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
@@ -988,6 +988,12 @@ setup_backup() {
     fi
     print_info "Backup target set to: ${BACKUP_DEST}:${REMOTE_BACKUP_PATH} on port ${BACKUP_PORT}"
 
+    # --- FIX: Hetzner Specific Handling ---
+    if confirm "Is this backup destination a Hetzner Storage Box (requires special handling)?"; then
+        SSH_COPY_ID_FLAGS="-s" # Add the -s flag required by Hetzner
+        print_info "Hetzner Storage Box mode enabled. Using '-s' for ssh-copy-id."
+    fi
+
     # --- Handle SSH Key Copy ---
     echo -e "${CYAN}Choose how to copy the root SSH key:${NC}"
     echo -e "  1) Automate with password (requires sshpass, less secure)"
@@ -1005,7 +1011,7 @@ setup_backup() {
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
             read -sp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD
             echo
-            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" "$BACKUP_DEST" 2>/dev/null; then
+            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" $SSH_COPY_ID_FLAGS "$BACKUP_DEST"; then
                 print_success "SSH key copied successfully."
             else
                 print_error "Automated SSH key copy failed. Please copy manually."
@@ -1020,19 +1026,25 @@ setup_backup() {
         cat "${ROOT_SSH_KEY}.pub"
         echo
         echo -e "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
-        echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" \"${BACKUP_DEST}\"${NC}"
+        echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"
         echo
     fi
 
     # --- Test SSH Connection ---
     if confirm "Test SSH connection to the backup destination (recommended)?"; then
         print_info "Testing connection (timeout: 10 seconds)..."
-        if ! ssh -p "$BACKUP_PORT" -o BatchMode=yes -o ConnectTimeout=10 "$BACKUP_DEST" true 2>/dev/null; then
-            print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
-            print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" \"$BACKUP_DEST\""
-            print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
-        else
+        # For Hetzner, test with sftp. For others, test with ssh.
+        local test_command="ssh -p \"$BACKUP_PORT\" -o BatchMode=yes -o ConnectTimeout=10 \"$BACKUP_DEST\" true"
+        if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+            test_command="echo 'exit' | sftp -P \"$BACKUP_PORT\" -o BatchMode=no -o ConnectTimeout=10 \"$BACKUP_DEST\""
+        fi
+
+        if eval "$test_command" 2>/dev/null; then
             print_success "SSH connection to backup destination successful!"
+        else
+            print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
+            print_info "  - Copy key command was: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
+            print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
         fi
     fi
 
@@ -1052,7 +1064,6 @@ node_modules/
 .wget-hsts
 EOF
     if confirm "Add more directories/files to the exclude list?"; then
-        # Use read -a to handle spaces in paths correctly
         read -rp "$(echo -e "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
         for item in "${extra_excludes[@]}"; do
             echo "$item" >> "$EXCLUDE_FILE_PATH"
@@ -1118,7 +1129,6 @@ NTFY_TOKEN="${NTFY_TOKEN}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK}"
 EOF
 
-    # Use a quoted heredoc to write the script logic literally, preventing variable expansion
     tee -a "$BACKUP_SCRIPT_PATH" > /dev/null <<'EOF'
 
 # --- SCRIPT LOGIC ---
@@ -1141,7 +1151,6 @@ send_notification() {
              ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
              -d "$message" "$NTFY_URL" > /dev/null 2>&1
     elif [[ "$NOTIFICATION_SETUP" == "discord" ]]; then
-        # Escape JSON special characters in the message
         local escaped_message
         escaped_message=$(echo "$message" | sed 's/"/\\"/g' | sed 's/\\/\\\\/g' | sed ':a;N;$!ba;s/\n/\\n/g')
         local json_payload
@@ -1151,7 +1160,6 @@ send_notification() {
 }
 
 # --- DEPENDENCY CHECKS ---
-# Corrected dependency check loop
 for cmd in rsync curl numfmt awk flock; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "FATAL: Required command '$cmd' not found. Please install it." >> "$LOG_FILE"
@@ -1174,7 +1182,6 @@ fi
 echo "--- Starting Backup at $(date) ---" >> "$LOG_FILE"
 
 # Run rsync
-# The '-R' option preserves the full path from the source
 rsync_output=$(rsync -avzR --delete --stats --exclude-from="$EXCLUDE_FILE" \
     -e "ssh -p $SSH_PORT" "$LOCAL_DIR" "${REMOTE_DEST}:${REMOTE_PATH}" 2>&1)
 
@@ -1184,7 +1191,7 @@ echo "$rsync_output" >> "$LOG_FILE"
 # Check status and send notification
 if [[ $rsync_exit_code -eq 0 ]]; then
     data_transferred=$(echo "$rsync_output" | grep 'Total transferred file size' | awk '{print $5}' | sed 's/,//g')
-    human_readable=$(numfmt --to=iec-i --suffix=B --format="%.2f" "$data_transferred")
+    human_readable=$(numfmt --to=iec-i --suffix=B --format="%.2f" "$data_transferred" 2>/dev/null || echo "0 B")
     message="Backup completed successfully.\\nData Transferred: ${human_readable}"
     send_notification "SUCCESS" "$message"
     echo "--- Backup SUCCEEDED at $(date) ---" >> "$LOG_FILE"
@@ -1200,8 +1207,8 @@ EOF
 
     # --- Configure Cron Job ---
     print_info "Configuring root cron job..."
-    # This robustly removes the old job (if any) and adds the new one
-    (crontab -u root -l 2>/dev/null | grep -v "$CRON_MARKER"; echo "$CRON_SCHEDULE $BACKUP_SCRIPT_PATH $CRON_MARKER") | crontab -u root -
+    # FIX: Make crontab -l command safe for set -e
+    (crontab -u root -l 2>/dev/null || true | grep -v "$CRON_MARKER"; echo "$CRON_SCHEDULE $BACKUP_SCRIPT_PATH $CRON_MARKER") | crontab -u root -
 
     print_success "Backup cron job scheduled: $CRON_SCHEDULE"
     log "Backup configuration completed."
