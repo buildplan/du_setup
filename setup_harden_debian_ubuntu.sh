@@ -1,21 +1,20 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4-rc4 | 2025-06-28
+# Version: 4.0 | 2025-06-28
 # Changelog:
-# - v4.0: Generalized backup configuration to support any rsync-compatible SSH destination, renamed setup_hetzner_backup to setup_backup.
-# - v4.0: Added Hetzner Storage Box backup configuration with root SSH key automation, cron job scheduling, ntfy/Discord notifications, and exclude file defaults.
-# - v4.0: Enhanced generate_summary to include backup details (script path, cron schedule, notifications).
-# - v4.0: Tested on Debian 12, Ubuntu 20.04, 22.04, 24.04, and 24.10 (experimental) at DigitalOcean, Oracle Cloud, Netcup, Hetzner, and local VMs.
+# - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
+# - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
 #
 # Description:
 # This script provisions and hardens a fresh Debian 12 or Ubuntu server with essential security
 # configurations, user management, SSH hardening, firewall setup, and optional features
-# like Docker and Tailscale. It is designed to be idempotent, safe, and suitable for
-# production environments.
+# like Docker and Tailscale and automated backups to Hetzner storage box or any rsync location.
+# It is designed to be idempotent, safe.
+# README at GitHub: https://github.com/buildplan/setup_harden_server
 #
 # Prerequisites:
-# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./setup_harden_debian_ubuntu.sh).
+# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./setup_harden_debian_ubuntu.sh or run as root ./setup_harden_debian_ubuntu.sh).
 # - Internet connectivity is required for package installation.
 #
 # Usage:
@@ -24,7 +23,7 @@
 #   Run it: sudo ./setup_harden_debian_ubuntu.sh [--quiet]
 #
 # Options:
-#   --quiet: Suppress non-critical output for automation.
+#   --quiet: Suppress non-critical output for automation. (Not recommended always best to review all the options)
 #
 # Notes:
 # - The script creates a log file in /var/log/setup_harden_debian_ubuntu_*.log.
@@ -83,7 +82,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4-rc4 | 2025-06-28                         ║${NC}"
+    echo -e "${CYAN}║                     v4.0 | 2025-06-28                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1436,12 +1435,12 @@ generate_summary() {
             NOTIFICATION_STATUS="Discord"
         fi
         echo -e "  Remote Backup: Enabled"
-        echo -e "    - Backup Script:  /root/run_backup.sh"
-        echo -e "    - Destination:    $BACKUP_DEST"
-        echo -e "    - SSH Port:       $BACKUP_PORT"
-        echo -e "    - Remote Path:    $REMOTE_BACKUP_PATH"
-        echo -e "    - Cron Schedule:  $CRON_SCHEDULE"
-        echo -e "    - Notifications:  $NOTIFICATION_STATUS"
+        echo -e "    - Backup Script:	/root/run_backup.sh"
+        echo -e "    - Destination:	$BACKUP_DEST"
+        echo -e "    - SSH Port:	$BACKUP_PORT"
+        echo -e "    - Remote Path:	$REMOTE_BACKUP_PATH"
+        echo -e "    - Cron Schedule:	$CRON_SCHEDULE"
+        echo -e "    - Notifications:	$NOTIFICATION_STATUS"
     else
         echo -e "  Remote Backup: Not configured"
     fi
@@ -1450,30 +1449,30 @@ generate_summary() {
     echo -e "${PURPLE}Backups:  ${BACKUP_DIR}${NC}"
     echo
     echo -e "${CYAN}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:         ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
-    echo -e "  - Firewall rules:     sudo ufw status verbose"
-    echo -e "  - Time sync:          chronyc tracking"
-    echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
-    echo -e "  - Swap status:        sudo swapon --show && free -h"
-    echo -e "  - Hostname:          hostnamectl"
+    echo -e "  - SSH access:		ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    echo -e "  - Firewall rules:	sudo ufw status verbose"
+    echo -e "  - Time sync:		chronyc tracking"
+    echo -e "  - Fail2Ban status:	sudo fail2ban-client status sshd"
+    echo -e "  - Swap status:		sudo swapon --show && free -h"
+    echo -e "  - Hostname:		hostnamectl"
     if command -v docker >/dev/null 2>&1; then
-        echo -e "  - Docker status:      docker ps"
+        echo -e "  - Docker status:	docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        echo -e "  - Tailscale status:   tailscale status"
+        echo -e "  - Tailscale status:	tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  - Remote Backup:"
-        echo -e "    - Verify SSH key:   cat /root/.ssh/id_ed25519.pub"
-        echo -e "    - Copy key if needed: ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
-        echo -e "    - Test backup:       sudo /root/run_backup.sh"
-        echo -e "    - Check logs:        sudo less /var/log/backup_rsync.log"
+        echo -e "    - Verify SSH key:		cat /root/.ssh/id_ed25519.pub"
+        echo -e "    - Copy key if needed:	ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
+        echo -e "    - Test backup:		sudo /root/run_backup.sh"
+        echo -e "    - Check logs:		sudo less /var/log/backup_rsync.log"
     fi
     print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting now..."
+            print_info "Rebooting now, Bye!..."
             sleep 3
             reboot
         else
