@@ -162,6 +162,11 @@ validate_port() {
     [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]]
 }
 
+validate_backup_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
+}
+
 validate_ssh_key() {
     local key="$1"
     [[ -n "$key" && "$key" =~ ^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519)\  ]]
@@ -773,6 +778,20 @@ configure_firewall() {
     log "Firewall configuration completed."
 }
 
+# --- Previous lines of setup_harden_debian_ubuntu.sh unchanged ---
+
+# --- VALIDATION FUNCTIONS (updated) ---
+
+validate_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]]
+}
+
+validate_backup_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
+}
+
 setup_backup() {
     print_section "Backup Configuration (rsync over SSH)"
 
@@ -828,8 +847,8 @@ setup_backup() {
     read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/myvps_backup/): ${NC}")" REMOTE_BACKUP_DIR
     BACKUP_PORT=${BACKUP_PORT:-22}
     REMOTE_BACKUP_DIR=${REMOTE_BACKUP_DIR:-/home/backup/}
-    if ! validate_port "$BACKUP_PORT"; then
-        print_error "Invalid SSH port. Must be between 1024 and 65535."
+    if ! validate_backup_port "$BACKUP_PORT"; then
+        print_error "Invalid SSH port. Must be between 1 and 65535."
         exit 1
     fi
     if [[ ! "$REMOTE_BACKUP_DIR" =~ ^/[^[:space:]]*/$ ]]; then
@@ -837,7 +856,6 @@ setup_backup() {
         exit 1
     fi
 
-    # --- Remainder of setup_backup function unchanged ---
     # Optional SSH key copy attempt
     if confirm "Attempt to copy SSH key to the backup destination now? (Requires password)"; then
         if ssh-copy-id -p "$BACKUP_PORT" -s "$BACKUP_DEST" 2>/dev/null; then
