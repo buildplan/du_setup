@@ -1004,42 +1004,34 @@ setup_backup() {
     local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_DIR
     local retry_count=0
     local max_retries=3
-    while [[ $retry_count -lt $max_retries ]]; do
-        read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
-        BACKUP_DEST=${BACKUP_DEST:-user@host}
+    while true; do
+        if ! read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de, or press Enter to skip): ${NC}")" BACKUP_DEST; then
+            print_error "Failed to read backup destination input."
+            continue
+        fi
+        if [[ -z "$BACKUP_DEST" ]]; then
+            print_info "Backup destination not provided. Skipping backup configuration."
+            return 0
+        fi
         if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
             break
         else
             print_error "Invalid backup destination format. Expected user@host."
             (( retry_count++ ))
-            print_info "Please try again ($retry_count/$max_retries attempts)."
-        fi
-    done
-    # If max retries reached, ask for confirmation
-    if [[ $retry_count -ge $max_retries && ! "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
-        if confirm "Proceed with potentially invalid destination '$BACKUP_DEST'?" "n"; then
-            print_info "Proceeding with user-provided destination: $BACKUP_DEST"
-        else
-            print_info "Resetting retries. Please enter a valid backup destination."
-            retry_count=0
-            while [[ $retry_count -lt $max_retries ]]; do
-                read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
-                BACKUP_DEST=${BACKUP_DEST:-user@host}
-                if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
-                    break
+            if [[ $retry_count -lt $max_retries ]]; then
+                print_info "Please try again ($retry_count/$max_retries attempts)."
+            else
+                if confirm "Retry again or skip backup configuration?" "y"; then
+                    retry_count=0
+                    print_info "Resetting retries. Please enter a valid backup destination."
                 else
-                    print_error "Invalid backup destination format. Expected user@host."
-                    (( retry_count++ ))
-                    print_info "Please try again ($retry_count/$max_retries attempts)."
+                    print_info "Skipping backup configuration."
+                    return 0
                 fi
-            done
-            # Final check after retry
-            if [[ ! "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
-                print_error "Invalid backup destination format after retries. Exiting."
-                exit 1
             fi
         fi
-    fi
+    done
+
     read -rp "$(echo -e "${CYAN}Enter SSH port for backup destination [22]: ${NC}")" BACKUP_PORT
     read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/myvps_backup/): ${NC}")" REMOTE_BACKUP_DIR
     BACKUP_PORT=${BACKUP_PORT:-22}
