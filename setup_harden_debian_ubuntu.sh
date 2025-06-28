@@ -1416,13 +1416,12 @@ generate_summary() {
             print_error "Service tailscaled is NOT active."
         fi
     fi
-    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}"
-    echo
+    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
     echo -e "${YELLOW}Configuration Summary:${NC}"
-    echo -e "  Admin User:   $USERNAME"
-    echo -e "  Hostname:     $SERVER_NAME"
-    echo -e "  SSH Port:     $SSH_PORT"
-    echo -e "  Server IP:    $SERVER_IP"
+    printf "  %-16s%s\n" "Admin User:" "$USERNAME"
+    printf "  %-16s%s\n" "Hostname:" "$SERVER_NAME"
+    printf "  %-16s%s\n" "SSH Port:" "$SSH_PORT"
+    printf "  %-16s%s\n" "Server IP:" "$SERVER_IP"
     if [[ -f /root/run_backup.sh ]]; then
         local CRON_SCHEDULE=$(crontab -u root -l 2>/dev/null | grep -F "/root/run_backup.sh" | awk '{print $1, $2, $3, $4, $5}' || echo "Not configured")
         local NOTIFICATION_STATUS="None"
@@ -1434,45 +1433,45 @@ generate_summary() {
         elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
             NOTIFICATION_STATUS="Discord"
         fi
-        echo -e "  Remote Backup: Enabled"
-        echo -e "    - Backup Script:	/root/run_backup.sh"
-        echo -e "    - Destination:	$BACKUP_DEST"
-        echo -e "    - SSH Port:	$BACKUP_PORT"
-        echo -e "    - Remote Path:	$REMOTE_BACKUP_PATH"
-        echo -e "    - Cron Schedule:	$CRON_SCHEDULE"
-        echo -e "    - Notifications:	$NOTIFICATION_STATUS"
+        echo -e "  Remote Backup:   ${GREEN}Enabled${NC}"
+        printf "    %-16s%s\n" "- Backup Script:" "/root/run_backup.sh"
+        printf "    %-16s%s\n" "- Destination:" "$BACKUP_DEST"
+        printf "    %-16s%s\n" "- SSH Port:" "$BACKUP_PORT"
+        printf "    %-16s%s\n" "- Remote Path:" "$REMOTE_BACKUP_PATH"
+        printf "    %-16s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
+        printf "    %-16s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
     else
-        echo -e "  Remote Backup: Not configured"
+        echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
     echo
-    echo -e "${PURPLE}Log File: ${LOG_FILE}${NC}"
-    echo -e "${PURPLE}Backups:  ${BACKUP_DIR}${NC}"
+    printf "${PURPLE}%-16s%s${NC}\n" "Log File:" "$LOG_FILE"
+    printf "${PURPLE}%-16s%s${NC}\n" "Backups:" "$BACKUP_DIR"
     echo
-    echo -e "${CYAN}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:		ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
-    echo -e "  - Firewall rules:	sudo ufw status verbose"
-    echo -e "  - Time sync:		chronyc tracking"
-    echo -e "  - Fail2Ban status:	sudo fail2ban-client status sshd"
-    echo -e "  - Swap status:		sudo swapon --show && free -h"
-    echo -e "  - Hostname:		hostnamectl"
+    echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
+    printf "  %-20s${CYAN}%s${NC}\n" "- SSH access:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban status:" "sudo fail2ban-client status sshd"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Hostname:" "hostnamectl"
     if command -v docker >/dev/null 2>&1; then
-        echo -e "  - Docker status:	docker ps"
+        printf "  %-20s${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        echo -e "  - Tailscale status:	tailscale status"
+        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
-        echo -e "  - Remote Backup:"
-        echo -e "    - Verify SSH key:		cat /root/.ssh/id_ed25519.pub"
-        echo -e "    - Copy key if needed:	ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
-        echo -e "    - Test backup:		sudo /root/run_backup.sh"
-        echo -e "    - Check logs:		sudo less /var/log/backup_rsync.log"
+        echo -e "  Remote Backup:"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Verify SSH key:" "cat /root/.ssh/id_ed25519.pub"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Copy key if needed:" "ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less /var/log/backup_rsync.log"
     fi
     print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting now, Bye!..."
+            print_info "Rebooting ..."
             sleep 3
             reboot
         else
