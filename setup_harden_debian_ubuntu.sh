@@ -778,6 +778,160 @@ configure_firewall() {
     log "Firewall configuration completed."
 }
 
+configure_fail2ban() {
+    print_section "Fail2Ban Configuration"
+
+    # Set the SSH port for Fail2Ban to monitor.
+    local SSH_PORTS_TO_MONITOR="$SSH_PORT"
+    local NEW_FAIL2BAN_CONFIG
+
+    NEW_FAIL2BAN_CONFIG=$(mktemp)
+    tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 3
+backend = auto
+[sshd]
+enabled = true
+port = $SSH_PORTS_TO_MONITOR
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+EOF
+    if [[ -f /etc/fail2ban/jail.local ]] && cmp -s "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local; then
+        print_info "Fail2Ban configuration already correct. Skipping."
+        rm -f "$NEW_FAIL2BAN_CONFIG"
+    elif [[ -f /etc/fail2ban/jail.local ]] && grep -q "\[sshd\]" /etc/fail2ban/jail.local; then
+        print_info "Fail2Ban jail.local exists. Updating SSH port..."
+        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS_TO_MONITOR/" /etc/fail2ban/jail.local
+        rm -f "$NEW_FAIL2BAN_CONFIG"
+    else
+        print_info "Creating Fail2Ban local jail configuration..."
+        mv "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local
+        chmod 644 /etc/fail2ban/jail.local
+    fi
+    print_info "Enabling and restarting Fail2Ban..."
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+    sleep 2
+    if systemctl is-active --quiet fail2ban; then
+        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS_TO_MONITOR."
+        fail2ban-client status sshd | tee -a "$LOG_FILE"
+    else
+        print_error "Fail2Ban service failed to start."
+        exit 1
+    fi
+    log "Fail2Ban configuration completed."
+}
+
+configure_auto_updates() {
+    print_section "Automatic Security Updates"
+    if confirm "Enable automatic security updates via unattended-upgrades?"; then
+        if ! dpkg -l unattended-upgrades | grep -q ^ii; then
+            print_error "unattended-upgrades package is not installed."
+            exit 1
+        fi
+        print_info "Configuring unattended upgrades..."
+        echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
+        DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive unattended-upgrades
+        print_success "Automatic security updates enabled."
+    else
+        print_info "Skipping automatic security updates."
+    fi
+    log "Automatic updates configuration completed."
+}
+
+install_docker() {
+    if ! confirm "Install Docker Engine (Optional)?"; then
+        print_info "Skipping Docker installation."
+        return 0
+    fi
+    print_section "Docker Installation"
+    if command -v docker >/dev/null 2>&1; then
+        print_info "Docker already installed."
+        return 0
+    fi
+    print_info "Removing old container runtimes..."
+    apt-get remove -y -qq docker docker-engine docker.io containerd runc 2>/dev/null || true
+    print_info "Adding Docker's official GPG key and repository..."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/${ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+    print_info "Installing Docker packages..."
+    if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+        print_error "Failed to install Docker packages."
+        exit 1
+    fi
+    print_info "Adding '$USERNAME' to docker group..."
+    getent group docker >/dev/null || groupadd docker
+    if ! groups "$USERNAME" | grep -qw docker; then
+        usermod -aG docker "$USERNAME"
+        print_success "User '$USERNAME' added to docker group."
+    else
+        print_info "User '$USERNAME' is already in docker group."
+    fi
+    print_info "Configuring Docker daemon..."
+    local NEW_DOCKER_CONFIG
+    NEW_DOCKER_CONFIG=$(mktemp)
+    tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "live-restore": true
+}
+EOF
+    mkdir -p /etc/docker
+    if [[ -f /etc/docker/daemon.json ]] && cmp -s "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json; then
+        print_info "Docker daemon configuration already correct. Skipping."
+        rm -f "$NEW_DOCKER_CONFIG"
+    else
+        mv "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json
+        chmod 644 /etc/docker/daemon.json
+    fi
+    systemctl daemon-reload
+    systemctl enable --now docker
+    print_info "Running Docker sanity check..."
+    if sudo -u "$USERNAME" docker run --rm hello-world 2>&1 | tee -a "$LOG_FILE" | grep -q "Hello from Docker"; then
+        print_success "Docker sanity check passed."
+    else
+        print_error "Docker hello-world test failed. Please verify installation."
+        exit 1
+    fi
+    print_warning "NOTE: '$USERNAME' must log out and back in to use Docker without sudo."
+    log "Docker installation completed."
+}
+
+install_tailscale() {
+    if ! confirm "Install Tailscale VPN (Optional)?"; then
+        print_info "Skipping Tailscale installation."
+        return 0
+    fi
+    print_section "Tailscale VPN Installation"
+    if command -v tailscale >/dev/null 2>&1; then
+        print_info "Tailscale already installed."
+        return 0
+    fi
+    print_info "Installing Tailscale..."
+    curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
+    chmod +x /tmp/tailscale_install.sh
+    # Simple sanity check on the downloaded script
+    if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
+        print_error "Downloaded Tailscale install script appears invalid."
+        rm -f /tmp/tailscale_install.sh
+        exit 1
+    fi
+    if ! /tmp/tailscale_install.sh; then
+        print_error "Failed to install Tailscale."
+        rm -f /tmp/tailscale_install.sh
+        exit 1
+    fi
+    rm -f /tmp/tailscale_install.sh
+    print_warning "ACTION REQUIRED: Run 'sudo tailscale up' after script finishes."
+    print_success "Tailscale installation complete."
+    log "Tailscale installation completed."
+}
+
 setup_backup() {
     print_section "Backup Configuration (rsync over SSH)"
 
@@ -787,8 +941,12 @@ setup_backup() {
     fi
 
     # Validate USERNAME
-    if [[ -z "${USERNAME:-}" || ! id "$USERNAME" >/dev/null 2>&1 ]]; then
-        print_error "Invalid or unset USERNAME. Please run user setup first."
+    if [[ -z "$USERNAME" ]]; then
+        print_error "USERNAME is not set. Please run user setup first."
+        exit 1
+    fi
+    if ! id "$USERNAME" >/dev/null 2>&1; then
+        print_error "Invalid USERNAME '$USERNAME'. User does not exist. Please run user setup first."
         exit 1
     fi
 
@@ -824,7 +982,7 @@ setup_backup() {
         }
     fi
     if [[ -f "$EXCLUDE_FILE" ]]; then
-        print_info "Found existing exclude file مهم at $EXCLUDE_FILE. It will be replaced."
+        print_info "Found existing exclude file at $EXCLUDE_FILE. It will be replaced."
         rm -f "$EXCLUDE_FILE" || {
             print_error "Failed to remove stale exclude file."
             exit 1
@@ -1166,160 +1324,6 @@ EOF
     rm -f "$CRON_FILE"
     print_success "Cron job added for root: $CRON_SCHEDULE $BACKUP_SCRIPT"
     log "Backup configuration completed."
-}
-
-configure_fail2ban() {
-    print_section "Fail2Ban Configuration"
-
-    # Set the SSH port for Fail2Ban to monitor.
-    local SSH_PORTS_TO_MONITOR="$SSH_PORT"
-    local NEW_FAIL2BAN_CONFIG
-
-    NEW_FAIL2BAN_CONFIG=$(mktemp)
-    tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 3
-backend = auto
-[sshd]
-enabled = true
-port = $SSH_PORTS_TO_MONITOR
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
-EOF
-    if [[ -f /etc/fail2ban/jail.local ]] && cmp -s "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban configuration already correct. Skipping."
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    elif [[ -f /etc/fail2ban/jail.local ]] && grep -q "\[sshd\]" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban jail.local exists. Updating SSH port..."
-        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS_TO_MONITOR/" /etc/fail2ban/jail.local
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    else
-        print_info "Creating Fail2Ban local jail configuration..."
-        mv "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local
-        chmod 644 /etc/fail2ban/jail.local
-    fi
-    print_info "Enabling and restarting Fail2Ban..."
-    systemctl enable fail2ban
-    systemctl restart fail2ban
-    sleep 2
-    if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS_TO_MONITOR."
-        fail2ban-client status sshd | tee -a "$LOG_FILE"
-    else
-        print_error "Fail2Ban service failed to start."
-        exit 1
-    fi
-    log "Fail2Ban configuration completed."
-}
-
-configure_auto_updates() {
-    print_section "Automatic Security Updates"
-    if confirm "Enable automatic security updates via unattended-upgrades?"; then
-        if ! dpkg -l unattended-upgrades | grep -q ^ii; then
-            print_error "unattended-upgrades package is not installed."
-            exit 1
-        fi
-        print_info "Configuring unattended upgrades..."
-        echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
-        DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive unattended-upgrades
-        print_success "Automatic security updates enabled."
-    else
-        print_info "Skipping automatic security updates."
-    fi
-    log "Automatic updates configuration completed."
-}
-
-install_docker() {
-    if ! confirm "Install Docker Engine (Optional)?"; then
-        print_info "Skipping Docker installation."
-        return 0
-    fi
-    print_section "Docker Installation"
-    if command -v docker >/dev/null 2>&1; then
-        print_info "Docker already installed."
-        return 0
-    fi
-    print_info "Removing old container runtimes..."
-    apt-get remove -y -qq docker docker-engine docker.io containerd runc 2>/dev/null || true
-    print_info "Adding Docker's official GPG key and repository..."
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/${ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-    print_info "Installing Docker packages..."
-    if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-        print_error "Failed to install Docker packages."
-        exit 1
-    fi
-    print_info "Adding '$USERNAME' to docker group..."
-    getent group docker >/dev/null || groupadd docker
-    if ! groups "$USERNAME" | grep -qw docker; then
-        usermod -aG docker "$USERNAME"
-        print_success "User '$USERNAME' added to docker group."
-    else
-        print_info "User '$USERNAME' is already in docker group."
-    fi
-    print_info "Configuring Docker daemon..."
-    local NEW_DOCKER_CONFIG
-    NEW_DOCKER_CONFIG=$(mktemp)
-    tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
-{
-  "log-driver": "json-file",
-  "log-opts": { "max-size": "10m", "max-file": "3" },
-  "live-restore": true
-}
-EOF
-    mkdir -p /etc/docker
-    if [[ -f /etc/docker/daemon.json ]] && cmp -s "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json; then
-        print_info "Docker daemon configuration already correct. Skipping."
-        rm -f "$NEW_DOCKER_CONFIG"
-    else
-        mv "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json
-        chmod 644 /etc/docker/daemon.json
-    fi
-    systemctl daemon-reload
-    systemctl enable --now docker
-    print_info "Running Docker sanity check..."
-    if sudo -u "$USERNAME" docker run --rm hello-world 2>&1 | tee -a "$LOG_FILE" | grep -q "Hello from Docker"; then
-        print_success "Docker sanity check passed."
-    else
-        print_error "Docker hello-world test failed. Please verify installation."
-        exit 1
-    fi
-    print_warning "NOTE: '$USERNAME' must log out and back in to use Docker without sudo."
-    log "Docker installation completed."
-}
-
-install_tailscale() {
-    if ! confirm "Install Tailscale VPN (Optional)?"; then
-        print_info "Skipping Tailscale installation."
-        return 0
-    fi
-    print_section "Tailscale VPN Installation"
-    if command -v tailscale >/dev/null 2>&1; then
-        print_info "Tailscale already installed."
-        return 0
-    fi
-    print_info "Installing Tailscale..."
-    curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-    chmod +x /tmp/tailscale_install.sh
-    # Simple sanity check on the downloaded script
-    if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-        print_error "Downloaded Tailscale install script appears invalid."
-        rm -f /tmp/tailscale_install.sh
-        exit 1
-    fi
-    if ! /tmp/tailscale_install.sh; then
-        print_error "Failed to install Tailscale."
-        rm -f /tmp/tailscale_install.sh
-        exit 1
-    fi
-    rm -f /tmp/tailscale_install.sh
-    print_warning "ACTION REQUIRED: Run 'sudo tailscale up' after script finishes."
-    print_success "Tailscale installation complete."
-    log "Tailscale installation completed."
 }
 
 configure_swap() {
