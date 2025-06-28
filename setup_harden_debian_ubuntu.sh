@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.1-rc | 2025-06-28
+# Version: 4.1-rc2 | 2025-06-29
 # Changelog:
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
@@ -83,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.1-rc | 2025-06-28                        ║${NC}"
+    echo -e "${CYAN}║                     v4.1-rc2 | 2025-06-29                       ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -939,8 +939,8 @@ install_tailscale() {
     fi
 
     # --- Configure Tailscale Connection ---
-    if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
-        print_info "Tailscale is already connected."
+    if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+"; then
+        print_info "Tailscale is already connected (hostname: $SERVER_NAME)."
         return 0
     fi
     print_info "Configuring Tailscale connection..."
@@ -983,7 +983,7 @@ install_tailscale() {
         local DELAY=5
         local CONNECTED=false
         for ((i=1; i<=RETRIES; i++)); do
-            if tailscale status --json 2>/dev/null | grep -q '"Self":.*"Online":true'; then
+            if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
                 CONNECTED=true
                 break
             fi
@@ -991,18 +991,18 @@ install_tailscale() {
             sleep $DELAY
         done
         if $CONNECTED; then
-            print_success "Tailscale connected successfully."
+            print_success "Tailscale connected successfully (hostname: $SERVER_NAME)."
             log "Tailscale connected: $TS_COMMAND"
             # Store connection details for summary
-            echo "$LOGIN_SERVER" > /tmp/tailscale_server
+            echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
             echo "None" > /tmp/tailscale_flags
         else
-            print_warning "Tailscale connection attempt succeeded, but node is not online."
+            print_warning "Tailscale connection attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
             print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
             echo -e "${CYAN}  $TS_COMMAND${NC}"
             log "Tailscale connection not verified: $TS_COMMAND"
-            tailscale status --json > /tmp/tailscale_status.json 2>&1
-            log "Tailscale status JSON saved to /tmp/tailscale_status.json for debugging"
+            tailscale status > /tmp/tailscale_status.txt 2>&1
+            log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
         fi
     fi
 
@@ -1046,7 +1046,7 @@ install_tailscale() {
                 local DELAY=5
                 local CONNECTED=false
                 for ((i=1; i<=RETRIES; i++)); do
-                    if tailscale status --json 2>/dev/null | grep -q '"Self":.*"Online":true'; then
+                    if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
                         CONNECTED=true
                         break
                     fi
@@ -1059,12 +1059,12 @@ install_tailscale() {
                     # Store flags for summary
                     echo "${TS_FLAGS// --/}" > /tmp/tailscale_flags
                 else
-                    print_warning "Tailscale reconfiguration attempt succeeded, but node is not online."
+                    print_warning "Tailscale reconfiguration attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
                     print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
                     echo -e "${CYAN}  $TS_COMMAND${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
-                    tailscale status --json > /tmp/tailscale_status.json 2>&1
-                    log "Tailscale status JSON saved to /tmp/tailscale_status.json for debugging"
+                    tailscale status > /tmp/tailscale_status.txt 2>&1
+                    log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
                 fi
             fi
         else
@@ -1560,11 +1560,10 @@ generate_summary() {
     fi
     local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
-        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
+        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
             print_success "Service tailscaled is active and connected."
-            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || tailscale status --json 2>/dev/null | grep -o '"ControlURL":"[^"]*"' | cut -d'"' -f4 || echo "Unknown")
+            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
             local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
-            TS_SERVER=${TS_SERVER:-"https://controlplane.tailscale.com"}
         else
             print_error "Service tailscaled is NOT active or not connected."
             local TS_SERVER="Not connected"
