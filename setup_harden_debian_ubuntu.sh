@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4-rc2 | 2025-06-28
+# Version: 4-rc3 | 2025-06-28
 # Changelog:
 # - v4.0: Generalized backup configuration to support any rsync-compatible SSH destination, renamed setup_hetzner_backup to setup_backup.
 # - v4.0: Added Hetzner Storage Box backup configuration with root SSH key automation, cron job scheduling, ntfy/Discord notifications, and exclude file defaults.
@@ -83,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4-rc2 | 2025-06-28                         ║${NC}"
+    echo -e "${CYAN}║                     v4-rc3 | 2025-06-28                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1076,13 +1076,13 @@ EOF
     print_success "Rsync exclude file created."
 
     # --- Collect Cron Schedule ---
-    local CRON_SCHEDULE
-    while true; do
-        print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
-        read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [5 3 * * *]: ${NC}")" CRON_SCHEDULE
-        CRON_SCHEDULE=${CRON_SCHEDULE:-"5 3 * * *"}
-        if [[ $CRON_SCHEDULE =~ ^((\*|[0-9,-]+|[a-zA-Z]{3})\s*){5}$ ]]; then break; else print_error "Invalid cron expression. Please try again."; fi
-    done
+    local CRON_SCHEDULE="5 3 * * *"
+    print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
+    read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
+    CRON_SCHEDULE="${input:-$CRON_SCHEDULE}"
+    if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*\/)?[0-9,-]+|\*)\s+(((\*\/)?[0-9,-]+|\*)\s+){3}((\*\/)?[0-9,-]+|\*|[0-6])$'; then
+        print_error "Invalid cron expression. Using default: ${CRON_SCHEDULE}"
+    fi
 
     # --- Collect Notification Details ---
     local NOTIFICATION_SETUP="none" NTFY_URL="" NTFY_TOKEN="" DISCORD_WEBHOOK=""
