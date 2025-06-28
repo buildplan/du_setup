@@ -1,6 +1,6 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** 4.0
+**Version:** 4.1
 
 **Last Updated:** 2025-06-28
 
@@ -22,6 +22,7 @@ This script automates the initial setup and security hardening of a fresh Debian
 - **Automated Security Updates**: Enables `unattended-upgrades` for automatic security patches.
 - **System Stability**: Configures NTP time synchronization with `chrony` and optional swap file setup for low-RAM systems.
 - **Remote rsync Backups**: Configures automated `rsync` backups over SSH to any compatible server (e.g., Hetzner Storage Box), with SSH key automation (`sshpass` or manual), cron scheduling, ntfy/Discord notifications, and a customizable exclude file.
+- **Tailscale VPN**: Installs Tailscale and connects to the standard Tailscale network (pre-auth key required) or a custom server (URL and key required). Configures optional flags (`--ssh`, `--advertise-exit-node`, `--accept-dns`, `--accept-routes`).
 - **Safety First**: Backs up critical configuration files before modification, stored in `/root/setup_harden_backup_*`.
 - **Optional Software**: Offers interactive installation of:
   - Docker & Docker Compose
@@ -37,6 +38,7 @@ This script automates the initial setup and security hardening of a fresh Debian
 - Root or `sudo` privileges.
 - Internet access for package downloads.
 - For remote backups: An SSH-accessible server (e.g., Hetzner Storage Box) with credentials or SSH key access.
+- For Tailscale: A pre-auth key from https://login.tailscale.com/admin (standard, starts with `tskey-auth-`) or from a custom server (e.g., `https://ts.mydomain.cloud`).
 
 ### 1. Download the Script
 
@@ -59,7 +61,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >
-> Ensure your VPS provider’s firewall allows the custom SSH port and the backup server’s SSH port (e.g., 23 for Hetzner Storage Box).
+> Ensure your VPS provider’s firewall allows the custom SSH port, backup server’s SSH port (e.g., 23 for Hetzner Storage Box), and Tailscale traffic (UDP 41641 for direct connections).
 
 ## What It Does
 
@@ -71,11 +73,11 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 | **SSH Hardening** | Disables root login, enforces key-based auth, and sets a custom port. |
 | **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific ports. |
 | **Remote Backup Setup** | Configures `rsync` backups to an SSH server (e.g., `u457300-sub4@u457300.your-storagebox.de:23`). Creates `/root/run_backup.sh`, `/root/rsync_exclude.txt`, and schedules a cron job. Supports ntfy/Discord notifications. |
+| **Tailscale Setup** | Installs Tailscale and connects to the standard Tailscale network (pre-auth key starting with `tskey-auth-`) or a custom server (any valid key). Configures optional flags (`--ssh`, `--advertise-exit-node`, `--accept-dns`, `--accept-routes`). |
 | **System Backups** | Saves timestamped configuration backups in `/root/setup_harden_backup_*`. |
 | **Swap File Setup** | Creates an optional swap file (e.g., 2G) with tuned settings. |
 | **Timezone & Locales** | Configures timezone and system locales interactively. |
 | **Docker Install** | Installs Docker Engine and adds the user to the `docker` group. |
-| **Tailscale Install** | Installs the Tailscale client for Mesh VPN. |
 | **Final Cleanup** | Removes unused packages and reloads daemons. |
 
 ## Logs & Backups
@@ -96,6 +98,11 @@ After rebooting, verify the setup:
 - **Hostname**: `hostnamectl`
 - **Docker Status** (if installed): `docker ps`
 - **Tailscale Status** (if installed): `tailscale status`
+- **Tailscale Verification** (if configured):
+  - Check connection: `tailscale status`
+  - Test Tailscale SSH (if enabled): `tailscale ssh <username>@<tailscale-ip>`
+  - Verify exit node (if enabled): Check Tailscale admin console
+  - If not connected, run the `tailscale up` command shown in the script output
 - **Remote Backup** (if configured):
   - Verify SSH key: `cat /root/.ssh/id_ed25519.pub`
   - Copy key (if not done): `ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
@@ -109,6 +116,7 @@ After rebooting, verify the setup:
 - Ubuntu 22.04, 24.04, 24.10 (experimental)
 - Cloud providers: DigitalOcean, Oracle Cloud, Hetzner, Netcup
 - Backup destinations: Hetzner Storage Box, custom SSH servers
+- Tailscale: Standard network, custom self-hosted servers
 
 ## Important Notes
 
@@ -117,6 +125,7 @@ After rebooting, verify the setup:
 - Test in a non-production environment (e.g., staging VM) first.
 - Maintain out-of-band console access in case of SSH lockout.
 - For Hetzner Storage Box, ensure `~/.ssh/` exists on the remote server: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`.
+- For Tailscale, generate a pre-auth key from https://login.tailscale.com/admin (standard, must start with `tskey-auth-`) or your custom server (any valid key). Ensure UDP 41641 is open for Tailscale traffic.
 
 ## Troubleshooting
 
@@ -171,6 +180,33 @@ If backups fail:
 
 6. **Summary Errors**:
    - If summary shows `Remote Backup: Not configured`, verify: `ls -l /root/run_backup.sh`
+
+### Tailscale Issues
+
+If Tailscale fails to connect:
+
+1. **Verify Installation**:
+   - Check: `command -v tailscale`
+   - Service status: `systemctl status tailscaled`
+
+2. **Check Connection**:
+   - Run: `tailscale status`
+   - Verify server: `tailscale status --json | grep ControlURL`
+   - Check logs: `sudo journalctl -u tailscaled`
+
+3. **Test Pre-Auth Key**:
+   - Re-run the command shown in the script output (e.g., `sudo tailscale up --auth-key=<key> --operator=<username>` or with `--login-server=<url>`).
+   - For custom servers, ensure the key is valid for the specified server (e.g., generated from `https://ts.mydomain.cloud`).
+
+4. **Additional Flags**:
+   - Verify SSH: `tailscale ssh <username>@<tailscale-ip>`
+   - Check exit node: Tailscale admin console
+   - Verify DNS: `cat /etc/resolv.conf`
+   - Check routes: `tailscale status`
+
+5. **Network Issues**:
+   - Ensure UDP 41641 is open: `nc -zvu <tailscale-server> 41641`
+   - Check VPS firewall for Tailscale traffic.
 
 ## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE) License
 
