@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.0 | 2025-06-28
+# Version: 4.1 | 2025-06-29
 # Changelog:
+# - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
 #
@@ -82,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.0 | 2025-06-28                           ║${NC}"
+    echo -e "${CYAN}║                     v4.1 | 2025-06-29                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -902,33 +903,181 @@ EOF
 }
 
 install_tailscale() {
-    if ! confirm "Install Tailscale VPN (Optional)?"; then
+    if ! confirm "Install and configure Tailscale VPN (Optional)?"; then
         print_info "Skipping Tailscale installation."
+        log "Tailscale installation skipped by user."
         return 0
     fi
-    print_section "Tailscale VPN Installation"
+    print_section "Tailscale VPN Installation and Configuration"
     if command -v tailscale >/dev/null 2>&1; then
         print_info "Tailscale already installed."
+        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
+            print_success "Tailscale service is active and connected."
+            return 0
+        else
+            print_warning "Tailscale installed but service is not active or not connected."
+        fi
+    else
+        print_info "Installing Tailscale..."
+        curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
+        chmod +x /tmp/tailscale_install.sh
+        if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
+            print_error "Downloaded Tailscale install script appears invalid."
+            rm -f /tmp/tailscale_install.sh
+            log "Tailscale installation failed: Invalid install script."
+            return 0
+        fi
+        if ! /tmp/tailscale_install.sh; then
+            print_error "Failed to install Tailscale."
+            rm -f /tmp/tailscale_install.sh
+            log "Tailscale installation failed."
+            return 0
+        fi
+        rm -f /tmp/tailscale_install.sh
+        print_success "Tailscale installation complete."
+        log "Tailscale installation completed."
+    fi
+
+    # --- Configure Tailscale Connection ---
+    if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+"; then
+        print_info "Tailscale is already connected (hostname: $SERVER_NAME)."
         return 0
     fi
-    print_info "Installing Tailscale..."
-    curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-    chmod +x /tmp/tailscale_install.sh
-    # Simple sanity check on the downloaded script
-    if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-        print_error "Downloaded Tailscale install script appears invalid."
-        rm -f /tmp/tailscale_install.sh
-        exit 1
+    print_info "Configuring Tailscale connection..."
+    echo -e "${CYAN}Choose Tailscale connection method:${NC}"
+    echo -e "  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)"
+    echo -e "  2) Custom Tailscale server (requires server URL and pre-auth key)"
+    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
+    TS_CONNECTION=${TS_CONNECTION:-1}
+    local AUTH_KEY LOGIN_SERVER=""
+    if [[ "$TS_CONNECTION" == "2" ]]; then
+        while true; do
+            read -rp "$(echo -e "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
+            if [[ "$LOGIN_SERVER" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Must start with https://. Try again."; fi
+        done
     fi
-    if ! /tmp/tailscale_install.sh; then
-        print_error "Failed to install Tailscale."
-        rm -f /tmp/tailscale_install.sh
-        exit 1
+    while true; do
+        read -rp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
+        elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
+            print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
+            break
+        else
+            print_error "Invalid key format. For standard connection, key must start with 'tskey-auth-'. For custom server, key cannot be empty."
+        fi
+    done
+    local TS_COMMAND="tailscale up"
+    if [[ "$TS_CONNECTION" == "2" ]]; then
+        TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
     fi
-    rm -f /tmp/tailscale_install.sh
-    print_warning "ACTION REQUIRED: Run 'sudo tailscale up' after script finishes."
-    print_success "Tailscale installation complete."
-    log "Tailscale installation completed."
+    TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME"
+    print_info "Connecting to Tailscale with: $TS_COMMAND"
+    if ! $TS_COMMAND; then
+        print_warning "Failed to connect to Tailscale. Possible issues: invalid pre-auth key, network restrictions, or server unavailability."
+        print_info "Please run the following command manually after resolving the issue:"
+        echo -e "${CYAN}  $TS_COMMAND${NC}"
+        log "Tailscale connection failed: $TS_COMMAND"
+    else
+        # Verify connection status with retries
+        local RETRIES=3
+        local DELAY=5
+        local CONNECTED=false
+        for ((i=1; i<=RETRIES; i++)); do
+            if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
+                CONNECTED=true
+                break
+            fi
+            print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
+            sleep $DELAY
+        done
+        if $CONNECTED; then
+            print_success "Tailscale connected successfully (hostname: $SERVER_NAME)."
+            log "Tailscale connected: $TS_COMMAND"
+            # Store connection details for summary
+            echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
+            echo "None" > /tmp/tailscale_flags
+        else
+            print_warning "Tailscale connection attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
+            print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+            echo -e "${CYAN}  $TS_COMMAND${NC}"
+            log "Tailscale connection not verified: $TS_COMMAND"
+            tailscale status > /tmp/tailscale_status.txt 2>&1
+            log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
+        fi
+    fi
+
+    # --- Configure Additional Flags ---
+    print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
+    echo -e "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
+    echo -e "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
+    echo -e "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
+    echo -e "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
+    echo -e "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
+    read -rp "  " TS_FLAG_CHOICES
+    local TS_FLAGS=""
+    if [[ -n "$TS_FLAG_CHOICES" ]]; then
+        if echo "$TS_FLAG_CHOICES" | grep -q "1"; then
+            TS_FLAGS="$TS_FLAGS --ssh"
+        fi
+        if echo "$TS_FLAG_CHOICES" | grep -q "2"; then
+            TS_FLAGS="$TS_FLAGS --advertise-exit-node"
+        fi
+        if echo "$TS_FLAG_CHOICES" | grep -q "3"; then
+            TS_FLAGS="$TS_FLAGS --accept-dns"
+        fi
+        if echo "$TS_FLAG_CHOICES" | grep -q "4"; then
+            TS_FLAGS="$TS_FLAGS --accept-routes"
+        fi
+        if [[ -n "$TS_FLAGS" ]]; then
+            TS_COMMAND="tailscale up"
+            if [[ "$TS_CONNECTION" == "2" ]]; then
+                TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
+            fi
+            TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME $TS_FLAGS"
+            print_info "Reconfiguring Tailscale with additional options: $TS_COMMAND"
+            if ! $TS_COMMAND; then
+                print_warning "Failed to reconfigure Tailscale with additional options."
+                print_info "Please run the following command manually after resolving the issue:"
+                echo -e "${CYAN}  $TS_COMMAND${NC}"
+                log "Tailscale reconfiguration failed: $TS_COMMAND"
+            else
+                # Verify reconfiguration status with retries
+                local RETRIES=3
+                local DELAY=5
+                local CONNECTED=false
+                for ((i=1; i<=RETRIES; i++)); do
+                    if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
+                        CONNECTED=true
+                        break
+                    fi
+                    print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
+                    sleep $DELAY
+                done
+                if $CONNECTED; then
+                    print_success "Tailscale reconfigured with additional options."
+                    log "Tailscale reconfigured: $TS_COMMAND"
+                    # Store flags for summary
+                    echo "${TS_FLAGS// --/}" > /tmp/tailscale_flags
+                else
+                    print_warning "Tailscale reconfiguration attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
+                    print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+                    echo -e "${CYAN}  $TS_COMMAND${NC}"
+                    log "Tailscale reconfiguration not verified: $TS_COMMAND"
+                    tailscale status > /tmp/tailscale_status.txt 2>&1
+                    log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
+                fi
+            fi
+        else
+            print_info "No valid Tailscale options selected."
+            log "No valid Tailscale options selected."
+        fi
+    else
+        print_info "No additional Tailscale options selected."
+        log "No additional Tailscale options applied."
+    fi
+    print_success "Tailscale setup complete."
+    print_info "Verify status: tailscale status"
+    log "Tailscale setup completed."
 }
 
 setup_backup() {
@@ -1409,11 +1558,18 @@ generate_summary() {
             print_error "Service docker is NOT active."
         fi
     fi
+    local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
-        if systemctl is-active --quiet tailscaled; then
-            print_success "Service tailscaled is active."
+        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
+            print_success "Service tailscaled is active and connected."
+            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
+            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
         else
-            print_error "Service tailscaled is NOT active."
+            print_error "Service tailscaled is NOT active or not connected."
+            local TS_SERVER="Not connected"
+            local TS_FLAGS="None"
+            TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
+            TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
         fi
     fi
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
@@ -1443,6 +1599,13 @@ generate_summary() {
     else
         echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
+    if command -v tailscale >/dev/null 2>&1; then
+        echo -e "  Tailscale:       ${GREEN}Enabled${NC}"
+        printf "    %-16s%s\n" "- Server:" "$TS_SERVER"
+        printf "    %-16s%s\n" "- Flags:" "$TS_FLAGS"
+    else
+        echo -e "  Tailscale:       ${RED}Not configured${NC}"
+    fi
     echo
     printf "${PURPLE}%-16s%s${NC}\n" "Log File:" "$LOG_FILE"
     printf "${PURPLE}%-16s%s${NC}\n" "Backups:" "$BACKUP_DIR"
@@ -1459,6 +1622,9 @@ generate_summary() {
     fi
     if command -v tailscale >/dev/null 2>&1; then
         printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
+        if [[ "$TS_SERVER" == "Not connected" && -n "$TS_COMMAND" ]]; then
+            printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale connect:" "$TS_COMMAND"
+        fi
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
@@ -1468,10 +1634,13 @@ generate_summary() {
         printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less /var/log/backup_rsync.log"
     fi
     print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
+    if [[ -n "$TS_COMMAND" ]]; then
+        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the command above to connect manually."
+    fi
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting ..."
+            print_info "Rebooting, bye!..."
             sleep 3
             reboot
         else
