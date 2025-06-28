@@ -1045,28 +1045,60 @@ setup_backup() {
         exit 1
     fi
 
-    # Optional SSH key copy attempt
-    if confirm "Attempt to copy SSH key to the backup destination now? (Requires password)"; then
-        if ssh-copy-id -p "$BACKUP_PORT" -s "$BACKUP_DEST" 2>/dev/null; then
-            print_success "SSH key copied successfully."
-        else
-            print_warning "SSH key copy failed. You must manually copy the key later."
-        fi
-    fi
+    # Handle SSH key copying options
+    echo -e "${CYAN}Choose how to copy the root SSH key to the backup destination:${NC}"
+    echo -e "  1) Automate with password (requires sshpass)"
+    echo -e "  2) Manual copy (run ssh-copy-id later)"
+    echo -e "  3) Skip (test connection or copy manually later)"
+    read -rp "$(echo -e "${CYAN}Enter choice (1-3): ${NC}")" KEY_COPY_CHOICE
+    case "$KEY_COPY_CHOICE" in
+        1)
+            # Ensure sshpass is installed
+            if ! command -v sshpass >/dev/null 2>&1; then
+                print_info "Installing sshpass for automated key copying..."
+                if ! apt-get install -y -qq sshpass; then
+                    print_error "Failed to install sshpass. Falling back to manual copy instructions."
+                    KEY_COPY_CHOICE=2
+                else
+                    print_success "sshpass installed."
+                fi
+            fi
+            if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
+                read -sp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD
+                echo
+                print_info "Attempting automated SSH key copy..."
+                if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" -s "$BACKUP_DEST" 2>/dev/null; then
+                    print_success "SSH key copied successfully."
+                else
+                    print_error "Automated SSH key copy failed."
+                    print_warning "Falling back to manual copy instructions."
+                    KEY_COPY_CHOICE=2
+                fi
+            fi
+            ;;
+        2)
+            print_info "Manual SSH key copy selected."
+            ;;
+        3|*)
+            print_info "Skipping SSH key copy."
+            ;;
+    esac
 
-    # Display SSH key copy instructions
-    print_warning "ACTION REQUIRED: If not already done, copy the root SSH key to the backup destination to enable backups."
-    echo -e "${YELLOW}Root public key:${NC}"
-    cat "$ROOT_SSH_KEY.pub"
-    echo -e "${CYAN}Run this command on your local machine or another terminal:${NC}"
-    echo -e "  ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
-    print_info "You can copy the SSH key later, but the backup cron job will fail until this is done."
+    # Display SSH key copy instructions if not automated
+    if [[ "$KEY_COPY_CHOICE" != "1" || ! -f /root/.ssh/known_hosts || ! grep -q "$BACKUP_DEST" /root/.ssh/known_hosts ]]; then
+        print_warning "ACTION REQUIRED: If not already done, copy the root SSH key to the backup destination to enable backups."
+        echo -e "${YELLOW}Root public key:${NC}"
+        cat "$ROOT_SSH_KEY.pub"
+        echo -e "${CYAN}Run this command on your local machine or another terminal:${NC}"
+        echo -e "  ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
+        print_info "You can copy the SSH key later, but the backup cron job will fail until this is done."
+    fi
 
     # Optional SSH connection test
     if confirm "Test SSH connection to the backup destination (optional)?"; then
         print_info "Testing connection (timeout: 5 seconds)..."
         DEST_HOST=$(echo "$BACKUP_DEST" | cut -d'@' -f2)
-        if ssh -p "$BACKUP_PORT" -o BatchMode=yes -o ConnectTimeout=5 "$BACKUP_DEST" exit 2>/dev/null; then
+        if ssh -p "$BACKUP_PORT" -o BatchMode=yes -o ConnectTimeout=5 "$BACKUP_DEST" true 2>/dev/null; then
             print_success "SSH connection successful!"
         else
             print_error "SSH connection failed."
