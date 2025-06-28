@@ -1,6 +1,6 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** 4.1
+**Version:** 4.0
 
 **Last Updated:** 2025-06-28
 
