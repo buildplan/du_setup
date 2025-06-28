@@ -1,18 +1,20 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 3.13 | 2025-06-27
-# Compatible with: Debian 12 (Bookworm), Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS. 24.10 (experimental)
-# Tested on Debian 12, Ubuntu 24.04 and 24.10 at DigitalOcean, Oracle Cloud, Netcup, Hetzner and local VMs
+# Version: 4.0 | 2025-06-28
+# Changelog:
+# - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
+# - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
 #
 # Description:
 # This script provisions and hardens a fresh Debian 12 or Ubuntu server with essential security
 # configurations, user management, SSH hardening, firewall setup, and optional features
-# like Docker and Tailscale. It is designed to be idempotent, safe, and suitable for
-# production environments.
+# like Docker and Tailscale and automated backups to Hetzner storage box or any rsync location.
+# It is designed to be idempotent, safe.
+# README at GitHub: https://github.com/buildplan/setup_harden_server
 #
 # Prerequisites:
-# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./setup_harden_debian_ubuntu.sh).
+# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./setup_harden_debian_ubuntu.sh or run as root ./setup_harden_debian_ubuntu.sh).
 # - Internet connectivity is required for package installation.
 #
 # Usage:
@@ -21,7 +23,7 @@
 #   Run it: sudo ./setup_harden_debian_ubuntu.sh [--quiet]
 #
 # Options:
-#   --quiet: Suppress non-critical output for automation.
+#   --quiet: Suppress non-critical output for automation. (Not recommended always best to review all the options)
 #
 # Notes:
 # - The script creates a log file in /var/log/setup_harden_debian_ubuntu_*.log.
@@ -80,7 +82,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v3.13 | 2025-06-27                          ║${NC}"
+    echo -e "${CYAN}║                     v4.0 | 2025-06-28                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -157,6 +159,11 @@ validate_hostname() {
 validate_port() {
     local port="$1"
     [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]]
+}
+
+validate_backup_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
 }
 
 validate_ssh_key() {
@@ -335,8 +342,8 @@ install_packages() {
     print_info "Installing essential packages..."
     if ! apt-get install -y -qq \
         ufw fail2ban unattended-upgrades chrony \
-        rsync wget vim htop iotop nethogs ncdu tree \
-        rsyslog cron jq gawk coreutils perl skopeo git \
+        rsync wget vim htop iotop nethogs netcat-traditional ncdu \
+        tree rsyslog cron jq gawk coreutils perl skopeo git \
         openssh-client openssh-server; then
         print_error "Failed to install one or more essential packages."
         exit 1
@@ -601,7 +608,7 @@ EOF
         mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
         chmod 644 /etc/systemd/system/ssh.service.d/override.conf
     fi
-    
+
     # Apply additional hardening via sshd_config.d
     NEW_SSH_CONFIG=$(mktemp)
     tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
@@ -924,6 +931,289 @@ install_tailscale() {
     log "Tailscale installation completed."
 }
 
+setup_backup() {
+    print_section "Backup Configuration (rsync over SSH)"
+
+    if ! confirm "Configure rsync-based backups to a remote SSH server?"; then
+        print_info "Skipping backup configuration."
+        log "Backup configuration skipped by user."
+        return 0
+    fi
+
+    # --- Pre-flight Check ---
+    if [[ -z "$USERNAME" ]] || ! id "$USERNAME" >/dev/null 2>&1; then
+        print_error "Cannot configure backup: valid admin user ('$USERNAME') not found."
+        log "Backup configuration failed: USERNAME variable not set or user does not exist."
+        return 1
+    fi
+
+    local ROOT_SSH_DIR="/root/.ssh"
+    local ROOT_SSH_KEY="$ROOT_SSH_DIR/id_ed25519"
+    local BACKUP_SCRIPT_PATH="/root/run_backup.sh"
+    local EXCLUDE_FILE_PATH="/root/rsync_exclude.txt"
+    local CRON_MARKER="#-*- managed by setup_harden script -*-"
+
+    # --- Generate SSH Key for Root ---
+    if [[ ! -f "$ROOT_SSH_KEY" ]]; then
+        print_info "Generating a dedicated SSH key for root's backup job..."
+        mkdir -p "$ROOT_SSH_DIR" && chmod 700 "$ROOT_SSH_DIR"
+        ssh-keygen -t ed25519 -f "$ROOT_SSH_KEY" -N "" -q
+        chown -R root:root "$ROOT_SSH_DIR"
+        print_success "Root SSH key generated at $ROOT_SSH_KEY"
+        log "Generated root SSH key for backups."
+    else
+        print_info "Existing root SSH key found at $ROOT_SSH_KEY."
+    fi
+
+    # --- Collect Backup Destination Details with Retry Loops ---
+    local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH SSH_COPY_ID_FLAGS=""
+
+    while true; do
+        read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
+        if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$ ]]; then break; else print_error "Invalid format. Expected user@host. Please try again."; fi
+    done
+
+    while true; do
+        read -rp "$(echo -e "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
+        BACKUP_PORT=${BACKUP_PORT:-22}
+        if [[ "$BACKUP_PORT" =~ ^[0-9]+$ && "$BACKUP_PORT" -ge 1 && "$BACKUP_PORT" -le 65535 ]]; then break; else print_error "Invalid port. Must be between 1 and 65535. Please try again."; fi
+    done
+
+    while true; do
+        read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
+        if [[ "$REMOTE_BACKUP_PATH" =~ ^/[^[:space:]]*/$ ]]; then break; else print_error "Invalid path. Must start and end with '/' and contain no spaces. Please try again."; fi
+    done
+
+    print_info "Backup target set to: ${BACKUP_DEST}:${REMOTE_BACKUP_PATH} on port ${BACKUP_PORT}"
+
+    # --- Hetzner Specific Handling ---
+    if confirm "Is this backup destination a Hetzner Storage Box (requires special -s flag for key copy)?"; then
+        SSH_COPY_ID_FLAGS="-s"
+        print_info "Hetzner Storage Box mode enabled. Using '-s' for ssh-copy-id."
+    fi
+
+    # --- Handle SSH Key Copy ---
+    echo -e "${CYAN}Choose how to copy the root SSH key:${NC}"
+    echo -e "  1) Automate with password (requires sshpass, password stored briefly in memory)"
+    echo -e "  2) Manual copy (recommended)"
+    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [2]: ${NC}")" KEY_COPY_CHOICE
+    KEY_COPY_CHOICE=${KEY_COPY_CHOICE:-2}
+    if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
+        if ! command -v sshpass >/dev/null 2>&1; then
+            print_info "Installing sshpass for automated key copying..."
+            apt-get update -qq && apt-get install -y -qq sshpass || { print_warning "Failed to install sshpass. Falling back to manual copy."; KEY_COPY_CHOICE=2; }
+        fi
+        if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
+            read -sp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
+            # Ensure ~/.ssh/ exists on remote for Hetzner
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
+            fi
+            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" $SSH_COPY_ID_FLAGS "$BACKUP_DEST" 2>&1 | tee /tmp/ssh-copy-id.log; then
+                print_success "SSH key copied successfully."
+            else
+                print_error "Automated SSH key copy failed. Error details in /tmp/ssh-copy-id.log."
+                print_info "Please verify the password and ensure ~/.ssh/authorized_keys is writable on the remote server."
+                KEY_COPY_CHOICE=2
+            fi
+        fi
+    fi
+    if [[ "$KEY_COPY_CHOICE" == "2" ]]; then
+        print_warning "ACTION REQUIRED: Copy the root SSH key to the backup destination."
+        echo -e "This will allow the root user to connect without a password for automated backups."
+        echo -e "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; echo
+        echo -e "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
+        echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; echo
+        if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+            print_info "For Hetzner, ensure ~/.ssh/ exists on the remote server: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
+        fi
+    fi
+
+    # --- SSH Connection Test ---
+    if confirm "Test SSH connection to the backup destination (recommended)?"; then
+        print_info "Testing SSH connection (timeout: 10 seconds)..."
+        if [[ ! -f "$ROOT_SSH_DIR/known_hosts" ]] || ! grep -q "$BACKUP_DEST" "$ROOT_SSH_DIR/known_hosts"; then
+            print_warning "SSH key may not be copied yet. Connection test may fail."
+        fi
+        local test_command="ssh -p \"$BACKUP_PORT\" -o BatchMode=yes -o ConnectTimeout=10 \"$BACKUP_DEST\" true"
+        if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+            test_command="sftp -P \"$BACKUP_PORT\" -o BatchMode=yes -o ConnectTimeout=10 \"$BACKUP_DEST\" <<< 'quit'"
+        fi
+        if eval "$test_command" 2>/dev/null; then
+            print_success "SSH connection to backup destination successful!"
+        else
+            print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
+            print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
+            print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
+            print_info "  - Ensure key is in ~/.ssh/authorized_keys on the backup server."
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                print_info "  - For Hetzner, ensure ~/.ssh/ exists: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
+            fi
+        fi
+    fi
+
+    # --- Create Exclude File ---
+    print_info "Creating rsync exclude file at $EXCLUDE_FILE_PATH..."
+    tee "$EXCLUDE_FILE_PATH" > /dev/null <<'EOF'
+# Default Exclusions
+.cache/
+.docker/
+.local/
+.npm/
+.vscode-server/
+*.log
+*.tmp
+node_modules/
+.bash_history
+.wget-hsts
+EOF
+    if confirm "Add more directories/files to the exclude list?"; then
+        read -rp "$(echo -e "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
+        for item in "${extra_excludes[@]}"; do echo "$item" >> "$EXCLUDE_FILE_PATH"; done
+    fi
+    chmod 600 "$EXCLUDE_FILE_PATH"
+    print_success "Rsync exclude file created."
+
+    # --- Collect Cron Schedule ---
+    local CRON_SCHEDULE="5 3 * * *"
+    print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
+    read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
+    CRON_SCHEDULE="${input:-$CRON_SCHEDULE}"
+    if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*\/)?[0-9,-]+|\*)\s+(((\*\/)?[0-9,-]+|\*)\s+){3}((\*\/)?[0-9,-]+|\*|[0-6])$'; then
+        print_error "Invalid cron expression. Using default: ${CRON_SCHEDULE}"
+    fi
+
+    # --- Collect Notification Details ---
+    local NOTIFICATION_SETUP="none" NTFY_URL="" NTFY_TOKEN="" DISCORD_WEBHOOK=""
+    if confirm "Enable backup status notifications?"; then
+        echo -e "${CYAN}Select notification method: 1) ntfy.sh  2) Discord  [1]: ${NC}"; read -r n_choice
+        if [[ "$n_choice" == "2" ]]; then
+            NOTIFICATION_SETUP="discord"
+            read -rp "$(echo -e "${CYAN}Enter Discord Webhook URL: ${NC}")" DISCORD_WEBHOOK
+            if [[ ! "$DISCORD_WEBHOOK" =~ ^https://discord.com/api/webhooks/ ]]; then
+                print_error "Invalid Discord webhook URL."
+                log "Invalid Discord webhook URL provided."
+                return 1
+            fi
+        else
+            NOTIFICATION_SETUP="ntfy"
+            read -rp "$(echo -e "${CYAN}Enter ntfy URL/topic (e.g., https://ntfy.sh/my-backups): ${NC}")" NTFY_URL
+            read -rp "$(echo -e "${CYAN}Enter ntfy Access Token (optional): ${NC}")" NTFY_TOKEN
+            if [[ ! "$NTFY_URL" =~ ^https?:// ]]; then
+                print_error "Invalid ntfy URL."
+                log "Invalid ntfy URL provided."
+                return 1
+            fi
+        fi
+    fi
+
+    # --- Generate the Backup Script ---
+    print_info "Generating the backup script at $BACKUP_SCRIPT_PATH..."
+    if ! tee "$BACKUP_SCRIPT_PATH" > /dev/null <<EOF
+#!/bin/bash
+# Generated by server setup script on $(date)
+set -Euo pipefail; umask 077
+# --- CONFIGURATION ---
+LOCAL_DIR="/home/${USERNAME}/"
+REMOTE_DEST="${BACKUP_DEST}"
+REMOTE_PATH="${REMOTE_BACKUP_PATH}"
+SSH_PORT="${BACKUP_PORT}"
+EXCLUDE_FILE="${EXCLUDE_FILE_PATH}"
+LOG_FILE="/var/log/backup_rsync.log"
+LOCK_FILE="/tmp/backup_rsync.lock"
+HOSTNAME="\$(hostname -f)"
+NOTIFICATION_SETUP="${NOTIFICATION_SETUP}"
+NTFY_URL="${NTFY_URL}"
+NTFY_TOKEN="${NTFY_TOKEN}"
+DISCORD_WEBHOOK="${DISCORD_WEBHOOK}"
+EOF
+    then
+        print_error "Failed to create backup script at $BACKUP_SCRIPT_PATH."
+        log "Failed to create backup script at $BACKUP_SCRIPT_PATH."
+        return 1
+    fi
+    if ! tee -a "$BACKUP_SCRIPT_PATH" > /dev/null <<'EOF'
+# --- BACKUP SCRIPT LOGIC ---
+send_notification() {
+    local status="$1" message="$2" title color
+    if [[ "$status" == "SUCCESS" ]]; then title="✅ Backup SUCCESS: $HOSTNAME"; color=3066993; else title="❌ Backup FAILED: $HOSTNAME"; color=15158332; fi
+    if [[ "$NOTIFICATION_SETUP" == "ntfy" ]]; then
+        curl -s -H "Title: $title" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} -d "$message" "$NTFY_URL" > /dev/null 2>&1
+    elif [[ "$NOTIFICATION_SETUP" == "discord" ]]; then
+        local escaped_message=$(echo "$message" | sed 's/"/\\"/g' | sed 's/\\/\\\\/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        local json_payload=$(printf '{"embeds": [{"title": "%s", "description": "%s", "color": %d}]}' "$title" "$escaped_message" "$color")
+        curl -s -H "Content-Type: application/json" -d "$json_payload" "$DISCORD_WEBHOOK" > /dev/null 2>&1
+    fi
+}
+# --- DEPENDENCY & LOCKING ---
+for cmd in rsync flock numfmt awk; do if ! command -v "$cmd" &>/dev/null; then send_notification "FAILURE" "FATAL: '$cmd' not found."; exit 10; fi; done
+exec 200>"$LOCK_FILE"; flock -n 200 || { echo "Backup already running."; exit 1; }
+# --- LOG ROTATION ---
+touch "$LOG_FILE"; chmod 600 "$LOG_FILE"; if [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE") -gt 10485760 ]]; then mv "$LOG_FILE" "${LOG_FILE}.1"; fi
+echo "--- Starting Backup at $(date) ---" >> "$LOG_FILE"
+# --- RSYNC COMMAND ---
+rsync_output=$(rsync -avz --delete --stats --exclude-from="$EXCLUDE_FILE" -e "ssh -p $SSH_PORT" "$LOCAL_DIR" "${REMOTE_DEST}:${REMOTE_PATH}" 2>&1)
+rsync_exit_code=$?; echo "$rsync_output" >> "$LOG_FILE"
+# --- NOTIFICATION ---
+if [[ $rsync_exit_code -eq 0 ]]; then
+    data_transferred=$(echo "$rsync_output" | grep 'Total transferred file size' | awk '{print $5}' | sed 's/,//g')
+    human_readable=$(numfmt --to=iec-i --suffix=B --format="%.2f" "$data_transferred" 2>/dev/null || echo "0 B")
+    message="Backup completed successfully.\nData Transferred: ${human_readable}"
+    send_notification "SUCCESS" "$message"
+else
+    message="rsync failed with exit code ${rsync_exit_code}. Check log for details."
+    send_notification "FAILURE" "$message"
+fi
+EOF
+    then
+        print_error "Failed to append to backup script at $BACKUP_SCRIPT_PATH."
+        log "Failed to append to backup script at $BACKUP_SCRIPT_PATH."
+        return 1
+    fi
+    if ! chmod 700 "$BACKUP_SCRIPT_PATH"; then
+        print_error "Failed to set permissions on $BACKUP_SCRIPT_PATH."
+        log "Failed to set permissions on $BACKUP_SCRIPT_PATH."
+        return 1
+    fi
+    print_success "Backup script created."
+
+    # --- Configure Cron Job ---
+    print_info "Configuring root cron job..."
+    # Ensure crontab is writable
+    local CRON_DIR="/var/spool/cron/crontabs"
+    mkdir -p "$CRON_DIR"
+    chmod 1730 "$CRON_DIR"
+    chown root:crontab "$CRON_DIR"
+    # Validate inputs
+    if [[ -z "$CRON_SCHEDULE" || -z "$BACKUP_SCRIPT_PATH" ]]; then
+        print_error "Cron schedule or backup script path is empty."
+        log "Cron configuration failed: CRON_SCHEDULE='$CRON_SCHEDULE', BACKUP_SCRIPT_PATH='$BACKUP_SCRIPT_PATH'"
+        return 1
+    fi
+    if [[ ! -f "$BACKUP_SCRIPT_PATH" ]]; then
+        print_error "Backup script $BACKUP_SCRIPT_PATH does not exist."
+        log "Cron configuration failed: Backup script $BACKUP_SCRIPT_PATH not found."
+        return 1
+    fi
+    # Create temporary cron file
+    local TEMP_CRON
+    TEMP_CRON=$(mktemp)
+    if ! crontab -u root -l 2>/dev/null | grep -v "$CRON_MARKER" > "$TEMP_CRON"; then
+        print_warning "No existing crontab found or error reading crontab. Creating new one."
+        : > "$TEMP_CRON" # Create empty file
+    fi
+    echo "$CRON_SCHEDULE $BACKUP_SCRIPT_PATH $CRON_MARKER" >> "$TEMP_CRON"
+    if ! crontab -u root "$TEMP_CRON" 2>&1 | tee -a "$LOG_FILE"; then
+        print_error "Failed to configure cron job."
+        log "Cron configuration failed: Error updating crontab."
+        rm -f "$TEMP_CRON"
+        return 1
+    fi
+    rm -f "$TEMP_CRON"
+    print_success "Backup cron job scheduled: $CRON_SCHEDULE"
+    log "Backup configuration completed."
+}
+
 configure_swap() {
     if [[ $IS_CONTAINER == true ]]; then
         print_info "Swap configuration skipped in container."
@@ -1119,6 +1409,13 @@ generate_summary() {
             print_error "Service docker is NOT active."
         fi
     fi
+    if command -v tailscale >/dev/null 2>&1; then
+        if systemctl is-active --quiet tailscaled; then
+            print_success "Service tailscaled is active."
+        else
+            print_error "Service tailscaled is NOT active."
+        fi
+    fi
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}"
     echo
     echo -e "${YELLOW}Configuration Summary:${NC}"
@@ -1126,27 +1423,56 @@ generate_summary() {
     echo -e "  Hostname:     $SERVER_NAME"
     echo -e "  SSH Port:     $SSH_PORT"
     echo -e "  Server IP:    $SERVER_IP"
+    if [[ -f /root/run_backup.sh ]]; then
+        local CRON_SCHEDULE=$(crontab -u root -l 2>/dev/null | grep -F "/root/run_backup.sh" | awk '{print $1, $2, $3, $4, $5}' || echo "Not configured")
+        local NOTIFICATION_STATUS="None"
+        local BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        local BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        local REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        if grep -q "NTFY_URL=" /root/run_backup.sh && ! grep -q 'NTFY_URL=""' /root/run_backup.sh; then
+            NOTIFICATION_STATUS="ntfy"
+        elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
+            NOTIFICATION_STATUS="Discord"
+        fi
+        echo -e "  Remote Backup: Enabled"
+        echo -e "    - Backup Script:	/root/run_backup.sh"
+        echo -e "    - Destination:	$BACKUP_DEST"
+        echo -e "    - SSH Port:	$BACKUP_PORT"
+        echo -e "    - Remote Path:	$REMOTE_BACKUP_PATH"
+        echo -e "    - Cron Schedule:	$CRON_SCHEDULE"
+        echo -e "    - Notifications:	$NOTIFICATION_STATUS"
+    else
+        echo -e "  Remote Backup: Not configured"
+    fi
     echo
     echo -e "${PURPLE}Log File: ${LOG_FILE}${NC}"
     echo -e "${PURPLE}Backups:  ${BACKUP_DIR}${NC}"
     echo
     echo -e "${CYAN}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:         ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
-    echo -e "  - Firewall rules:     sudo ufw status verbose"
-    echo -e "  - Time sync:          chronyc tracking"
-    echo -e "  - Fail2Ban status:    sudo fail2ban-client status sshd"
-    echo -e "  - Swap status:        sudo swapon --show && free -h"
-    echo -e "  - Hostname:  	     hostnamectl"
+    echo -e "  - SSH access:		ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    echo -e "  - Firewall rules:	sudo ufw status verbose"
+    echo -e "  - Time sync:		chronyc tracking"
+    echo -e "  - Fail2Ban status:	sudo fail2ban-client status sshd"
+    echo -e "  - Swap status:		sudo swapon --show && free -h"
+    echo -e "  - Hostname:		hostnamectl"
     if command -v docker >/dev/null 2>&1; then
-        echo -e "  - Docker status:      docker ps"
+        echo -e "  - Docker status:	docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        echo -e "  - Tailscale status:   tailscale status"
+        echo -e "  - Tailscale status:	tailscale status"
     fi
-    print_warning "\nA reboot is required to apply all changes cleanly."
+    if [[ -f /root/run_backup.sh ]]; then
+        echo -e "  - Remote Backup:"
+        echo -e "    - Verify SSH key:		cat /root/.ssh/id_ed25519.pub"
+        echo -e "    - Copy key if needed:	ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
+        echo -e "    - Test backup:		sudo /root/run_backup.sh"
+        echo -e "    - Check logs:		sudo less /var/log/backup_rsync.log"
+    fi
+    print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
+    print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting now..."
+            print_info "Rebooting now, Bye!..."
             sleep 3
             reboot
         else
@@ -1171,7 +1497,7 @@ main() {
     trap 'handle_error $LINENO' ERR
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
-    
+
     print_header
     check_dependencies
     check_system
@@ -1186,6 +1512,7 @@ main() {
     configure_time_sync
     install_docker
     install_tailscale
+    setup_backup
     configure_swap
     final_cleanup
     generate_summary
