@@ -778,20 +778,6 @@ configure_firewall() {
     log "Firewall configuration completed."
 }
 
-# --- Previous lines of setup_harden_debian_ubuntu.sh unchanged ---
-
-# --- VALIDATION FUNCTIONS (updated) ---
-
-validate_port() {
-    local port="$1"
-    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]]
-}
-
-validate_backup_port() {
-    local port="$1"
-    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
-}
-
 setup_backup() {
     print_section "Backup Configuration (rsync over SSH)"
 
