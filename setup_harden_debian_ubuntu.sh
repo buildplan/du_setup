@@ -1122,6 +1122,7 @@ EOF
         print_error "Invalid cron expression. Using default daily at 3 AM."
         CRON_SCHEDULE="0 3 * * *"
     fi
+
     # Ask for notification preference
     local NOTIFICATION_SETUP="none" NTFY_URL NTFY_TOPIC NTFY_TOKEN DISCORD_WEBHOOK
     if confirm "Enable backup notifications?"; then
@@ -1163,7 +1164,6 @@ umask 077
 
 # Configuration
 RSYNC_CMD="\$(command -v rsync)"
-CURL_CMD="\$(command -v curl)"
 HOSTNAME_CMD="\$(command -v hostname)"
 DATE_CMD="\$(command -v date)"
 STAT_CMD="\$(command -v stat)"
@@ -1183,6 +1183,11 @@ LOG_FILE="/var/log/backup_\$(date +%Y%m%d_%H%M%S).log"
 MAX_LOG_SIZE=10485760 # 10 MB
 NOTIFICATION_SETUP="$NOTIFICATION_SETUP"
 EOF
+    if [[ "$NOTIFICATION_SETUP" != "none" ]]; then
+        cat >> "$BACKUP_SCRIPT" <<EOF
+CURL_CMD="\$(command -v curl)"
+EOF
+    fi
     if [[ "$NOTIFICATION_SETUP" == "ntfy" ]]; then
         cat >> "$BACKUP_SCRIPT" <<EOF
 NTFY_URL="$NTFY_URL/$NTFY_TOPIC"
@@ -1206,7 +1211,7 @@ send_notification() {
 EOF
     if [[ "$NOTIFICATION_SETUP" == "ntfy" ]]; then
         cat >> "$BACKUP_SCRIPT" <<EOF
-    "$CURL_CMD" -s ${NTFY_TOKEN:+-u :"$NTFY_TOKEN"} \
+    "\${CURL_CMD:-true}" -s ${NTFY_TOKEN:+-u :"$NTFY_TOKEN"} \
         -H "Title: $title" \
         -H "Priority: $priority" \
         -d "$message" \
@@ -1214,7 +1219,7 @@ EOF
 EOF
     elif [[ "$NOTIFICATION_SETUP" == "discord" ]]; then
         cat >> "$BACKUP_SCRIPT" <<EOF
-    "$CURL_CMD" -s -H "Content-Type: application/json" \
+    "\${CURL_CMD:-true}" -s -H "Content-Type: application/json" \
         -d "{\"embeds\": [{\"title\": \"$title\", \"description\": \"$message\", \"color\": $color}]}" \
         "$DISCORD_WEBHOOK" > /dev/null 2>> "$LOG_FILE"
 EOF
@@ -1246,7 +1251,18 @@ format_backup_stats() {
 }
 
 # Dependency check
-for cmd in "$RSYNC_CMD" "$CURL_CMD" "$NC_CMD" "$AWK_CMD" "$NUMFMT_CMD" "$GREP_CMD" "$HOSTNAME_CMD" "$DATE_CMD" "$STAT_CMD" "$MV_CMD" "$TOUCH_CMD"; do
+EOF
+    if [[ "$NOTIFICATION_SETUP" != "none" ]]; then
+        cat >> "$BACKUP_SCRIPT" <<'EOF'
+if [[ -n "${CURL_CMD:-}" ]] && ! command -v "$CURL_CMD" &>/dev/null; then
+    echo "[$("$DATE_CMD" '+%Y-%m-%d %H:%M:%S')] FATAL: curl not found" >> "$LOG_FILE"
+    send_notification "❌ Backup FAILED: $("$HOSTNAME_CMD")" "curl not found" "high"
+    exit 10
+fi
+EOF
+    fi
+    cat >> "$BACKUP_SCRIPT" <<'EOF'
+for cmd in "$RSYNC_CMD" "$NC_CMD" "$AWK_CMD" "$NUMFMT_CMD" "$GREP_CMD" "$HOSTNAME_CMD" "$DATE_CMD" "$STAT_CMD" "$MV_CMD" "$TOUCH_CMD"; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "[$("$DATE_CMD" '+%Y-%m-%d %H:%M:%S')] FATAL: Required command not found at '$cmd'" >> "$LOG_FILE"
         send_notification "❌ Backup FAILED: $("$HOSTNAME_CMD")" "Required command not found at '$cmd'" "high"
