@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.1-rc2 | 2025-06-29
+# Version: 4.1 | 2025-06-29
 # Changelog:
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
@@ -83,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.1-rc2 | 2025-06-29                       ║${NC}"
+    echo -e "${CYAN}║                     v4.1 | 2025-06-29                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
