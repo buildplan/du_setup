@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.2 | 2025-06-28
+# Version: 4.1-rc | 2025-06-28
 # Changelog:
+# - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
 #
@@ -82,7 +83,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.2 | 2025-06-28                           ║${NC}"
+    echo -e "${CYAN}║                     v4.1-rc | 2025-06-28                        ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -977,15 +978,31 @@ install_tailscale() {
         echo -e "${CYAN}  $TS_COMMAND${NC}"
         log "Tailscale connection failed: $TS_COMMAND"
     else
-        # Verify connection status
-        if tailscale status --json 2>/dev/null | grep -q '"Online":true.*"Active":true'; then
+        # Verify connection status with retries
+        local RETRIES=3
+        local DELAY=5
+        local CONNECTED=false
+        for ((i=1; i<=RETRIES; i++)); do
+            if tailscale status --json 2>/dev/null | grep -q '"Self":.*"Online":true'; then
+                CONNECTED=true
+                break
+            fi
+            print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
+            sleep $DELAY
+        done
+        if $CONNECTED; then
             print_success "Tailscale connected successfully."
             log "Tailscale connected: $TS_COMMAND"
+            # Store connection details for summary
+            echo "$LOGIN_SERVER" > /tmp/tailscale_server
+            echo "None" > /tmp/tailscale_flags
         else
-            print_warning "Tailscale connection attempt succeeded, but node is not online or active."
+            print_warning "Tailscale connection attempt succeeded, but node is not online."
             print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
             echo -e "${CYAN}  $TS_COMMAND${NC}"
             log "Tailscale connection not verified: $TS_COMMAND"
+            tailscale status --json > /tmp/tailscale_status.json 2>&1
+            log "Tailscale status JSON saved to /tmp/tailscale_status.json for debugging"
         fi
     fi
 
@@ -1024,15 +1041,30 @@ install_tailscale() {
                 echo -e "${CYAN}  $TS_COMMAND${NC}"
                 log "Tailscale reconfiguration failed: $TS_COMMAND"
             else
-                # Verify reconfiguration status
-                if tailscale status --json 2>/dev/null | grep -q '"Online":true.*"Active":true'; then
+                # Verify reconfiguration status with retries
+                local RETRIES=3
+                local DELAY=5
+                local CONNECTED=false
+                for ((i=1; i<=RETRIES; i++)); do
+                    if tailscale status --json 2>/dev/null | grep -q '"Self":.*"Online":true'; then
+                        CONNECTED=true
+                        break
+                    fi
+                    print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
+                    sleep $DELAY
+                done
+                if $CONNECTED; then
                     print_success "Tailscale reconfigured with additional options."
                     log "Tailscale reconfigured: $TS_COMMAND"
+                    # Store flags for summary
+                    echo "${TS_FLAGS// --/}" > /tmp/tailscale_flags
                 else
-                    print_warning "Tailscale reconfiguration attempt succeeded, but node is not online or active."
+                    print_warning "Tailscale reconfiguration attempt succeeded, but node is not online."
                     print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
                     echo -e "${CYAN}  $TS_COMMAND${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
+                    tailscale status --json > /tmp/tailscale_status.json 2>&1
+                    log "Tailscale status JSON saved to /tmp/tailscale_status.json for debugging"
                 fi
             fi
         else
@@ -1530,14 +1562,13 @@ generate_summary() {
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
             print_success "Service tailscaled is active and connected."
-            local TS_SERVER=$(tailscale status --json 2>/dev/null | grep -o '"ControlURL":"[^"]*"' | cut -d'"' -f4 || echo "Unknown")
-            local TS_FLAGS=$(tailscale status --json 2>/dev/null | grep -o '"CurrentTailnet":{"MagicDNSSuffix":"[^"]*","Capabilities":\[[^]]*]}' | grep -o '"ssh":true\|"advertise-exit-node":true\|"accept-dns":true\|"accept-routes":true' | tr '\n' ',' | sed 's/,$//' | sed 's/"//g' | sed 's/:true//g' || echo "None")
-            TS_FLAGS=${TS_FLAGS:-None}
+            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || tailscale status --json 2>/dev/null | grep -o '"ControlURL":"[^"]*"' | cut -d'"' -f4 || echo "Unknown")
+            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+            TS_SERVER=${TS_SERVER:-"https://controlplane.tailscale.com"}
         else
             print_error "Service tailscaled is NOT active or not connected."
             local TS_SERVER="Not connected"
             local TS_FLAGS="None"
-            # Check log for last attempted command
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
             TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
         fi
@@ -1610,7 +1641,7 @@ generate_summary() {
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting now..."
+            print_info "Rebooting, bye!..."
             sleep 3
             reboot
         else
