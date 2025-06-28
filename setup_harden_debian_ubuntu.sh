@@ -994,7 +994,6 @@ setup_backup() {
     fi
 
     # --- Handle SSH Key Copy ---
-    # (Your existing code for this section is excellent and remains unchanged)
     echo -e "${CYAN}Choose how to copy the root SSH key:${NC}"
     echo -e "  1) Automate with password (requires sshpass, password stored briefly in memory)"
     echo -e "  2) Manual copy (recommended)"
@@ -1003,39 +1002,58 @@ setup_backup() {
     if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
         if ! command -v sshpass >/dev/null 2>&1; then
             print_info "Installing sshpass for automated key copying..."
-            apt-get install -y -qq sshpass || { print_warning "Failed to install sshpass. Falling back to manual copy."; KEY_COPY_CHOICE=2; }
+            apt-get update -qq && apt-get install -y -qq sshpass || { print_warning "Failed to install sshpass. Falling back to manual copy."; KEY_COPY_CHOICE=2; }
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
             read -sp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
-            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" $SSH_COPY_ID_FLAGS "$BACKUP_DEST"; then
+            # Ensure ~/.ssh/ exists on remote for Hetzner
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
+            fi
+            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" $SSH_COPY_ID_FLAGS "$BACKUP_DEST" 2>&1 | tee /tmp/ssh-copy-id.log; then
                 print_success "SSH key copied successfully."
             else
-                print_error "Automated SSH key copy failed. Please copy manually."
+                print_error "Automated SSH key copy failed. Error details in /tmp/ssh-copy-id.log."
+                print_info "Please verify the password and ensure ~/.ssh/authorized_keys is writable on the remote server."
                 KEY_COPY_CHOICE=2
             fi
         fi
     fi
     if [[ "$KEY_COPY_CHOICE" == "2" ]]; then
         print_warning "ACTION REQUIRED: Copy the root SSH key to the backup destination."
+        echo -e "This will allow the root user to connect without a password for automated backups."
         echo -e "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; echo
         echo -e "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
         echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; echo
+        if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+            print_info "For Hetzner, ensure ~/.ssh/ exists on the remote server: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
+        fi
     fi
 
     # --- SSH Connection Test ---
     if confirm "Test SSH connection to the backup destination (recommended)?"; then
         print_info "Testing SSH connection (timeout: 10 seconds)..."
-        if ssh -p "$BACKUP_PORT" -o BatchMode=yes -o ConnectTimeout=10 "$BACKUP_DEST" true 2>/dev/null; then
+        if [[ ! -f "$ROOT_SSH_DIR/known_hosts" ]] || ! grep -q "$BACKUP_DEST" "$ROOT_SSH_DIR/known_hosts"; then
+            print_warning "SSH key may not be copied yet. Connection test may fail."
+        fi
+        local test_command="ssh -p \"$BACKUP_PORT\" -o BatchMode=yes -o ConnectTimeout=10 \"$BACKUP_DEST\" true"
+        if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+            test_command="sftp -P \"$BACKUP_PORT\" -o BatchMode=yes -o ConnectTimeout=10 \"$BACKUP_DEST\" <<< 'quit'"
+        fi
+        if eval "$test_command" 2>/dev/null; then
             print_success "SSH connection to backup destination successful!"
         else
             print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
             print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
             print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
             print_info "  - Ensure key is in ~/.ssh/authorized_keys on the backup server."
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                print_info "  - For Hetzner, ensure ~/.ssh/ exists: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
+            fi
         fi
     fi
+
     # --- Create Exclude File ---
-    # (Your existing code for this section is excellent and remains unchanged)
     print_info "Creating rsync exclude file at $EXCLUDE_FILE_PATH..."
     tee "$EXCLUDE_FILE_PATH" > /dev/null <<'EOF'
 # Default Exclusions
@@ -1057,15 +1075,13 @@ EOF
     chmod 600 "$EXCLUDE_FILE_PATH"
     print_success "Rsync exclude file created."
 
-
     # --- Collect Cron Schedule ---
     local CRON_SCHEDULE
     while true; do
         print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
         read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [5 3 * * *]: ${NC}")" CRON_SCHEDULE
         CRON_SCHEDULE=${CRON_SCHEDULE:-"5 3 * * *"}
-        # More robust cron validation
-        if [[ $CRON_SCHEDULE =~ ^(((\*\/)?[0-9,-]+|\*|([a-zA-Z]{3,3}))\s*){5}$ ]]; then break; else print_error "Invalid cron expression. Please try again."; fi
+        if [[ $CRON_SCHEDULE =~ ^((\*|[0-9,-]+|[a-zA-Z]{3})\s*){5}$ ]]; then break; else print_error "Invalid cron expression. Please try again."; fi
     done
 
     # --- Collect Notification Details ---
@@ -1118,7 +1134,7 @@ send_notification() {
     fi
 }
 # --- DEPENDENCY & LOCKING ---
-for cmd in rsync flock; do if ! command -v "$cmd" &>/dev/null; then send_notification "FAILURE" "FATAL: '$cmd' not found."; exit 10; fi; done
+for cmd in rsync flock numfmt awk; do if ! command -v "$cmd" &>/dev/null; then send_notification "FAILURE" "FATAL: '$cmd' not found."; exit 10; fi; done
 exec 200>"$LOCK_FILE"; flock -n 200 || { echo "Backup already running."; exit 1; }
 # --- LOG ROTATION ---
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"; if [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE") -gt 10485760 ]]; then mv "$LOG_FILE" "${LOG_FILE}.1"; fi
