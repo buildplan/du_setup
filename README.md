@@ -11,88 +11,82 @@
 
 ## Overview
 
-This script automates the initial setup and security hardening of a fresh Debian or Ubuntu server. It is designed to be **idempotent**, **safe**, and suitable for **production environments**, establishing a secure baseline from which to build upon.
-
-It runs interactively, guiding the user through critical choices while automating the tedious but essential steps of securing a new server.
+This script automates the initial setup and security hardening of a fresh Debian or Ubuntu server. It is **idempotent**, **safe**, and suitable for **production environments**, providing a secure baseline for further customization. The script runs interactively, guiding users through critical choices while automating essential security and setup tasks.
 
 ## Features
 
-- **Secure User Management:** Creates a new administrator user with `sudo` privileges and disables the root account's SSH access.
-- **SSH Hardening:** Configures the SSH server to use a custom port, disable password authentication (enforcing key-based login), and apply other security best practices.
-- **Firewall Configuration:** Sets up UFW (Uncomplicated Firewall) with sensible defaults and allows for custom rules.
-- **Intrusion Prevention:** Installs and configures **Fail2Ban** to automatically block IPs that show malicious signs, such as repeated password failures.
-- **Automated Security Updates:** Configures `unattended-upgrades` to automatically install new security patches.
-- **System Stability:** Sets up NTP time synchronization with `chrony` and can configure a swap file for systems with low RAM.
-- **Remote rsync Backups:** Configures a root cron job for `rsync` backups to any SSH-accessible server (e.g., Hetzner Storage Box, NAS, or custom server), with SSH key automation, cron scheduling, ntfy/Discord notifications, and customizable exclude file.
-- **Safety First:** Automatically backs up all critical configuration files before modification, with simple restoration instructions.
-- **Optional Software:** Provides optional, interactive installation for:
+- **Secure User Management**: Creates a new `sudo` user and disables root SSH access.
+- **SSH Hardening**: Configures a custom SSH port, enforces key-based authentication, and applies security best practices.
+- **Firewall Configuration**: Sets up UFW with secure defaults and customizable rules.
+- **Intrusion Prevention**: Installs and configures **Fail2Ban** to block malicious IPs.
+- **Automated Security Updates**: Enables `unattended-upgrades` for automatic security patches.
+- **System Stability**: Configures NTP time synchronization with `chrony` and optional swap file setup for low-RAM systems.
+- **Remote rsync Backups**: Configures automated `rsync` backups over SSH to any compatible server (e.g., Hetzner Storage Box), with SSH key automation (`sshpass` or manual), cron scheduling, ntfy/Discord notifications, and a customizable exclude file.
+- **Safety First**: Backs up critical configuration files before modification, stored in `/root/setup_harden_backup_*`.
+- **Optional Software**: Offers interactive installation of:
   - Docker & Docker Compose
   - Tailscale (Mesh VPN)
-- **Comprehensive Logging:** All actions are logged to `/var/log/setup_harden_debian_ubuntu_*.log`.
-- **Automation-Friendly:** Includes a `--quiet` mode to suppress non-essential output for use in automated provisioning workflows.
+- **Comprehensive Logging**: Logs all actions to `/var/log/setup_harden_debian_ubuntu_*.log`.
+- **Automation-Friendly**: Supports `--quiet` mode for automated provisioning.
 
 ## Installation & Usage
 
 ### Prerequisites
 
-- A fresh installation of a compatible OS.
+- Fresh installation of a compatible OS.
 - Root or `sudo` privileges.
-- Internet access for downloading packages.
-- For remote backups: An SSH-accessible server (e.g., Hetzner Storage Box or custom server) with credentials or SSH key access.
+- Internet access for package downloads.
+- For remote backups: An SSH-accessible server (e.g., Hetzner Storage Box) with credentials or SSH key access.
 
 ### 1. Download the Script
 
-```bash
+```
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
-### 2. Run the Script Interactively
+### 2. Run Interactively (Recommended)
 
-It is highly recommended to run the script interactively the first time.
-
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh
 ```
 
-### 3. Run in Quiet Mode (for automation - not recommended)
+### 3. Run in Quiet Mode (for Automation)
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
-> **Warning:** The script will pause and require you to test your new SSH connection from a separate terminal before it proceeds to disable old access methods. **Do not skip this step!**
-> 
-> *Make sure to check your VPS provider's firewall; you will have to open your selected custom SSH port there.*
-> 
-> *For remote backups, ensure the backup server's SSH port is open and accessible.*
+> **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
+>
+> Ensure your VPS provider’s firewall allows the custom SSH port and the backup server’s SSH port (e.g., 23 for Hetzner Storage Box).
 
-## What It Does in Detail
+## What It Does
 
 | Task | Description |
 | --- | --- |
 | **System Checks** | Verifies OS compatibility, root privileges, and internet connectivity. |
-| **Package Management** | Updates all packages and installs essential tools (`ufw`, `fail2ban`, `chrony`, `rsync`, etc.). |
-| **Admin User Creation** | Creates a new `sudo` user with a password and/or a provided SSH public key. |
+| **Package Management** | Updates packages and installs tools (`ufw`, `fail2ban`, `chrony`, `rsync`, etc.). |
+| **Admin User Creation** | Creates a `sudo` user with a password and/or SSH public key. |
 | **SSH Hardening** | Disables root login, enforces key-based auth, and sets a custom port. |
-| **Firewall Setup** | Configures UFW to deny incoming traffic by default and allow specific ports. |
-| **Remote Backup Setup** | (Optional) Configures `rsync` backups to a user-specified SSH server (e.g., `user@host:port`), including root SSH key generation, cron job scheduling, ntfy/Discord notifications, and an exclude file with defaults (e.g., `*~`, `*.tmp`). |
-| **System Backups** | Creates timestamped backups of configs in `/root/` before modification. |
-| **Swap File Setup** | (Optional) Creates a swap file with a user-selected size. |
-| **Timezone & Locales** | (Optional) Interactive configuration for timezone and system locales. |
-| **Docker Install** | (Optional) Installs and configures Docker Engine and adds the user to the `docker` group. |
-| **Tailscale Install** | (Optional) Installs the Tailscale client. |
-| **Final Cleanup** | Removes unused packages and reloads system daemons. |
+| **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific ports. |
+| **Remote Backup Setup** | Configures `rsync` backups to an SSH server (e.g., `u457300-sub4@u457300.your-storagebox.de:23`). Creates `/root/run_backup.sh`, `/root/rsync_exclude.txt`, and schedules a cron job. Supports ntfy/Discord notifications. |
+| **System Backups** | Saves timestamped configuration backups in `/root/setup_harden_backup_*`. |
+| **Swap File Setup** | Creates an optional swap file (e.g., 2G) with tuned settings. |
+| **Timezone & Locales** | Configures timezone and system locales interactively. |
+| **Docker Install** | Installs Docker Engine and adds the user to the `docker` group. |
+| **Tailscale Install** | Installs the Tailscale client for Mesh VPN. |
+| **Final Cleanup** | Removes unused packages and reloads daemons. |
 
 ## Logs & Backups
 
-- **Log Files:** `/var/log/setup_harden_debian_ubuntu_*.log`
-- **Backup Logs:** `/var/log/backup_*.log` (for remote backup operations)
-- **Configuration Backups:** `/root/setup_harden_backup_*`
+- **Log Files**: `/var/log/setup_harden_debian_ubuntu_*.log`
+- **Backup Logs**: `/var/log/backup_rsync.log` (for remote backup operations)
+- **Configuration Backups**: `/root/setup_harden_backup_*`
 
-## Post-Reboot Verification Steps
+## Post-Reboot Verification
 
-After rebooting, verify the setup with the following commands:
+After rebooting, verify the setup:
 
 - **SSH Access**: `ssh -p <custom_port> <username>@<server_ip>`
 - **Firewall Rules**: `sudo ufw status verbose`
@@ -104,95 +98,80 @@ After rebooting, verify the setup with the following commands:
 - **Tailscale Status** (if installed): `tailscale status`
 - **Remote Backup** (if configured):
   - Verify SSH key: `cat /root/.ssh/id_ed25519.pub`
-  - Copy key to backup server (if not done during setup): `ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
-  - Test backup: `sudo /root/backup.sh`
-  - Check backup logs: `sudo less /var/log/backup_*.log`
+  - Copy key (if not done): `ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
+  - Test backup: `sudo /root/run_backup.sh`
+  - Check logs: `sudo less /var/log/backup_rsync.log`
+  - Verify cron job: `sudo crontab -l` (e.g., `3 3 * * * /root/run_backup.sh`)
 
 ## Tested On
 
 - Debian 12
 - Ubuntu 22.04, 24.04, 24.10 (experimental)
-- Cloud providers (DigitalOcean, Oracle Cloud, Hetzner, Netcup) and local VMs, including Hetzner Storage Box for backups.
+- Cloud providers: DigitalOcean, Oracle Cloud, Hetzner, Netcup
+- Backup destinations: Hetzner Storage Box, custom SSH servers
 
 ## Important Notes
 
-- **Run this on a fresh system.** While idempotent, the script is designed for initial provisioning.
-- **A system reboot is required** after the script completes to ensure all changes, especially to the kernel and services, are applied cleanly.
-- Always test the script in a non-production environment (like a staging VM) before deploying to a live server.
-- Ensure you have out-of-band console access to your server in case you accidentally lock yourself out.
-- For remote backups, ensure the root SSH key is copied to the backup server (`ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`) to enable automated backups.
+- **Run on a fresh system**: Designed for initial provisioning.
+- **Reboot required**: Ensures kernel and service changes apply cleanly.
+- Test in a non-production environment (e.g., staging VM) first.
+- Maintain out-of-band console access in case of SSH lockout.
+- For Hetzner Storage Box, ensure `~/.ssh/` exists on the remote server: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`.
 
 ## Troubleshooting
 
 ### SSH Lockout Recovery
 
-If you are locked out of SSH, use your provider's web console to perform the following steps:
+If locked out, use your provider’s console:
 
-1. **Remove the hardened configuration:**
-
-   ```bash
-   # This file overrides the main config, so it must be removed.
+1. **Remove Hardened Configuration**:
+   ```
    rm /etc/ssh/sshd_config.d/99-hardening.conf
    ```
 
-2. **Restore the original `sshd_config` file:**
-
-   ```bash
-   # Find the latest backup directory
+2. **Restore Original `sshd_config`**:
+   ```
    LATEST_BACKUP=$(ls -td /root/setup_harden_backup_* | head -1)
-   
-   # Copy the original config back into place
    cp "$LATEST_BACKUP"/sshd_config.backup_* /etc/ssh/sshd_config
    ```
 
-3. **Restart the SSH service:**
-
-   ```bash
+3. **Restart SSH**:
+   ```
    systemctl restart ssh
    ```
 
-   You should now be able to log in using the original port (usually 22) and credentials.
-
 ### Backup Issues
 
-If backups fail, check the following:
+If backups fail:
 
-1. **Verify SSH Key Setup**:
-   - Ensure the root SSH key is copied to the backup server:
-     ```bash
-     ssh-copy-id -p <backup_port> -s <backup_user@backup_host>
-     ```
-   - Test SSH connectivity:
-     ```bash
-     ssh -p <backup_port> <backup_user@backup_host> exit
-     ```
+1. **Verify SSH Key**:
+   - Check: `cat /root/.ssh/id_ed25519.pub`
+   - Copy (if needed): `ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
+   - For Hetzner: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`
+   - Test SSH: `ssh -p <backup_port> <backup_user@backup_host> exit`
 
-2. **Check Backup Logs**:
-   - Review logs for errors:
-     ```bash
-     sudo less /var/log/backup_*.log
-     ```
+2. **Check Logs**:
+   - Review: `sudo less /var/log/backup_rsync.log`
+   - If automated key copy fails: `cat /tmp/ssh-copy-id.log`
 
 3. **Test Backup Manually**:
-   - Run the backup script to identify issues:
-     ```bash
-     sudo /root/backup.sh
-     ```
+   ```
+   sudo /root/run_backup.sh
+   ```
 
 4. **Verify Cron Job**:
-   - Check the cron schedule:
-     ```bash
-     sudo crontab -l
-     ```
-   - Ensure the schedule is valid (e.g., `0 3 * * *` for daily at 3 AM).
+   - Check: `sudo crontab -l`
+   - Ensure: `3 3 * * * /root/run_backup.sh #-*- managed by setup_harden script -*-`
+   - Test cron permissions: `echo "3 3 * * * /root/run_backup.sh" | crontab -u root -`
+   - Check permissions: `ls -l /var/spool/cron/crontabs/root` (expect `-rw------- root:crontab`)
 
 5. **Network Issues**:
-   - Verify the backup server’s SSH port is open:
-     ```bash
-     nc -zv <backup_host> <backup_port>
-     ```
-   - Check your VPS provider’s firewall for outbound access to the backup server’s port.
+   - Verify port: `nc -zv <backup_host> <backup_port>`
+   - Check VPS firewall for outbound access to the backup port (e.g., 23 for Hetzner).
 
-## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE "LICENSE") License
+6. **Summary Errors**:
+   - If summary shows `Remote Backup: Not configured`, verify: `ls -l /root/run_backup.sh`
+
+## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE) License
 
 This script is open-source and provided "as is" without warranty. Use at your own risk.
