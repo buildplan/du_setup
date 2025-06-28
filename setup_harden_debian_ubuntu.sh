@@ -1471,7 +1471,7 @@ generate_summary() {
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
-            print_info "Rebooting now..."
+            print_info "Rebooting ..."
             sleep 3
             reboot
         else
