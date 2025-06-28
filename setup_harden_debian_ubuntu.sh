@@ -798,17 +798,36 @@ setup_backup() {
         print_info "Root SSH key already exists at $ROOT_SSH_KEY."
     fi
 
-    # Ask for backup destination details
-    read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
+    # Ask for backup destination details with retry logic
+    local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_DIR
+    local retry_count=0
+    local max_retries=3
+    while true; do
+        read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., user@host or u45555-sub4@u45555.your-storagebox.de): ${NC}")" BACKUP_DEST
+        BACKUP_DEST=${BACKUP_DEST:-user@host}
+        if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
+            break
+        else
+            print_error "Invalid backup destination format. Expected user@host."
+            (( retry_count++ ))
+            if [[ $retry_count -lt $max_retries ]]; then
+                print_info "Please try again ($retry_count/$max_retries attempts)."
+            else
+                print_warning "Maximum retries ($max_retries) reached for backup destination."
+                if confirm "Proceed with potentially invalid destination '$BACKUP_DEST'?" "n"; then
+                    print_info "Proceeding with user-provided destination: $BACKUP_DEST"
+                    break
+                else
+                    print_info "Resetting retries. Please enter a valid backup destination."
+                    retry_count=0
+                fi
+            fi
+        fi
+    done
     read -rp "$(echo -e "${CYAN}Enter SSH port for backup destination [22]: ${NC}")" BACKUP_PORT
     read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/myvps_backup/): ${NC}")" REMOTE_BACKUP_DIR
-    BACKUP_DEST=${BACKUP_DEST:-user@host}
     BACKUP_PORT=${BACKUP_PORT:-22}
     REMOTE_BACKUP_DIR=${REMOTE_BACKUP_DIR:-/home/backup/}
-    if [[ ! "$BACKUP_DEST" =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$ ]]; then
-        print_error "Invalid backup destination format. Expected user@host."
-        exit 1
-    fi
     if ! validate_port "$BACKUP_PORT"; then
         print_error "Invalid SSH port. Must be between 1024 and 65535."
         exit 1
@@ -818,6 +837,7 @@ setup_backup() {
         exit 1
     fi
 
+    # --- Remainder of setup_backup function unchanged ---
     # Optional SSH key copy attempt
     if confirm "Attempt to copy SSH key to the backup destination now? (Requires password)"; then
         if ssh-copy-id -p "$BACKUP_PORT" -s "$BACKUP_DEST" 2>/dev/null; then
@@ -890,8 +910,8 @@ EOF
     read -rp "$(echo -e "${CYAN}Enter cron schedule (e.g., '0 3 * * *' for daily at 3 AM): ${NC}")" CRON_SCHEDULE
     CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
     if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*|[0-9,-]+(/[0-9]+)?)\s*){5}$'; then
-    print_error "Invalid cron expression. Using default daily at 3 AM."
-    CRON_SCHEDULE="0 3 * * *"
+        print_error "Invalid cron expression. Using default daily at 3 AM."
+        CRON_SCHEDULE="0 3 * * *"
     fi
     # Ask for notification preference
     local NOTIFICATION_SETUP="none" NTFY_URL NTFY_TOPIC NTFY_TOKEN DISCORD_WEBHOOK
