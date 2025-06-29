@@ -1,6 +1,6 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** 4.2
+**Version:** 4.3
 
 **Last Updated:** 2025-06-29
 
@@ -45,26 +45,37 @@ This script automates the initial setup and security hardening of a fresh Debian
 
 ### 1. Download the Script
 
-```bash
+```
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
 ### 2. Run Interactively (Recommended)
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh
 ```
 
 ### 3. Run in Quiet Mode (for Automation)
 
-```bash
+```
 sudo ./setup_harden_debian_ubuntu.sh --quiet
 ```
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >
 > Ensure your VPS provider’s firewall allows the custom SSH port, backup server’s SSH port (e.g., 23 for Hetzner Storage Box), and Tailscale traffic (UDP 41641 for direct connections).
+
+### Verify Script Integrity (Optional but Recommended)
+
+After downloading the script, verify its integrity:
+
+```
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh.sha256
+
+sha256sum -c setup_harden_debian_ubuntu.sh.sha256
+```
 
 ## What It Does
 

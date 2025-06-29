@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.2 | 2025-06-29
+# Version: 4.3 | 2025-06-29
 # Changelog:
+# - v4.3: Add SHA256 integrity verification
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
 #	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
@@ -87,7 +88,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.2 | 2025-06-29                           ║${NC}"
+    echo -e "${CYAN}║                     v4.3 | 2025-06-29                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
