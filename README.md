@@ -59,6 +59,13 @@ wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh.sha256
 
 sha256sum -c setup_harden_debian_ubuntu.sh.sha256
+
+# or run
+
+sha256sum setup_harden_debian_ubuntu.sh
+
+# Compare the generated hash, It should match below:
+# c4ff92d755b8c862c0a5c885b0a1dfa68832a1a5465e1e9913386374202c6a7a  setup_harden_debian_ubuntu.sh
 ```
 
 ### 2. Run Interactively (Recommended)
