@@ -50,7 +50,7 @@ wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
-After downloading the script, verify its integrity:
+  After downloading the script, verify its integrity:
 
 ```
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
