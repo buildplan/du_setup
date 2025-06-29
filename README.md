@@ -50,6 +50,15 @@ wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
+After downloading the script, verify its integrity:
+
+```
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh.sha256
+
+sha256sum -c setup_harden_debian_ubuntu.sh.sha256
+```
+
 ### 2. Run Interactively (Recommended)
 
 ```
@@ -68,14 +77,6 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ### Verify Script Integrity (Optional but Recommended)
 
-After downloading the script, verify its integrity:
-
-```
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh.sha256
-
-sha256sum -c setup_harden_debian_ubuntu.sh.sha256
-```
 
 ## What It Does
 
