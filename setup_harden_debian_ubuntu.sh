@@ -1830,7 +1830,7 @@ generate_summary() {
         printf "  %-20s${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale ip"
+        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
