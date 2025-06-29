@@ -731,6 +731,15 @@ configure_firewall() {
             print_info "HTTPS rule already exists."
         fi
     fi
+    if confirm "Allow Tailscale traffic (UDP 41641)?"; then
+        if ! ufw status | grep -qw "41641/udp"; then
+            ufw allow 41641/udp comment 'Tailscale VPN'
+            print_success "Tailscale traffic (UDP 41641) allowed."
+            log "Added UFW rule for Tailscale (41641/udp)."
+        else
+            print_info "Tailscale rule (UDP 41641) already exists."
+        fi
+    fi
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
@@ -752,9 +761,16 @@ configure_firewall() {
                     if ufw status | grep -qw "$port"; then
                         print_info "Rule for $port already exists."
                     else
-                        ufw allow "$port" comment "Custom port $port"
-                        print_success "Added rule for $port."
-                        log "Added UFW rule for $port."
+                        local CUSTOM_COMMENT
+                        read -rp "$(echo -e "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
+                        if [[ -z "$CUSTOM_COMMENT" ]]; then
+                            CUSTOM_COMMENT="Custom port $port"
+                        fi
+                        # Sanitize comment to avoid breaking UFW command
+                        CUSTOM_COMMENT=$(echo "$CUSTOM_COMMENT" | tr -d "'\"\\")
+                        ufw allow "$port" comment "$CUSTOM_COMMENT"
+                        print_success "Added rule for $port with comment '$CUSTOM_COMMENT'."
+                        log "Added UFW rule for $port with comment '$CUSTOM_COMMENT'."
                     fi
                 done
                 break
@@ -774,7 +790,7 @@ configure_firewall() {
         print_error "UFW failed to activate. Check 'journalctl -u ufw' for details."
         exit 1
     fi
-    print_warning "ACTION REQUIRED: Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp)."
+    print_warning "ACTION REQUIRED: Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp, 41641/udp for Tailscale)."
     ufw status verbose | tee -a "$LOG_FILE"
     log "Firewall configuration completed."
 }
