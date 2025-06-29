@@ -50,7 +50,9 @@ wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/
 chmod +x setup_harden_debian_ubuntu.sh
 ```
 
-   After downloading the script, verify its integrity:
+#### Verify Script Integrity (Optional but Recommended)
+
+After downloading the script, verify its integrity:
 
 ```
 wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
@@ -74,8 +76,6 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >
 > Ensure your VPS provider’s firewall allows the custom SSH port, backup server’s SSH port (e.g., 23 for Hetzner Storage Box), and Tailscale traffic (UDP 41641 for direct connections).
-
-### Verify Script Integrity (Optional but Recommended)
 
 
 ## What It Does
