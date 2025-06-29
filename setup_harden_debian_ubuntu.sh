@@ -66,6 +66,7 @@ SSHD_BACKUP_FILE=""
 LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
+FAILED_SERVICES=()
 
 # --- PARSE ARGUMENTS ---
 while [[ $# -gt 0 ]]; do
@@ -934,8 +935,12 @@ install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
     if command -v tailscale >/dev/null 2>&1; then
         print_info "Tailscale already installed."
-        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
-            print_success "Tailscale service is active and connected."
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            local TS_IPS TS_IPV4
+            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+            print_success "Tailscale service is active and connected. Node IPv4 in tailnet: $TS_IPV4"
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
             return 0
         else
             print_warning "Tailscale installed but service is not active or not connected."
@@ -962,8 +967,12 @@ install_tailscale() {
     fi
 
     # --- Configure Tailscale Connection ---
-    if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+"; then
-        print_info "Tailscale is already connected (hostname: $SERVER_NAME)."
+    if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+        local TS_IPS TS_IPV4
+        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+        print_info "Tailscale is already connected. Node IPv4 in tailnet: $TS_IPV4"
+        echo "$TS_IPS" > /tmp/tailscale_ips.txt
         return 0
     fi
     print_info "Configuring Tailscale connection..."
@@ -1005,23 +1014,29 @@ install_tailscale() {
         local RETRIES=3
         local DELAY=5
         local CONNECTED=false
+        local TS_IPS TS_IPV4
         for ((i=1; i<=RETRIES; i++)); do
-            if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-                CONNECTED=true
-                break
+            if tailscale ip >/dev/null 2>&1; then
+                TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+                TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+                if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
+                    CONNECTED=true
+                    break
+                fi
             fi
             print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
             sleep $DELAY
         done
         if $CONNECTED; then
-            print_success "Tailscale connected successfully (hostname: $SERVER_NAME)."
+            print_success "Tailscale connected successfully. Node IPv4 in tailnet: $TS_IPV4"
             log "Tailscale connected: $TS_COMMAND"
             # Store connection details for summary
             echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
             echo "None" > /tmp/tailscale_flags
         else
-            print_warning "Tailscale connection attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
-            print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+            print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
+            print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
             echo -e "${CYAN}  $TS_COMMAND${NC}"
             log "Tailscale connection not verified: $TS_COMMAND"
             tailscale status > /tmp/tailscale_status.txt 2>&1
@@ -1068,22 +1083,28 @@ install_tailscale() {
                 local RETRIES=3
                 local DELAY=5
                 local CONNECTED=false
+                local TS_IPS TS_IPV4
                 for ((i=1; i<=RETRIES; i++)); do
-                    if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-                        CONNECTED=true
-                        break
+                    if tailscale ip >/dev/null 2>&1; then
+                        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+                        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+                        if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
+                            CONNECTED=true
+                            break
+                        fi
                     fi
                     print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
                     sleep $DELAY
                 done
                 if $CONNECTED; then
-                    print_success "Tailscale reconfigured with additional options."
+                    print_success "Tailscale reconfigured with additional options. Node IPv4 in tailnet: $TS_IPV4"
                     log "Tailscale reconfigured: $TS_COMMAND"
-                    # Store flags for summary
+                    # Store flags and IPs for summary
                     echo "${TS_FLAGS// --/}" > /tmp/tailscale_flags
+                    echo "$TS_IPS" > /tmp/tailscale_ips.txt
                 else
-                    print_warning "Tailscale reconfiguration attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
-                    print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+                    print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
+                    print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
                     echo -e "${CYAN}  $TS_COMMAND${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
                     tailscale status > /tmp/tailscale_status.txt 2>&1
@@ -1099,7 +1120,7 @@ install_tailscale() {
         log "No additional Tailscale options applied."
     fi
     print_success "Tailscale setup complete."
-    print_info "Verify status: tailscale status"
+    print_info "Verify status: tailscale ip"
     log "Tailscale setup completed."
 }
 
@@ -1704,30 +1725,34 @@ generate_summary() {
             print_success "Service $service is active."
         else
             print_error "Service $service is NOT active."
+            FAILED_SERVICES+=("$service")
         fi
     done
     if ufw status | grep -q "Status: active"; then
         print_success "Service ufw is active."
     else
         print_error "Service ufw is NOT active."
+        FAILED_SERVICES+=("ufw")
     fi
     if command -v docker >/dev/null 2>&1; then
         if systemctl is-active --quiet docker; then
             print_success "Service docker is active."
         else
             print_error "Service docker is NOT active."
+            FAILED_SERVICES+=("docker")
         fi
     fi
     local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
-        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-            print_success "Service tailscaled is active and connected."
-            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
-            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            local TS_IPS TS_IPV4
+            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+            print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
         else
             print_error "Service tailscaled is NOT active or not connected."
-            local TS_SERVER="Not connected"
-            local TS_FLAGS="None"
+            FAILED_SERVICES+=("tailscaled")
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
             TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
         fi
@@ -1772,8 +1797,12 @@ generate_summary() {
         echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
     if command -v tailscale >/dev/null 2>&1; then
+        local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
+        local TS_IPS=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
+        local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
         echo -e "  Tailscale:       ${GREEN}Enabled${NC}"
         printf "    %-16s%s\n" "- Server:" "$TS_SERVER"
+        printf "    %-16s%s\n" "- Tailscale IPs:" "$TS_IPS"
         printf "    %-16s%s\n" "- Flags:" "$TS_FLAGS"
     else
         echo -e "  Tailscale:       ${RED}Not configured${NC}"
@@ -1801,10 +1830,7 @@ generate_summary() {
         printf "  %-20s${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
-        if [[ "$TS_SERVER" == "Not connected" && -n "$TS_COMMAND" ]]; then
-            printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale connect:" "$TS_COMMAND"
-        fi
+        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale ip"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
@@ -1817,10 +1843,17 @@ generate_summary() {
         echo -e "  Security Audit:"
         printf "    %-18s${CYAN}%s${NC}\n" "- Check results:" "sudo less $AUDIT_LOG"
     fi
-    print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
-    if [[ -n "$TS_COMMAND" ]]; then
-        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the command above to connect manually."
+    if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
+        print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
     fi
+    if [[ -n "$TS_COMMAND" ]]; then
+        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
+        echo -e "${CYAN}  $TS_COMMAND${NC}"
+    fi
+    if [[ -f /root/run_backup.sh && "$KEY_COPY_CHOICE" == "2" ]]; then
+        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to $BACKUP_DEST."
+    fi
+    print_warning "ACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
