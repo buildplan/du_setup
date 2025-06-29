@@ -1,0 +1,23 @@
+name: Add SHA256 to Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  attach-sha256:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Source Code
+        uses: actions/checkout@v4
+
+      - name: Generate SHA256
+        run: |
+          sha256sum setup_harden_debian_ubuntu.sh > setup_harden_debian_ubuntu.sh.sha256
+
+      - name: Upload SHA256 to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: setup_harden_debian_ubuntu.sh.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
