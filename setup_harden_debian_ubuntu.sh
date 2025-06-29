@@ -57,6 +57,7 @@ NC='\033[0m' # No Color
 # Script variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/setup_harden_debian_ubuntu_$(date +%Y%m%d_%H%M%S).log"
+BACKUP_LOG="/var/log/backup_rsync.log"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
 IS_CONTAINER=false
@@ -1422,6 +1423,7 @@ test_backup() {
     echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
 
     if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
+        echo "Test backup successful" >> "$BACKUP_LOG"
         print_success "Test backup successful! Check $BACKUP_LOG for details."
         log "Test backup successful."
     else
@@ -1600,63 +1602,71 @@ configure_time_sync() {
 
 configure_security_audit() {
     print_section "Security Audit Configuration"
-    if ! confirm "Run a security audit with Lynis (and optionally debsecan)?"; then
-        print_info "Skipping security audit."
+    if ! confirm "Run a security audit with Lynis (and optionally debsecan on Debian)?"; then
+        print_info "Security audit skipped."
         log "Security audit skipped by user."
+        AUDIT_RAN=false
         return 0
     fi
 
-    local AUDIT_LOG="/var/log/setup_harden_security_audit_$(date +%Y%m%d_%H%M%S).log"
+    AUDIT_LOG="/var/log/setup_harden_security_audit_$(date +%Y%m%d_%H%M%S).log"
     touch "$AUDIT_LOG" && chmod 600 "$AUDIT_LOG"
-    log "Starting security audit. Results will be saved to $AUDIT_LOG."
+    AUDIT_RAN=true
+    HARDENING_INDEX=""
+    DEBSECAN_VULNS="Not run"
 
-    # Install Lynis
+    # Install and run Lynis
     print_info "Installing Lynis..."
     if ! apt-get update -qq; then
-    	print_error "Failed to update package lists. Cannot install Lynis."
-    	log "apt-get update failed for Lynis installation."
-    	return 1
-	elif ! apt-get install -y -qq lynis; then
-    	print_warning "Failed to install Lynis. Skipping Lynis audit."
-    	log "Lynis installation failed."
+        print_error "Failed to update package lists. Cannot install Lynis."
+        log "apt-get update failed for Lynis installation."
+        return 1
+    elif ! apt-get install -y -qq lynis; then
+        print_warning "Failed to install Lynis. Skipping Lynis audit."
+        log "Lynis installation failed."
     else
         print_info "Running Lynis audit (non-interactive mode)..."
-        if lynis audit system --quick > "$AUDIT_LOG" 2>&1; then
+        if lynis audit system --quick >> "$AUDIT_LOG" 2>&1; then
             print_success "Lynis audit completed. Check $AUDIT_LOG for details."
-            # Extract hardening index from Lynis log
-            local HARDENING_SCORE
-            HARDENING_SCORE=$(grep "Hardening index" /var/log/lynis.log | awk '{print $NF}' || echo "N/A")
-            print_info "Lynis Hardening Index: $HARDENING_SCORE"
-            log "Lynis audit completed with hardening index: $HARDENING_SCORE"
-            # Copy Lynis log to audit log for persistence
-            cat /var/log/lynis.log >> "$AUDIT_LOG"
+            log "Lynis audit completed successfully."
+            # Extract hardening index
+            HARDENING_INDEX=$(grep -oP "Hardening index : \K\d+" "$AUDIT_LOG" || echo "Unknown")
+            # Append Lynis system log for persistence
+            cat /var/log/lynis.log >> "$AUDIT_LOG" 2>/dev/null
         else
             print_error "Lynis audit failed. Check $AUDIT_LOG for details."
             log "Lynis audit failed."
         fi
     fi
 
-    # Optional debsecan
-    if confirm "Also run debsecan to check for package vulnerabilities?"; then
-        print_info "Installing debsecan..."
-        if ! apt-get install -y -qq debsecan; then
-            print_warning "Failed to install debsecan. Skipping debsecan audit."
-            log "debsecan installation failed."
-        else
-            print_info "Running debsecan audit..."
-            if debsecan --suite "$(. /etc/os-release && echo "$VERSION_CODENAME")" >> "$AUDIT_LOG" 2>&1; then
-                local VULN_COUNT
-                VULN_COUNT=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
-                print_success "debsecan audit completed. Found $VULN_COUNT vulnerabilities."
-                log "debsecan audit completed with $VULN_COUNT vulnerabilities."
+    # Check if system is Debian before running debsecan
+    source /etc/os-release
+    if [[ "$ID" == "debian" ]]; then
+        if confirm "Also run debsecan to check for package vulnerabilities?"; then
+            print_info "Installing debsecan..."
+            if ! apt-get install -y -qq debsecan; then
+                print_warning "Failed to install debsecan. Skipping debsecan audit."
+                log "debsecan installation failed."
             else
-                print_error "debsecan audit failed. Check $AUDIT_LOG for details."
-                log "debsecan audit failed."
+                print_info "Running debsecan audit..."
+                if debsecan --suite "$VERSION_CODENAME" >> "$AUDIT_LOG" 2>&1; then
+                    DEBSECAN_VULNS=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
+                    print_success "debsecan audit completed. Found $DEBSECAN_VULNS vulnerabilities."
+                    log "debsecan audit completed with $DEBSECAN_VULNS vulnerabilities."
+                else
+                    print_error "debsecan audit failed. Check $AUDIT_LOG for details."
+                    log "debsecan audit failed."
+                    DEBSECAN_VULNS="Failed"
+                fi
             fi
+        else
+            print_info "debsecan audit skipped."
+            log "debsecan audit skipped by user."
         fi
     else
-        print_info "Skipping debsecan audit."
-        log "debsecan audit skipped by user."
+        print_info "debsecan is not supported on Ubuntu. Skipping debsecan audit."
+        log "debsecan audit skipped (Ubuntu detected)."
+        DEBSECAN_VULNS="Not supported on Ubuntu"
     fi
 
     print_warning "Review audit results in $AUDIT_LOG for security recommendations."
@@ -1713,6 +1723,11 @@ generate_summary() {
             TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
         fi
     fi
+    if [[ "$AUDIT_RAN" == true ]]; then
+        print_success "Security audit performed."
+    else
+        print_info "Security audit not performed."
+    fi
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
     echo -e "${YELLOW}Configuration Summary:${NC}"
     printf "  %-16s%s\n" "Admin User:" "$USERNAME"
@@ -1737,6 +1752,13 @@ generate_summary() {
         printf "    %-16s%s\n" "- Remote Path:" "$REMOTE_BACKUP_PATH"
         printf "    %-16s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
         printf "    %-16s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
+        if [[ -f "$BACKUP_LOG" ]] && grep -q "Test backup successful" "$BACKUP_LOG" 2>/dev/null; then
+            printf "    %-16s%s\n" "- Test Status:" "Successful"
+        elif [[ -f "$BACKUP_LOG" ]]; then
+            printf "    %-16s%s\n" "- Test Status:" "Failed (check $BACKUP_LOG)"
+        else
+            printf "    %-16s%s\n" "- Test Status:" "Not run"
+        fi
     else
         echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
@@ -1746,6 +1768,14 @@ generate_summary() {
         printf "    %-16s%s\n" "- Flags:" "$TS_FLAGS"
     else
         echo -e "  Tailscale:       ${RED}Not configured${NC}"
+    fi
+    if [[ "$AUDIT_RAN" == true ]]; then
+        echo -e "  Security Audit:  ${GREEN}Performed${NC}"
+        printf "    %-16s%s\n" "- Audit Log:" "$AUDIT_LOG"
+        printf "    %-16s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
+        printf "    %-16s%s\n" "- Vulnerabilities:" "$DEBSECAN_VULNS"
+    else
+        echo -e "  Security Audit:  ${RED}Not run${NC}"
     fi
     echo
     printf "${PURPLE}%-16s%s${NC}\n" "Log File:" "$LOG_FILE"
@@ -1772,29 +1802,15 @@ generate_summary() {
         printf "    %-18s${CYAN}%s${NC}\n" "- Verify SSH key:" "cat /root/.ssh/id_ed25519.pub"
         printf "    %-18s${CYAN}%s${NC}\n" "- Copy key if needed:" "ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
         printf "    %-18s${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less /var/log/backup_rsync.log"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
-    local BACKUP_TEST_RESULT="Not run"
-    if grep -q "Test backup successful" "$BACKUP_LOG"; then
-    	BACKUP_TEST_RESULT="Successful"
-        elif grep -q "Test backup failed" "$BACKUP_LOG"; then
-        BACKUP_TEST_RESULT="Failed (check $BACKUP_LOG)"
-     fi
-     printf "    %-16s%s\n" "- Test Result:" "$BACKUP_TEST_RESULT"
+    if [[ "$AUDIT_RAN" == true ]]; then
+        echo -e "  Security Audit:"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Check results:" "sudo less $AUDIT_LOG"
+    fi
     print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     if [[ -n "$TS_COMMAND" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the command above to connect manually."
-    fi
-    if [[ -f /var/log/setup_harden_security_audit_*.log ]]; then
-        local AUDIT_LOG=$(ls -t /var/log/setup_harden_security_audit_*.log | head -n1)
-        echo -e "  Security Audit:  ${GREEN}Completed${NC}"
-        printf "    %-16s%s\n" "- Results:" "$AUDIT_LOG"
-        local HARDENING_SCORE=$(grep "Hardening index" "$AUDIT_LOG" | awk '{print $NF}' || echo "N/A")
-        local VULN_COUNT=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
-        printf "    %-16s%s\n" "- Lynis Score:" "$HARDENING_SCORE"
-        printf "    %-16s%s\n" "- Vulnerabilities:" "$VULN_COUNT"
-    else
-        echo -e "  Security Audit:  ${RED}Not run${NC}"
     fi
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
