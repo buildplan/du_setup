@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.1 | 2025-06-29
+# Version: 4.2 | 2025-06-29
 # Changelog:
+# - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
@@ -83,7 +84,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.1 | 2025-06-29                           ║${NC}"
+    echo -e "${CYAN}║                     v4.2 | 2025-06-29                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1326,6 +1327,9 @@ EOF
     fi
     print_success "Backup script created."
 
+    # --- Backup test ---
+    test_backup
+
     # --- Configure Cron Job ---
     print_info "Configuring root cron job..."
     # Ensure crontab is writable
@@ -1361,6 +1365,62 @@ EOF
     rm -f "$TEMP_CRON"
     print_success "Backup cron job scheduled: $CRON_SCHEDULE"
     log "Backup configuration completed."
+}
+
+test_backup() {
+    print_section "Backup Configuration Test"
+    if [[ ! -f /root/run_backup.sh ]]; then
+        print_error "Backup script not found. Cannot run test."
+        log "Backup test failed: /root/run_backup.sh not found."
+        return 1
+    fi
+
+    if ! confirm "Run a test backup to verify configuration?"; then
+        print_info "Skipping backup test."
+        log "Backup test skipped by user."
+        return 0
+    fi
+
+    local BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
+    local BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "22")
+    local REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
+    local BACKUP_LOG="/var/log/backup_rsync.log"
+
+    if [[ "$BACKUP_DEST" == "unknown" || "$REMOTE_BACKUP_PATH" == "unknown" ]]; then
+        print_error "Invalid backup configuration in /root/run_backup.sh."
+        log "Backup test failed: Invalid configuration in /root/run_backup.sh."
+        return 1
+    fi
+
+    # Create a temporary test file
+    local TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$TEST_DIR"
+    echo "Test file for backup verification" > "$TEST_DIR/test.txt"
+    chmod 600 "$TEST_DIR/test.txt"
+
+    print_info "Running test backup to $BACKUP_DEST:$REMOTE_BACKUP_PATH..."
+    local RSYNC_OUTPUT
+    RSYNC_OUTPUT=$(rsync -avz --delete -e "ssh -p $BACKUP_PORT" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
+    local RSYNC_EXIT_CODE=$?
+    echo "--- Test Backup at $(date) ---" >> "$BACKUP_LOG"
+    echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
+
+    if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
+        print_success "Test backup successful! Check $BACKUP_LOG for details."
+        log "Test backup successful."
+    else
+        print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). Check $BACKUP_LOG for details."
+        print_info "Troubleshooting steps:"
+        print_info "  - Verify SSH key: cat /root/.ssh/id_ed25519.pub"
+        print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i /root/.ssh/id_ed25519.pub \"$BACKUP_DEST\""
+        print_info "  - Test SSH: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" true"
+        log "Test backup failed with exit code $RSYNC_EXIT_CODE."
+    fi
+
+    # Clean up test directory
+    rm -rf "$TEST_DIR"
+    print_success "Backup test completed."
+    log "Backup test completed."
 }
 
 configure_swap() {
@@ -1522,6 +1582,71 @@ configure_time_sync() {
     log "Time synchronization completed."
 }
 
+configure_security_audit() {
+    print_section "Security Audit Configuration"
+    if ! confirm "Run a security audit with Lynis (and optionally debsecan)?"; then
+        print_info "Skipping security audit."
+        log "Security audit skipped by user."
+        return 0
+    fi
+
+    local AUDIT_LOG="/var/log/setup_harden_security_audit_$(date +%Y%m%d_%H%M%S).log"
+    touch "$AUDIT_LOG" && chmod 600 "$AUDIT_LOG"
+    log "Starting security audit. Results will be saved to $AUDIT_LOG."
+
+    # Install Lynis
+    print_info "Installing Lynis..."
+    if ! apt-get update -qq; then
+    	print_error "Failed to update package lists. Cannot install Lynis."
+    	log "apt-get update failed for Lynis installation."
+    	return 1
+	elif ! apt-get install -y -qq lynis; then
+    	print_warning "Failed to install Lynis. Skipping Lynis audit."
+    	log "Lynis installation failed."
+    else
+        print_info "Running Lynis audit (non-interactive mode)..."
+        if lynis audit system --quick > "$AUDIT_LOG" 2>&1; then
+            print_success "Lynis audit completed. Check $AUDIT_LOG for details."
+            # Extract hardening index from Lynis log
+            local HARDENING_SCORE
+            HARDENING_SCORE=$(grep "Hardening index" /var/log/lynis.log | awk '{print $NF}' || echo "N/A")
+            print_info "Lynis Hardening Index: $HARDENING_SCORE"
+            log "Lynis audit completed with hardening index: $HARDENING_SCORE"
+            # Copy Lynis log to audit log for persistence
+            cat /var/log/lynis.log >> "$AUDIT_LOG"
+        else
+            print_error "Lynis audit failed. Check $AUDIT_LOG for details."
+            log "Lynis audit failed."
+        fi
+    fi
+
+    # Optional debsecan
+    if confirm "Also run debsecan to check for package vulnerabilities?"; then
+        print_info "Installing debsecan..."
+        if ! apt-get install -y -qq debsecan; then
+            print_warning "Failed to install debsecan. Skipping debsecan audit."
+            log "debsecan installation failed."
+        else
+            print_info "Running debsecan audit..."
+            if debsecan --suite "$(. /etc/os-release && echo "$VERSION_CODENAME")" >> "$AUDIT_LOG" 2>&1; then
+                local VULN_COUNT
+                VULN_COUNT=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
+                print_success "debsecan audit completed. Found $VULN_COUNT vulnerabilities."
+                log "debsecan audit completed with $VULN_COUNT vulnerabilities."
+            else
+                print_error "debsecan audit failed. Check $AUDIT_LOG for details."
+                log "debsecan audit failed."
+            fi
+        fi
+    else
+        print_info "Skipping debsecan audit."
+        log "debsecan audit skipped by user."
+    fi
+
+    print_warning "Review audit results in $AUDIT_LOG for security recommendations."
+    log "Security audit configuration completed."
+}
+
 final_cleanup() {
     print_section "Final System Cleanup"
     print_info "Running final system update and cleanup..."
@@ -1633,9 +1758,27 @@ generate_summary() {
         printf "    %-18s${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
         printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less /var/log/backup_rsync.log"
     fi
+    local BACKUP_TEST_RESULT="Not run"
+    if grep -q "Test backup successful" "$BACKUP_LOG"; then
+    	BACKUP_TEST_RESULT="Successful"
+        elif grep -q "Test backup failed" "$BACKUP_LOG"; then
+        BACKUP_TEST_RESULT="Failed (check $BACKUP_LOG)"
+     fi
+     printf "    %-16s%s\n" "- Test Result:" "$BACKUP_TEST_RESULT"
     print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     if [[ -n "$TS_COMMAND" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the command above to connect manually."
+    fi
+    if [[ -f /var/log/setup_harden_security_audit_*.log ]]; then
+        local AUDIT_LOG=$(ls -t /var/log/setup_harden_security_audit_*.log | head -n1)
+        echo -e "  Security Audit:  ${GREEN}Completed${NC}"
+        printf "    %-16s%s\n" "- Results:" "$AUDIT_LOG"
+        local HARDENING_SCORE=$(grep "Hardening index" "$AUDIT_LOG" | awk '{print $NF}' || echo "N/A")
+        local VULN_COUNT=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
+        printf "    %-16s%s\n" "- Lynis Score:" "$HARDENING_SCORE"
+        printf "    %-16s%s\n" "- Vulnerabilities:" "$VULN_COUNT"
+    else
+        echo -e "  Security Audit:  ${RED}Not run${NC}"
     fi
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
@@ -1682,6 +1825,7 @@ main() {
     install_tailscale
     setup_backup
     configure_swap
+    configure_security_audit
     final_cleanup
     generate_summary
 }
