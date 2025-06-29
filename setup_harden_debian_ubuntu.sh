@@ -4,6 +4,7 @@
 # Version: 4.2 | 2025-06-29
 # Changelog:
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
+#	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
@@ -849,6 +850,10 @@ configure_auto_updates() {
             print_error "unattended-upgrades package is not installed."
             exit 1
         fi
+        # Check for existing unattended-upgrades configuration
+        if [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]] && grep -q "Unattended-Upgrade::Allowed-Origins" /etc/apt/apt.conf.d/50unattended-upgrades; then
+            print_info "Existing unattended-upgrades configuration found. Verify with 'cat /etc/apt/apt.conf.d/50unattended-upgrades'."
+        fi
         print_info "Configuring unattended upgrades..."
         echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
         DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive unattended-upgrades
@@ -1447,6 +1452,10 @@ configure_swap() {
         return 0
     fi
     print_section "Swap Configuration"
+    # Check for existing swap partition
+    if lsblk -r | grep -q '\[SWAP\]'; then
+        print_warning "Existing swap partition found. Verify with 'lsblk -f'. Proceed with caution."
+    fi
     local existing_swap
     existing_swap=$(swapon --show --noheadings | awk '{print $1}' || true)
     if [[ -n "$existing_swap" ]]; then
