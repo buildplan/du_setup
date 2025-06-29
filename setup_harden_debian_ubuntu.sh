@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.1 | 2025-06-29
+# Version: 4.2 | 2025-06-29
 # Changelog:
+# - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
+#	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
@@ -56,6 +58,7 @@ NC='\033[0m' # No Color
 # Script variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/setup_harden_debian_ubuntu_$(date +%Y%m%d_%H%M%S).log"
+BACKUP_LOG="/var/log/backup_rsync.log"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
 IS_CONTAINER=false
@@ -63,6 +66,7 @@ SSHD_BACKUP_FILE=""
 LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
+FAILED_SERVICES=()
 
 # --- PARSE ARGUMENTS ---
 while [[ $# -gt 0 ]]; do
@@ -83,7 +87,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.1 | 2025-06-29                           ║${NC}"
+    echo -e "${CYAN}║                     v4.2 | 2025-06-29                           ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -730,6 +734,15 @@ configure_firewall() {
             print_info "HTTPS rule already exists."
         fi
     fi
+    if confirm "Allow Tailscale traffic (UDP 41641)?"; then
+        if ! ufw status | grep -qw "41641/udp"; then
+            ufw allow 41641/udp comment 'Tailscale VPN'
+            print_success "Tailscale traffic (UDP 41641) allowed."
+            log "Added UFW rule for Tailscale (41641/udp)."
+        else
+            print_info "Tailscale rule (UDP 41641) already exists."
+        fi
+    fi
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
@@ -751,9 +764,16 @@ configure_firewall() {
                     if ufw status | grep -qw "$port"; then
                         print_info "Rule for $port already exists."
                     else
-                        ufw allow "$port" comment "Custom port $port"
-                        print_success "Added rule for $port."
-                        log "Added UFW rule for $port."
+                        local CUSTOM_COMMENT
+                        read -rp "$(echo -e "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
+                        if [[ -z "$CUSTOM_COMMENT" ]]; then
+                            CUSTOM_COMMENT="Custom port $port"
+                        fi
+                        # Sanitize comment to avoid breaking UFW command
+                        CUSTOM_COMMENT=$(echo "$CUSTOM_COMMENT" | tr -d "'\"\\")
+                        ufw allow "$port" comment "$CUSTOM_COMMENT"
+                        print_success "Added rule for $port with comment '$CUSTOM_COMMENT'."
+                        log "Added UFW rule for $port with comment '$CUSTOM_COMMENT'."
                     fi
                 done
                 break
@@ -773,7 +793,7 @@ configure_firewall() {
         print_error "UFW failed to activate. Check 'journalctl -u ufw' for details."
         exit 1
     fi
-    print_warning "ACTION REQUIRED: Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp)."
+    print_warning "ACTION REQUIRED: Check your VPS provider's edge firewall to allow opened ports (e.g., $SSH_PORT/tcp, 41641/udp for Tailscale)."
     ufw status verbose | tee -a "$LOG_FILE"
     log "Firewall configuration completed."
 }
@@ -830,6 +850,10 @@ configure_auto_updates() {
         if ! dpkg -l unattended-upgrades | grep -q ^ii; then
             print_error "unattended-upgrades package is not installed."
             exit 1
+        fi
+        # Check for existing unattended-upgrades configuration
+        if [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]] && grep -q "Unattended-Upgrade::Allowed-Origins" /etc/apt/apt.conf.d/50unattended-upgrades; then
+            print_info "Existing unattended-upgrades configuration found. Verify with 'cat /etc/apt/apt.conf.d/50unattended-upgrades'."
         fi
         print_info "Configuring unattended upgrades..."
         echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
@@ -911,8 +935,12 @@ install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
     if command -v tailscale >/dev/null 2>&1; then
         print_info "Tailscale already installed."
-        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1; then
-            print_success "Tailscale service is active and connected."
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            local TS_IPS TS_IPV4
+            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+            print_success "Tailscale service is active and connected. Node IPv4 in tailnet: $TS_IPV4"
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
             return 0
         else
             print_warning "Tailscale installed but service is not active or not connected."
@@ -939,8 +967,12 @@ install_tailscale() {
     fi
 
     # --- Configure Tailscale Connection ---
-    if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+"; then
-        print_info "Tailscale is already connected (hostname: $SERVER_NAME)."
+    if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+        local TS_IPS TS_IPV4
+        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+        print_info "Tailscale is already connected. Node IPv4 in tailnet: $TS_IPV4"
+        echo "$TS_IPS" > /tmp/tailscale_ips.txt
         return 0
     fi
     print_info "Configuring Tailscale connection..."
@@ -982,23 +1014,29 @@ install_tailscale() {
         local RETRIES=3
         local DELAY=5
         local CONNECTED=false
+        local TS_IPS TS_IPV4
         for ((i=1; i<=RETRIES; i++)); do
-            if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-                CONNECTED=true
-                break
+            if tailscale ip >/dev/null 2>&1; then
+                TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+                TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+                if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
+                    CONNECTED=true
+                    break
+                fi
             fi
             print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
             sleep $DELAY
         done
         if $CONNECTED; then
-            print_success "Tailscale connected successfully (hostname: $SERVER_NAME)."
+            print_success "Tailscale connected successfully. Node IPv4 in tailnet: $TS_IPV4"
             log "Tailscale connected: $TS_COMMAND"
             # Store connection details for summary
             echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
             echo "None" > /tmp/tailscale_flags
         else
-            print_warning "Tailscale connection attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
-            print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+            print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
+            print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
             echo -e "${CYAN}  $TS_COMMAND${NC}"
             log "Tailscale connection not verified: $TS_COMMAND"
             tailscale status > /tmp/tailscale_status.txt 2>&1
@@ -1045,22 +1083,28 @@ install_tailscale() {
                 local RETRIES=3
                 local DELAY=5
                 local CONNECTED=false
+                local TS_IPS TS_IPV4
                 for ((i=1; i<=RETRIES; i++)); do
-                    if tailscale status 2>/dev/null | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-                        CONNECTED=true
-                        break
+                    if tailscale ip >/dev/null 2>&1; then
+                        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+                        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+                        if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
+                            CONNECTED=true
+                            break
+                        fi
                     fi
                     print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
                     sleep $DELAY
                 done
                 if $CONNECTED; then
-                    print_success "Tailscale reconfigured with additional options."
+                    print_success "Tailscale reconfigured with additional options. Node IPv4 in tailnet: $TS_IPV4"
                     log "Tailscale reconfigured: $TS_COMMAND"
-                    # Store flags for summary
+                    # Store flags and IPs for summary
                     echo "${TS_FLAGS// --/}" > /tmp/tailscale_flags
+                    echo "$TS_IPS" > /tmp/tailscale_ips.txt
                 else
-                    print_warning "Tailscale reconfiguration attempt succeeded, but hostname ($SERVER_NAME) not found in 'tailscale status'."
-                    print_info "Please verify with 'tailscale status' and run the following command manually if needed:"
+                    print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
+                    print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
                     echo -e "${CYAN}  $TS_COMMAND${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
                     tailscale status > /tmp/tailscale_status.txt 2>&1
@@ -1076,7 +1120,7 @@ install_tailscale() {
         log "No additional Tailscale options applied."
     fi
     print_success "Tailscale setup complete."
-    print_info "Verify status: tailscale status"
+    print_info "Verify status: tailscale ip"
     log "Tailscale setup completed."
 }
 
@@ -1326,6 +1370,9 @@ EOF
     fi
     print_success "Backup script created."
 
+    # --- Backup test ---
+    test_backup
+
     # --- Configure Cron Job ---
     print_info "Configuring root cron job..."
     # Ensure crontab is writable
@@ -1363,12 +1410,73 @@ EOF
     log "Backup configuration completed."
 }
 
+test_backup() {
+    print_section "Backup Configuration Test"
+    if [[ ! -f /root/run_backup.sh ]]; then
+        print_error "Backup script not found. Cannot run test."
+        log "Backup test failed: /root/run_backup.sh not found."
+        return 1
+    fi
+
+    if ! confirm "Run a test backup to verify configuration?"; then
+        print_info "Skipping backup test."
+        log "Backup test skipped by user."
+        return 0
+    fi
+
+    local BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
+    local BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "22")
+    local REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
+    local BACKUP_LOG="/var/log/backup_rsync.log"
+
+    if [[ "$BACKUP_DEST" == "unknown" || "$REMOTE_BACKUP_PATH" == "unknown" ]]; then
+        print_error "Invalid backup configuration in /root/run_backup.sh."
+        log "Backup test failed: Invalid configuration in /root/run_backup.sh."
+        return 1
+    fi
+
+    # Create a temporary test file
+    local TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$TEST_DIR"
+    echo "Test file for backup verification" > "$TEST_DIR/test.txt"
+    chmod 600 "$TEST_DIR/test.txt"
+
+    print_info "Running test backup to $BACKUP_DEST:$REMOTE_BACKUP_PATH..."
+    local RSYNC_OUTPUT
+    RSYNC_OUTPUT=$(rsync -avz --delete -e "ssh -p $BACKUP_PORT" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
+    local RSYNC_EXIT_CODE=$?
+    echo "--- Test Backup at $(date) ---" >> "$BACKUP_LOG"
+    echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
+
+    if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
+        echo "Test backup successful" >> "$BACKUP_LOG"
+        print_success "Test backup successful! Check $BACKUP_LOG for details."
+        log "Test backup successful."
+    else
+        print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). Check $BACKUP_LOG for details."
+        print_info "Troubleshooting steps:"
+        print_info "  - Verify SSH key: cat /root/.ssh/id_ed25519.pub"
+        print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i /root/.ssh/id_ed25519.pub \"$BACKUP_DEST\""
+        print_info "  - Test SSH: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" true"
+        log "Test backup failed with exit code $RSYNC_EXIT_CODE."
+    fi
+
+    # Clean up test directory
+    rm -rf "$TEST_DIR"
+    print_success "Backup test completed."
+    log "Backup test completed."
+}
+
 configure_swap() {
     if [[ $IS_CONTAINER == true ]]; then
         print_info "Swap configuration skipped in container."
         return 0
     fi
     print_section "Swap Configuration"
+    # Check for existing swap partition
+    if lsblk -r | grep -q '\[SWAP\]'; then
+        print_warning "Existing swap partition found. Verify with 'lsblk -f'. Proceed with caution."
+    fi
     local existing_swap
     existing_swap=$(swapon --show --noheadings | awk '{print $1}' || true)
     if [[ -n "$existing_swap" ]]; then
@@ -1522,6 +1630,79 @@ configure_time_sync() {
     log "Time synchronization completed."
 }
 
+configure_security_audit() {
+    print_section "Security Audit Configuration"
+    if ! confirm "Run a security audit with Lynis (and optionally debsecan on Debian)?"; then
+        print_info "Security audit skipped."
+        log "Security audit skipped by user."
+        AUDIT_RAN=false
+        return 0
+    fi
+
+    AUDIT_LOG="/var/log/setup_harden_security_audit_$(date +%Y%m%d_%H%M%S).log"
+    touch "$AUDIT_LOG" && chmod 600 "$AUDIT_LOG"
+    AUDIT_RAN=true
+    HARDENING_INDEX=""
+    DEBSECAN_VULNS="Not run"
+
+    # Install and run Lynis
+    print_info "Installing Lynis..."
+    if ! apt-get update -qq; then
+        print_error "Failed to update package lists. Cannot install Lynis."
+        log "apt-get update failed for Lynis installation."
+        return 1
+    elif ! apt-get install -y -qq lynis; then
+        print_warning "Failed to install Lynis. Skipping Lynis audit."
+        log "Lynis installation failed."
+    else
+        print_info "Running Lynis audit (non-interactive mode)..."
+        if lynis audit system --quick >> "$AUDIT_LOG" 2>&1; then
+            print_success "Lynis audit completed. Check $AUDIT_LOG for details."
+            log "Lynis audit completed successfully."
+            # Extract hardening index
+            HARDENING_INDEX=$(grep -oP "Hardening index : \K\d+" "$AUDIT_LOG" || echo "Unknown")
+            # Append Lynis system log for persistence
+            cat /var/log/lynis.log >> "$AUDIT_LOG" 2>/dev/null
+        else
+            print_error "Lynis audit failed. Check $AUDIT_LOG for details."
+            log "Lynis audit failed."
+        fi
+    fi
+
+    # Check if system is Debian before running debsecan
+    source /etc/os-release
+    if [[ "$ID" == "debian" ]]; then
+        if confirm "Also run debsecan to check for package vulnerabilities?"; then
+            print_info "Installing debsecan..."
+            if ! apt-get install -y -qq debsecan; then
+                print_warning "Failed to install debsecan. Skipping debsecan audit."
+                log "debsecan installation failed."
+            else
+                print_info "Running debsecan audit..."
+                if debsecan --suite "$VERSION_CODENAME" >> "$AUDIT_LOG" 2>&1; then
+                    DEBSECAN_VULNS=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
+                    print_success "debsecan audit completed. Found $DEBSECAN_VULNS vulnerabilities."
+                    log "debsecan audit completed with $DEBSECAN_VULNS vulnerabilities."
+                else
+                    print_error "debsecan audit failed. Check $AUDIT_LOG for details."
+                    log "debsecan audit failed."
+                    DEBSECAN_VULNS="Failed"
+                fi
+            fi
+        else
+            print_info "debsecan audit skipped."
+            log "debsecan audit skipped by user."
+        fi
+    else
+        print_info "debsecan is not supported on Ubuntu. Skipping debsecan audit."
+        log "debsecan audit skipped (Ubuntu detected)."
+        DEBSECAN_VULNS="Not supported on Ubuntu"
+    fi
+
+    print_warning "Review audit results in $AUDIT_LOG for security recommendations."
+    log "Security audit configuration completed."
+}
+
 final_cleanup() {
     print_section "Final System Cleanup"
     print_info "Running final system update and cleanup..."
@@ -1544,33 +1725,42 @@ generate_summary() {
             print_success "Service $service is active."
         else
             print_error "Service $service is NOT active."
+            FAILED_SERVICES+=("$service")
         fi
     done
     if ufw status | grep -q "Status: active"; then
         print_success "Service ufw is active."
     else
         print_error "Service ufw is NOT active."
+        FAILED_SERVICES+=("ufw")
     fi
     if command -v docker >/dev/null 2>&1; then
         if systemctl is-active --quiet docker; then
             print_success "Service docker is active."
         else
             print_error "Service docker is NOT active."
+            FAILED_SERVICES+=("docker")
         fi
     fi
     local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
-        if systemctl is-active --quiet tailscaled && tailscale status >/dev/null 2>&1 && tailscale status | grep -q "^[^ ]* \+${SERVER_NAME} \+.*[^offline]$"; then
-            print_success "Service tailscaled is active and connected."
-            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
-            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            local TS_IPS TS_IPV4
+            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+            print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
         else
             print_error "Service tailscaled is NOT active or not connected."
-            local TS_SERVER="Not connected"
-            local TS_FLAGS="None"
+            FAILED_SERVICES+=("tailscaled")
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
             TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
         fi
+    fi
+    if [[ "$AUDIT_RAN" == true ]]; then
+        print_success "Security audit performed."
+    else
+        print_info "Security audit not performed."
     fi
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
     echo -e "${YELLOW}Configuration Summary:${NC}"
@@ -1596,15 +1786,34 @@ generate_summary() {
         printf "    %-16s%s\n" "- Remote Path:" "$REMOTE_BACKUP_PATH"
         printf "    %-16s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
         printf "    %-16s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
+        if [[ -f "$BACKUP_LOG" ]] && grep -q "Test backup successful" "$BACKUP_LOG" 2>/dev/null; then
+            printf "    %-16s%s\n" "- Test Status:" "Successful"
+        elif [[ -f "$BACKUP_LOG" ]]; then
+            printf "    %-16s%s\n" "- Test Status:" "Failed (check $BACKUP_LOG)"
+        else
+            printf "    %-16s%s\n" "- Test Status:" "Not run"
+        fi
     else
         echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
     if command -v tailscale >/dev/null 2>&1; then
+        local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
+        local TS_IPS=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
+        local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
         echo -e "  Tailscale:       ${GREEN}Enabled${NC}"
         printf "    %-16s%s\n" "- Server:" "$TS_SERVER"
+        printf "    %-16s%s\n" "- Tailscale IPs:" "$TS_IPS"
         printf "    %-16s%s\n" "- Flags:" "$TS_FLAGS"
     else
         echo -e "  Tailscale:       ${RED}Not configured${NC}"
+    fi
+    if [[ "$AUDIT_RAN" == true ]]; then
+        echo -e "  Security Audit:  ${GREEN}Performed${NC}"
+        printf "    %-16s%s\n" "- Audit Log:" "$AUDIT_LOG"
+        printf "    %-16s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
+        printf "    %-16s%s\n" "- Vulnerabilities:" "$DEBSECAN_VULNS"
+    else
+        echo -e "  Security Audit:  ${RED}Not run${NC}"
     fi
     echo
     printf "${PURPLE}%-16s%s${NC}\n" "Log File:" "$LOG_FILE"
@@ -1622,21 +1831,29 @@ generate_summary() {
     fi
     if command -v tailscale >/dev/null 2>&1; then
         printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
-        if [[ "$TS_SERVER" == "Not connected" && -n "$TS_COMMAND" ]]; then
-            printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale connect:" "$TS_COMMAND"
-        fi
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
         printf "    %-18s${CYAN}%s${NC}\n" "- Verify SSH key:" "cat /root/.ssh/id_ed25519.pub"
         printf "    %-18s${CYAN}%s${NC}\n" "- Copy key if needed:" "ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
         printf "    %-18s${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less /var/log/backup_rsync.log"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
-    print_warning "\nACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
+    if [[ "$AUDIT_RAN" == true ]]; then
+        echo -e "  Security Audit:"
+        printf "    %-18s${CYAN}%s${NC}\n" "- Check results:" "sudo less $AUDIT_LOG"
+    fi
+    if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
+        print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
+    fi
     if [[ -n "$TS_COMMAND" ]]; then
-        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the command above to connect manually."
+        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
+        echo -e "${CYAN}  $TS_COMMAND${NC}"
     fi
+    if [[ -f /root/run_backup.sh && "$KEY_COPY_CHOICE" == "2" ]]; then
+        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to $BACKUP_DEST."
+    fi
+    print_warning "ACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
@@ -1682,6 +1899,7 @@ main() {
     install_tailscale
     setup_backup
     configure_swap
+    configure_security_audit
     final_cleanup
     generate_summary
 }
