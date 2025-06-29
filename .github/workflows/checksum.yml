@@ -8,7 +8,7 @@ on:
   push:
     branches: [main]
   release:
-    types: [published]
+    types: [created, published]
 
 jobs:
   generate-sha256:
@@ -45,10 +45,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload SHA256 to GitHub Release (only on release)
-        if: github.event_name == 'release' && github.event.action == 'published'
+      - name: Upload SHA256 to GitHub Release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
           files: setup_harden_debian_ubuntu.sh.sha256
+          tag_name: ${{ github.event.release.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
