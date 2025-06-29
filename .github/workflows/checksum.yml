@@ -1,55 +1,26 @@
-name: Generate & Attach SHA256 Checksum
-
-permissions:
-  contents: write
-  releases: write
+name: Generate SHA256 Checksum
 
 on:
   push:
     branches: [main]
-  release:
-    types: [created, published]
 
 jobs:
   generate-sha256:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Check Script Existence
-        run: |
-          if [ ! -f setup_harden_debian_ubuntu.sh ]; then
-            echo "Error: setup_harden_debian_ubuntu.sh not found in repository root."
-            exit 1
-          fi
-
-      - name: Clean Existing Checksum
-        if: github.event_name == 'release'
-        run: |
-          rm -f setup_harden_debian_ubuntu.sh.sha256
-
-      - name: Generate SHA256
+      - name: Generate SHA256 for script
         run: |
           sha256sum setup_harden_debian_ubuntu.sh > setup_harden_debian_ubuntu.sh.sha256
-          echo "Generated checksum: $(cat setup_harden_debian_ubuntu.sh.sha256)"
 
-      - name: Commit SHA256 (only on push to main)
-        if: github.event_name == 'push'
+      - name: Commit & Push SHA256 File
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add setup_harden_debian_ubuntu.sh.sha256
           git commit -m "Auto-update SHA256 checksum"
           git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload SHA256 to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: setup_harden_debian_ubuntu.sh.sha256
-          tag_name: ${{ github.event.release.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
