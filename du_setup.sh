@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.52-rc | 2025-06-30
+# Version: 0.52-rc1 | 2025-06-30
 # Changelog:
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
@@ -90,7 +90,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.51 | 2025-06-30                         ║${NC}"
+    echo -e "${CYAN}║                      v0.52-rc | 2025-06-30                      ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -650,7 +650,7 @@ EOF
         tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
                        🔒AUTHORIZED ACCESS ONLY
-            �═══ all attempts are logged and reviewed ════
+            ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
     fi
@@ -705,8 +705,13 @@ EOF
                 print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
                 sleep 5
             else
-                print_error "Aborting. Restoring original SSH configuration."
+                print_error "Aborting. Initiating rollback to original configuration..."
                 rollback_ssh_changes
+                if ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
+                    print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
+                else
+                    print_error "Rollback failed. SSH may not be accessible. Please investigate manually."
+                fi
                 exit 1
             fi
         fi
@@ -716,10 +721,12 @@ EOF
 
 rollback_ssh_changes() {
     print_info "Rolling back SSH configuration changes..."
+    print_info "Removing override and hardening files..."
     rm -f /etc/systemd/system/ssh.service.d/override.conf
     rm -f /etc/systemd/system/ssh.socket.d/override.conf
     cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
     rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+    print_info "Reloading systemd and restarting $SSH_SERVICE..."
     systemctl daemon-reload
     if ! systemctl restart "$SSH_SERVICE"; then
         print_warning "Failed to restart $SSH_SERVICE after rollback. Attempting manual start..."
