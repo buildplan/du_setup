@@ -251,6 +251,6 @@ If Tailscale fails to connect:
       * Ensure UDP 41641 is open: `nc -zvu <tailscale-server> 41641`
       * Check VPS firewall for Tailscale traffic.
 
-## [MIT](https://github.com/buildplan/setup_harden_server/blob/main/LICENSE) License
+## [MIT](https://github.com/buildplan/du_setup/blob/main/LICENSE) License
 
 This script is open-source and provided "as is" without warranty. Use at your own risk.
