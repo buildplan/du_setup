@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.52-rc2 | 2025-06-30
+# Version: 0.52-rc3 | 2025-06-30
 # Changelog:
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
@@ -90,7 +90,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.52-rc2 | 2025-06-30                     ║${NC}"
+    echo -e "${CYAN}║                      v0.52-rc3 | 2025-06-30                     ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -707,10 +707,10 @@ EOF
             else
                 print_error "Aborting. Initiating rollback to original configuration..."
                 rollback_ssh_changes
-                if ! ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
-                    print_error "Rollback failed. SSH not restored on original port $CURRENT_SSH_PORT. Please investigate manually."
-                else
+                if ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
                     print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
+                else
+                    print_error "Rollback failed. SSH may not be accessible. Please investigate manually."
                 fi
                 exit 1
             fi
@@ -730,7 +730,7 @@ rollback_ssh_changes() {
         rm -f /etc/ssh/sshd_config.d/99-hardening.conf
     else
         print_error "Backup file $SSHD_BACKUP_FILE not found. Rollback incomplete."
-        return 1
+        exit 1
     fi
     print_info "Reloading systemd and restarting $SSH_SERVICE..."
     systemctl daemon-reload
