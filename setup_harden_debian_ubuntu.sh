@@ -1656,7 +1656,7 @@ configure_security_audit() {
         print_warning "Failed to install Lynis. Skipping Lynis audit."
         log "Lynis installation failed."
     else
-        print_info "Running Lynis audit (non-interactive mode)..."
+        print_info "Running Lynis audit (non-interactive mode, this will take a few minutes)..."
         if lynis audit system --quick >> "$AUDIT_LOG" 2>&1; then
             print_success "Lynis audit completed. Check $AUDIT_LOG for details."
             log "Lynis audit completed successfully."
@@ -1788,7 +1788,7 @@ generate_summary() {
         printf "    %-16s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
         printf "    %-16s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
         if [[ -f "$BACKUP_LOG" ]] && grep -q "Test backup successful" "$BACKUP_LOG" 2>/dev/null; then
-            printf "    %-16s%s\n" "- Test Status:" "Successful"
+            printf "    %-16s%s\n" "- Test Status:" "${GREEN}Successful${NC}"
         elif [[ -f "$BACKUP_LOG" ]]; then
             printf "    %-16s%s\n" "- Test Status:" "Failed (check $BACKUP_LOG)"
         else
