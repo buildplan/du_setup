@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.52-rc1 | 2025-06-30
+# Version: 0.52-rc2 | 2025-06-30
 # Changelog:
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
@@ -90,7 +90,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.52-rc | 2025-06-30                      ║${NC}"
+    echo -e "${CYAN}║                      v0.52-rc2 | 2025-06-30                     ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -707,10 +707,10 @@ EOF
             else
                 print_error "Aborting. Initiating rollback to original configuration..."
                 rollback_ssh_changes
-                if ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
-                    print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
+                if ! ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
+                    print_error "Rollback failed. SSH not restored on original port $CURRENT_SSH_PORT. Please investigate manually."
                 else
-                    print_error "Rollback failed. SSH may not be accessible. Please investigate manually."
+                    print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
                 fi
                 exit 1
             fi
@@ -724,19 +724,25 @@ rollback_ssh_changes() {
     print_info "Removing override and hardening files..."
     rm -f /etc/systemd/system/ssh.service.d/override.conf
     rm -f /etc/systemd/system/ssh.socket.d/override.conf
-    cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-    rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+    print_info "Restoring original sshd_config from $SSHD_BACKUP_FILE..."
+    if [[ -f "$SSHD_BACKUP_FILE" ]]; then
+        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+    else
+        print_error "Backup file $SSHD_BACKUP_FILE not found. Rollback incomplete."
+        return 1
+    fi
     print_info "Reloading systemd and restarting $SSH_SERVICE..."
     systemctl daemon-reload
     if ! systemctl restart "$SSH_SERVICE"; then
         print_warning "Failed to restart $SSH_SERVICE after rollback. Attempting manual start..."
         /usr/sbin/sshd || true
     fi
-    sleep 5
-    if ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
-        print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
+    sleep 10
+    if ! ss -tuln | grep -q ":$CURRENT_SSH_PORT"; then
+        print_error "Rollback failed. SSH not restored on original port $CURRENT_SSH_PORT. Please check logs."
     else
-        print_error "Rollback failed. SSH may not be accessible. Please investigate manually."
+        print_success "Rollback successful. SSH restored on original port $CURRENT_SSH_PORT."
     fi
 }
 
