@@ -3,6 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.50 | 2025-06-30
 # Changelog:
+# - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
 #	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
