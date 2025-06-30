@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.50 | 2025-06-30
+# Version: 0.51 | 2025-06-30
 # Changelog:
+# - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
@@ -16,14 +17,14 @@
 # configurations, user management, SSH hardening, firewall setup, and optional features
 # like Docker and Tailscale and automated backups to Hetzner storage box or any rsync location.
 # It is designed to be idempotent, safe.
-# README at GitHub: https://github.com/buildplan/setup_harden_server
+# README at GitHub: https://github.com/buildplan/du_setup/blob/main/README.md
 #
 # Prerequisites:
 # - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./du_setup.sh or run as root ./du_setup.sh).
 # - Internet connectivity is required for package installation.
 #
 # Usage:
-#   Download: wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/du_setup.sh
+#   Download: wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh
 #   Make it executable: chmod +x du_setup.sh
 #   Run it: sudo ./du_setup.sh [--quiet]
 #
@@ -89,7 +90,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.50 | 2025-06-30                         ║${NC}"
+    echo -e "${CYAN}║                      v0.51 | 2025-06-30                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
