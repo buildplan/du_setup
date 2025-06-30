@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 4.3 | 2025-06-29
+# Version: 0.50 | 2025-06-30
 # Changelog:
+# - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
 #	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
@@ -18,19 +19,19 @@
 # README at GitHub: https://github.com/buildplan/setup_harden_server
 #
 # Prerequisites:
-# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./setup_harden_debian_ubuntu.sh or run as root ./setup_harden_debian_ubuntu.sh).
+# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./du_setup.sh or run as root ./du_setup.sh).
 # - Internet connectivity is required for package installation.
 #
 # Usage:
-#   Download: wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/setup_harden_debian_ubuntu.sh
-#   Make it executable: chmod +x setup_harden_debian_ubuntu.sh
-#   Run it: sudo ./setup_harden_debian_ubuntu.sh [--quiet]
+#   Download: wget https://raw.githubusercontent.com/buildplan/setup_harden_server/refs/heads/main/du_setup.sh
+#   Make it executable: chmod +x du_setup.sh
+#   Run it: sudo ./du_setup.sh [--quiet]
 #
 # Options:
 #   --quiet: Suppress non-critical output for automation. (Not recommended always best to review all the options)
 #
 # Notes:
-# - The script creates a log file in /var/log/setup_harden_debian_ubuntu_*.log.
+# - The script creates a log file in /var/log/du_setup_*.log.
 # - Critical configurations are backed up before modification. Backup files are at /root/setup_harden_backup_*.
 # - A new admin user is created with a mandatory password or SSH key for authentication.
 # - Root SSH login is disabled; all access is via the new user with sudo privileges.
@@ -58,7 +59,7 @@ NC='\033[0m' # No Color
 
 # Script variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="/var/log/setup_harden_debian_ubuntu_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_LOG="/var/log/backup_rsync.log"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
@@ -88,7 +89,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                     v4.3 | 2025-06-29                           ║${NC}"
+    echo -e "${CYAN}║                      v0.50 | 2025-06-30                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -232,7 +233,7 @@ check_system() {
     print_section "System Compatibility Check"
 
     if [[ $(id -u) -ne 0 ]]; then
-        print_error "This script must be run as root (e.g., sudo ./setup_harden_debian_ubuntu.sh)."
+        print_error "This script must be run as root (e.g., sudo ./du_setup.sh)."
         exit 1
     fi
     print_success "Running with root privileges."

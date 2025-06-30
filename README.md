@@ -1,8 +1,8 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** 4.3
+**Version:** v0.50
 
-**Last Updated:** 2025-06-29
+**Last Updated:** 2025-06-30
 
 **Compatible With:**
 
@@ -29,7 +29,7 @@ This script automates the initial setup and security hardening of a fresh Debian
   * **Optional Software**: Offers interactive installation of:
       * Docker & Docker Compose
       * Tailscale (Mesh VPN)
-  * **Comprehensive Logging**: Logs all actions to `/var/log/setup_harden_debian_ubuntu_*.log`.
+  * **Comprehensive Logging**: Logs all actions to `/var/log/du_setup_*.log`.
   * **Automation-Friendly**: Supports `--quiet` mode for automated provisioning.
 
 ## Installation & Usage
@@ -46,8 +46,8 @@ This script automates the initial setup and security hardening of a fresh Debian
 ### 1\. Download & Prepare Script
 
 ```
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh
-chmod +x setup_harden_debian_ubuntu.sh
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/du_setup.sh
+chmod +x du_setup.sh
 ```
 
 ### 2\. Verify Script Integrity (Recommended)
@@ -60,35 +60,35 @@ This command downloads the official checksum file and automatically compares it 
 
 ```
 # Download the official checksum file
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/setup_harden_debian_ubuntu.sh.sha256
+wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/du_setup.sh.sha256
 
-# Run the check (it should output: setup_harden_debian_ubuntu.sh: OK)
-sha256sum -c setup_harden_debian_ubuntu.sh.sha256
+# Run the check (it should output: du_setup.sh: OK)
+sha256sum -c du_setup.sh.sha256
 ```
 
 **Option B: Manual Check**
 
 ```
 # Generate the hash of your downloaded script
-sha256sum setup_harden_debian_ubuntu.sh
+sha256sum du_setup.sh
 ```
 
 Compare the output hash to the one below. They must match exactly.
 
-`c4ff92d755b8c862c0a5c885b0a1dfa68832a1a5465e1e9913386374202c6a7a`
+`86d08c58198c1b754329484f6bba79326d847649467851dfa89da250b3e6fd6b`
 
 ### 3\. Run the Script
 
 **Interactively (Recommended)**
 
 ```
-sudo ./setup_harden_debian_ubuntu.sh
+sudo ./du_setup.sh
 ```
 
 **Quiet Mode (For Automation)**
 
 ```
-sudo ./setup_harden_debian_ubuntu.sh --quiet
+sudo ./du_setup.sh --quiet
 ```
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding\!**
@@ -116,7 +116,7 @@ sudo ./setup_harden_debian_ubuntu.sh --quiet
 
 ## Logs & Backups
 
-  * **Log Files**: `/var/log/setup_harden_debian_ubuntu_*.log`
+  * **Log Files**: `/var/log/du_setup_*.log`
   * **Backup Logs**: `/var/log/backup_rsync.log` (for remote backup operations)
   * **Audit Logs**: `/var/log/setup_harden_security_audit_*.log` (for Lynis and debsecan results)
   * **Configuration Backups**: `/root/setup_harden_backup_*`
