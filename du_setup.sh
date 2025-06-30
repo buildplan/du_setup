@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.52-rc4 | 2025-06-30
+# Version: 0.52 | 2025-06-30
 # Changelog:
+# - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
@@ -90,7 +91,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.52-rc4 | 2025-06-30                     ║${NC}"
+    echo -e "${CYAN}║                      v0.52 | 2025-06-30                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
