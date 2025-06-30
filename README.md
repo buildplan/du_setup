@@ -46,7 +46,7 @@ This script automates the initial setup and security hardening of a fresh Debian
 ### 1\. Download & Prepare Script
 
 ```
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/du_setup.sh
+wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh
 chmod +x du_setup.sh
 ```
 
@@ -60,7 +60,7 @@ This command downloads the official checksum file and automatically compares it 
 
 ```
 # Download the official checksum file
-wget https://raw.githubusercontent.com/buildplan/setup_harden_server/main/du_setup.sh.sha256
+wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh.sha256
 
 # Run the check (it should output: du_setup.sh: OK)
 sha256sum -c du_setup.sh.sha256
