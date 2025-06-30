@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.51 | 2025-06-30
+# Version: 0.52 | 2025-06-30
 # Changelog:
+# - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
@@ -90,7 +91,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.51 | 2025-06-30                         ║${NC}"
+    echo -e "${CYAN}║                      v0.52 | 2025-06-30                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -503,17 +504,31 @@ configure_system() {
     log "System configuration completed."
 }
 
+cleanup_and_exit() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 && $(type -t rollback_ssh_changes) == "function" ]]; then
+        print_error "An error occurred. Rolling back SSH changes to port $PREVIOUS_SSH_PORT..."
+        rollback_ssh_changes
+        if [[ $? -ne 0 ]]; then
+            print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
+        fi
+    fi
+    exit $exit_code
+}
+
 configure_ssh() {
+    trap cleanup_and_exit ERR
+
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG PREVIOUS_SSH_PORT
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
-        print_error "openssh-server package is not installed. Please ensure it is installed."
-        exit 1
+        print_error "openssh-server package is not installed."
+        return 1
     fi
 
-    # Detect SSH service name, preserve socket activation on Ubuntu if active
+    # Detect SSH service name
     if [[ $ID == "ubuntu" ]] && systemctl is-active ssh.socket >/dev/null 2>&1; then
         SSH_SERVICE="ssh.socket"
         print_info "Using SSH socket activation: $SSH_SERVICE"
@@ -521,105 +536,58 @@ configure_ssh() {
         SSH_SERVICE="ssh.service"
     elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
         SSH_SERVICE="sshd.service"
-    elif ps aux | grep -q "[s]shd"; then
-        print_warning "SSH daemon running but no standard service detected."
-        SSH_SERVICE="ssh.service"  # Default for Debian
-        if ! systemctl enable --now "$SSH_SERVICE" >/dev/null 2>&1; then
-            print_error "Failed to enable and start $SSH_SERVICE. Attempting manual start..."
-            if ! /usr/sbin/sshd; then
-                print_error "Failed to start SSH daemon manually."
-                exit 1
-            fi
-            print_success "SSH daemon started manually."
-        fi
     else
-        print_error "No SSH service or daemon detected. Please verify openssh-server installation and daemon status."
-        exit 1
+        print_error "No SSH service or daemon detected."
+        return 1
     fi
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
 
-    # Ensure SSH service is enabled and running
-    if ! systemctl is-enabled "$SSH_SERVICE" >/dev/null 2>&1; then
-        if ! systemctl enable "$SSH_SERVICE" >/dev/null 2>&1; then
-            print_error "Failed to enable $SSH_SERVICE. Please check service status."
-            exit 1
-        fi
-        print_success "SSH service enabled: $SSH_SERVICE"
-    fi
-    if ! systemctl is-active "$SSH_SERVICE" >/dev/null 2>&1; then
-        if ! systemctl start "$SSH_SERVICE" >/dev/null 2>&1; then
-            print_error "Failed to start $SSH_SERVICE. Attempting manual start..."
-            if ! /usr/sbin/sshd; then
-                print_error "Failed to start SSH daemon manually."
-                exit 1
-            fi
-            print_success "SSH daemon started manually."
-        fi
-    fi
-
-    CURRENT_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
+    # Store the current active port as the previous port
+    PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
+    CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     SSH_DIR="$USER_HOME/.ssh"
-    SSH_KEY="$SSH_DIR/id_ed25519"
     AUTH_KEYS="$SSH_DIR/authorized_keys"
 
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
-        print_info "No local key provided and no existing keys found. Generating new SSH key..."
-        mkdir -p "$SSH_DIR"
-        chmod 700 "$SSH_DIR"
-        sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -q
-        cat "$SSH_KEY.pub" >> "$AUTH_KEYS"
-        chmod 600 "$AUTH_KEYS"
-        chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+        print_info "No local key provided. Generating new SSH key..."
+        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"
+        sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
+        cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+        chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
-        echo -e "${YELLOW}Public key for remote access:${NC}"
-        cat "$SSH_KEY.pub" | tee -a "$LOG_FILE"
-        echo -e "${YELLOW}Copy this key to your local ~/.ssh/authorized_keys or use 'ssh-copy-id -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP' from your local machine.${NC}"
-    else
-        print_info "SSH key(s) already present or added. Skipping key generation."
+        echo -e "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
 
     print_warning "SSH Key Authentication Required for Next Steps!"
     echo -e "${CYAN}Test SSH access from a SEPARATE terminal now: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP${NC}"
-
     if ! confirm "Can you successfully log in using your SSH key?"; then
-        print_error "SSH key authentication is mandatory to proceed. Please fix and re-run."
-        exit 1
+        print_error "SSH key authentication is mandatory to proceed."
+        return 1
     fi
 
     print_info "Backing up original SSH config..."
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Apply port override based on SSH service type
-    if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
+    # Apply port override
+    if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
+        print_info "Updating SSH port in /etc/ssh/sshd_config for Ubuntu 24.04+..."
+        if ! grep -q "^Port" /etc/ssh/sshd_config; then echo "Port $SSH_PORT" >> /etc/ssh/sshd_config; else sed -i "s/^Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config; fi
+    elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
-        NEW_SSH_CONFIG=$(mktemp)
-        tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
-[Socket]
-ListenStream=
-ListenStream=$SSH_PORT
-EOF
         mkdir -p /etc/systemd/system/ssh.socket.d
-        mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.socket.d/override.conf
-        chmod 644 /etc/systemd/system/ssh.socket.d/override.conf
+        echo -e "[Socket]\nListenStream=\nListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
     else
         print_info "Configuring SSH service to listen on port $SSH_PORT..."
-        NEW_SSH_CONFIG=$(mktemp)
-        tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
-[Service]
-ExecStart=
-ExecStart=/usr/sbin/sshd -D -p $SSH_PORT
-EOF
-        mkdir -p /etc/systemd/system/ssh.service.d
-        mv "$NEW_SSH_CONFIG" /etc/systemd/system/ssh.service.d/override.conf
-        chmod 644 /etc/systemd/system/ssh.service.d/override.conf
+        mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
+        echo -e "[Service]\nExecStart=\nExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
-    # Apply additional hardening via sshd_config.d
-    NEW_SSH_CONFIG=$(mktemp)
-    tee "$NEW_SSH_CONFIG" > /dev/null <<EOF
+    # Apply additional hardening
+    mkdir -p /etc/ssh/sshd_config.d
+    tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -629,51 +597,28 @@ X11Forwarding no
 PrintMotd no
 Banner /etc/issue.net
 EOF
-    if [[ -f /etc/ssh/sshd_config.d/99-hardening.conf ]] && cmp -s "$NEW_SSH_CONFIG" /etc/ssh/sshd_config.d/99-hardening.conf; then
-        print_info "SSH configuration already hardened. Skipping."
-        rm -f "$NEW_SSH_CONFIG"
-    else
-        print_info "Creating or updating hardened SSH configuration..."
-        mkdir -p /etc/ssh/sshd_config.d
-        mv "$NEW_SSH_CONFIG" /etc/ssh/sshd_config.d/99-hardening.conf
-        chmod 644 /etc/ssh/sshd_config.d/99-hardening.conf
-        tee /etc/issue.net > /dev/null <<'EOF'
+    tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
                        🔒AUTHORIZED ACCESS ONLY
             ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
-    fi
 
     print_info "Reloading systemd and restarting SSH service..."
     systemctl daemon-reload
-    if ! systemctl restart "$SSH_SERVICE"; then
-        print_error "SSH service failed to restart! Reverting changes..."
-        rm -f /etc/systemd/system/ssh.service.d/override.conf
-        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-        systemctl daemon-reload
-        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-        exit 1
-    fi
-    # Wait and verify port binding
+    systemctl restart "$SSH_SERVICE"
     sleep 5
     if ! ss -tuln | grep -q ":$SSH_PORT"; then
-        print_error "SSH not listening on port $SSH_PORT after restart! Reverting changes..."
-        rm -f /etc/systemd/system/ssh.service.d/override.conf
-        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-        rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-        systemctl daemon-reload
-        systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-        exit 1
+        print_error "SSH not listening on port $SSH_PORT after restart!"
+        return 1
     fi
     print_success "SSH service restarted on port $SSH_PORT."
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
-    if ssh -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
-        print_error "Root SSH login is still possible! Check SSH configuration."
-        exit 1
+    if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
+        print_error "Root SSH login is still possible! Check configuration."
+        return 1
     else
         print_success "Confirmed: Root SSH login is disabled."
     fi
@@ -686,6 +631,7 @@ EOF
     local max_retries=3
     while (( retry_count < max_retries )); do
         if confirm "Was the new SSH connection successful?"; then
+            print_success "SSH hardening confirmed and finalized."
             break
         else
             (( retry_count++ ))
@@ -693,17 +639,58 @@ EOF
                 print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
                 sleep 5
             else
-                print_error "Aborting. Restoring original SSH configuration."
-                rm -f /etc/systemd/system/ssh.service.d/override.conf
-                cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
-                rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-                systemctl daemon-reload
-                systemctl restart "$SSH_SERVICE" || /usr/sbin/sshd || true
-                exit 1
+                print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
+                rollback_ssh_changes
+                if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
+                    print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
+                else
+                    print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
+                fi
+                return 1
             fi
         fi
     done
+
+    trap - ERR
     log "SSH hardening completed."
+}
+
+rollback_ssh_changes() {
+    print_info "Rolling back SSH configuration changes to port $PREVIOUS_SSH_PORT..."
+    rm -f /etc/systemd/system/ssh.service.d/override.conf
+    rm -f /etc/systemd/system/ssh.socket.d/override.conf
+    rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+    if [[ -f "$SSHD_BACKUP_FILE" ]]; then
+        cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config
+        print_info "Restored original sshd_config from $SSHD_BACKUP_FILE."
+    else
+        print_error "Backup file not found. Could not restore sshd_config."
+        return 1
+    fi
+
+    print_info "Reloading systemd and restarting $SSH_SERVICE..."
+    systemctl daemon-reload
+    if ! systemctl restart "$SSH_SERVICE"; then
+        print_warning "Failed to restart $SSH_SERVICE after rollback. Attempting manual start..."
+        /usr/sbin/sshd || true
+    fi
+
+    local rollback_verified=false
+    print_info "Verifying SSH rollback to port $PREVIOUS_SSH_PORT..."
+    for ((i=1; i<=10; i++)); do
+        if ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
+            print_success "Rollback successful. SSH is now listening on port $PREVIOUS_SSH_PORT."
+            rollback_verified=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ $rollback_verified == false ]]; then
+        print_error "Rollback failed. SSH service is not listening on port $PREVIOUS_SSH_PORT."
+        print_info "Please check service status manually with 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
+        return 1
+    fi
 }
 
 configure_firewall() {
