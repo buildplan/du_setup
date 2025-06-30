@@ -6,8 +6,6 @@
   - Minimal installation (no prior SSH hardening, UFW, or Fail2Ban configured).
 - **Script Version**: v0.52
 - **Execution Mode**: Interactive (not `--quiet`), to capture user prompts and verify decision points.
-- **Inputs**: I’ll provide sample inputs for prompts (e.g., username, hostname, SSH port) to simulate a realistic run.
-- **Verification**: I’ll check each function’s logic, validate outputs against the README, and highlight any potential runtime errors or edge cases.
 
 ---
 
@@ -21,7 +19,7 @@
 
 - **Log File Creation**:
   - The script creates `/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log` (e.g., `/var/log/du_setup_20250630_222800.log`) with `chmod 600`.
-  - Backup directory `/root/setup_harden_backup_20250630_222800` is created with `chmod 700`.
+  - Backup directory `/root/setup_harden_backup_20250630_222800` is created with `chmod 700`.\c
 
 #### **2. Main Function Execution**
 
@@ -237,7 +235,7 @@
   ```
   ✓ Tailscale connected successfully. Node IPv4 in tailnet: 100.64.0.1
   ```
-- **Potential Issues**: Invalid key or network issues are logged to `/tmp/tailscale_status.txt`. Retries (3x) mitigate transient failures. Assumed success for simulation.
+- **Potential Issues**: Invalid key or network issues are logged to `/tmp/tailscale_status.txt`. Retries (3x) mitigate transient failures.
 
 ##### **setup_backup**
 - **Logic**: Configures rsync backups over SSH with optional notifications and a test backup.
@@ -366,7 +364,7 @@
   Reboot now? [Y/n]: n
   ⚠ Please reboot manually with 'sudo reboot'.
   ```
-- **Potential Issues**: If services fail, they’re listed in `FAILED_SERVICES`. Backup key copy warning is appropriate for manual mode. No issues expected.
+- **Potential Issues**: If services fail, they’re listed in `FAILED_SERVICES`. Backup key copy warning for manual mode. No issues expected.
 
 ---
 
