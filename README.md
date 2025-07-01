@@ -81,7 +81,7 @@ Compare the output hash to the one below. They must match exactly.
 
 **Interactively (Recommended)**
 
-Ideally run as root, if you are a sudo sure you can switch to root with `sudo su`
+Ideally run as root, if you are a sudo user you can switch to root with `sudo su`
 
 ```
 ./du_setup
