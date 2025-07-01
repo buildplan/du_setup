@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.52 | 2025-06-30
+# Version: 0.53 | 2025-07-01
 # Changelog:
+# - v0.53: Fix for test_backup() - was failing if run as non root sudo user
 # - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
@@ -91,7 +92,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.52 | 2025-06-30                         ║${NC}"
+    echo -e "${CYAN}║                      v0.53 | 2025-07-01                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1402,10 +1403,36 @@ EOF
 
 test_backup() {
     print_section "Backup Configuration Test"
-    if [[ ! -f /root/run_backup.sh ]]; then
-        print_error "Backup script not found. Cannot run test."
-        log "Backup test failed: /root/run_backup.sh not found."
-        return 1
+
+    # Ensure script is running with effective root privileges
+    if [[ $(id -u) -ne 0 ]]; then
+        print_error "Backup test must be run as root. Re-run with 'sudo -E' or as root."
+        log "Backup test failed: Script not run as root (UID $(id -u))."
+        print_info "Action: Run the script with 'sudo -E ./du_setup.sh' or as the root user."
+        return 0
+    fi
+
+    # Check if backup script exists and is readable
+    local BACKUP_SCRIPT_PATH="/root/run_backup.sh"
+    if [[ ! -f "$BACKUP_SCRIPT_PATH" ]]; then
+        print_error "Backup script not found at $BACKUP_SCRIPT_PATH."
+        log "Backup test failed: $BACKUP_SCRIPT_PATH not found."
+        print_info "Action: Ensure the backup script exists at $BACKUP_SCRIPT_PATH and is accessible."
+        return 0
+    fi
+    if [[ ! -r "$BACKUP_SCRIPT_PATH" ]]; then
+        print_error "Cannot read backup script at $BACKUP_SCRIPT_PATH. Check permissions."
+        log "Backup test failed: $BACKUP_SCRIPT_PATH not readable."
+        print_info "Action: Run 'chmod u+r $BACKUP_SCRIPT_PATH' as root to fix permissions."
+        return 0
+    fi
+
+    # Check if timeout command is available
+    if ! command -v timeout >/dev/null 2>&1; then
+        print_error "The 'timeout' command is not available. Please install coreutils."
+        log "Backup test failed: 'timeout' command not found."
+        print_info "Action: Install coreutils with 'apt install coreutils' or equivalent."
+        return 0
     fi
 
     if ! confirm "Run a test backup to verify configuration?"; then
@@ -1414,47 +1441,103 @@ test_backup() {
         return 0
     fi
 
-    local BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
-    local BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "22")
-    local REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "unknown")
+    # Extract backup configuration from script
+    local BACKUP_DEST REMOTE_BACKUP_PATH BACKUP_PORT SSH_COPY_ID_FLAGS
+    BACKUP_DEST=$(grep "^REMOTE_DEST=" "$BACKUP_SCRIPT_PATH" | cut -d'"' -f2 2>/dev/null || echo "unknown")
+    BACKUP_PORT=$(grep "^SSH_PORT=" "$BACKUP_SCRIPT_PATH" | cut -d'"' -f2 2>/dev/null || echo "22")
+    REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" "$BACKUP_SCRIPT_PATH" | cut -d'"' -f2 2>/dev/null || echo "unknown")
+    SSH_COPY_ID_FLAGS=$(grep "^SSH_COPY_ID_FLAGS=" "$BACKUP_SCRIPT_PATH" | cut -d'"' -f2 2>/dev/null || echo "")
     local BACKUP_LOG="/var/log/backup_rsync.log"
 
     if [[ "$BACKUP_DEST" == "unknown" || "$REMOTE_BACKUP_PATH" == "unknown" ]]; then
-        print_error "Invalid backup configuration in /root/run_backup.sh."
-        log "Backup test failed: Invalid configuration in /root/run_backup.sh."
-        return 1
+        print_error "Invalid backup configuration in $BACKUP_SCRIPT_PATH."
+        log "Backup test failed: Invalid configuration in $BACKUP_SCRIPT_PATH."
+        print_info "Action: Check $BACKUP_SCRIPT_PATH for valid REMOTE_DEST and REMOTE_PATH variables."
+        return 0
     fi
 
-    # Create a temporary test file
+    # Ensure backup log is writable
+    if ! touch "$BACKUP_LOG" 2>/dev/null || ! chmod 600 "$BACKUP_LOG" 2>/dev/null; then
+        print_error "Cannot create or write to $BACKUP_LOG."
+        log "Backup test failed: Cannot write to $BACKUP_LOG."
+        print_info "Action: Ensure /var/log/ is writable by root and try again."
+        return 0
+    fi
+
+    # Check SSH key existence
+    local SSH_KEY="/root/.ssh/id_ed25519"
+    if [[ ! -f "$SSH_KEY" || ! -r "$SSH_KEY" ]]; then
+        print_error "SSH key $SSH_KEY not found or not readable."
+        log "Backup test failed: SSH key not found or not readable."
+        print_info "Action: Create or fix permissions for $SSH_KEY with 'chmod 600 $SSH_KEY'."
+        return 0
+    fi
+
+    # Create a temporary test directory
     local TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$TEST_DIR"
-    echo "Test file for backup verification" > "$TEST_DIR/test.txt"
-    chmod 600 "$TEST_DIR/test.txt"
+    if ! mkdir -p "$TEST_DIR" 2>/dev/null; then
+        print_error "Failed to create test directory $TEST_DIR."
+        log "Backup test failed: Cannot create $TEST_DIR."
+        print_info "Action: Ensure /root/ is writable by root and try again."
+        return 0
+    fi
+    if ! echo "Test file for backup verification" > "$TEST_DIR/test.txt" 2>/dev/null; then
+        print_error "Failed to create test file in $TEST_DIR."
+        log "Backup test failed: Cannot create test file in $TEST_DIR."
+        print_info "Action: Ensure /root/ is writable by root and try again."
+        rm -rf "$TEST_DIR" 2>/dev/null
+        return 0
+    fi
+    if ! chmod 600 "$TEST_DIR/test.txt" 2>/dev/null; then
+        print_error "Failed to set permissions on $TEST_DIR/test.txt."
+        log "Backup test failed: Cannot set permissions on $TEST_DIR/test.txt."
+        print_info "Action: Ensure /root/ is writable by root and try again."
+        rm -rf "$TEST_DIR" 2>/dev/null
+        return 0
+    fi
 
     print_info "Running test backup to $BACKUP_DEST:$REMOTE_BACKUP_PATH..."
-    local RSYNC_OUTPUT
-    RSYNC_OUTPUT=$(rsync -avz --delete -e "ssh -p $BACKUP_PORT" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
-    local RSYNC_EXIT_CODE=$?
+    local RSYNC_OUTPUT RSYNC_EXIT_CODE TIMEOUT_DURATION=120
+    local SSH_COMMAND="ssh -p $BACKUP_PORT -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=no"
+    if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+        SSH_COMMAND="sftp -P $BACKUP_PORT -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=no"
+    fi
+    RSYNC_OUTPUT=$(timeout "$TIMEOUT_DURATION" rsync -avz --delete -e "$SSH_COMMAND" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
+    RSYNC_EXIT_CODE=$?
     echo "--- Test Backup at $(date) ---" >> "$BACKUP_LOG"
     echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
 
     if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
-        echo "Test backup successful" >> "$BACKUP_LOG"
         print_success "Test backup successful! Check $BACKUP_LOG for details."
         log "Test backup successful."
     else
-        print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). Check $BACKUP_LOG for details."
-        print_info "Troubleshooting steps:"
-        print_info "  - Verify SSH key: cat /root/.ssh/id_ed25519.pub"
-        print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i /root/.ssh/id_ed25519.pub \"$BACKUP_DEST\""
-        print_info "  - Test SSH: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" true"
-        log "Test backup failed with exit code $RSYNC_EXIT_CODE."
+        if [[ $RSYNC_EXIT_CODE -eq 124 ]]; then
+            print_error "Test backup timed out after $TIMEOUT_DURATION seconds. Check network connectivity or increase timeout."
+            log "Test backup failed: Timeout after $TIMEOUT_DURATION seconds."
+            print_info "Action: Verify network connectivity to $BACKUP_DEST and retry."
+        else
+            print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). Check $BACKUP_LOG for details."
+            log "Test backup failed with exit code $RSYNC_EXIT_CODE."
+            print_info "Troubleshooting steps:"
+            print_info "  - Verify SSH key: cat $SSH_KEY.pub"
+            print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i $SSH_KEY.pub $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
+            print_info "  - Test SSH: ssh -p \"$BACKUP_PORT\" -i $SSH_KEY \"$BACKUP_DEST\" true"
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                print_info "  - For Hetzner, ensure ~/.ssh/ exists: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
+            fi
+        fi
     fi
 
     # Clean up test directory
-    rm -rf "$TEST_DIR"
+    if ! rm -rf "$TEST_DIR" 2>/dev/null; then
+        print_warning "Failed to clean up test directory $TEST_DIR."
+        log "Cleanup of $TEST_DIR failed."
+        print_info "Action: Manually remove $TEST_DIR with 'rm -rf $TEST_DIR' as root."
+    fi
+
     print_success "Backup test completed."
     log "Backup test completed."
+    return 0
 }
 
 configure_swap() {
