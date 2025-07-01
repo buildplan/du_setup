@@ -1,8 +1,8 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** v0.52
+**Version:** v0.53
 
-**Last Updated:** 2025-06-30
+**Last Updated:** 2025-07-01
 
 **Compatible With:**
 
@@ -75,20 +75,27 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`dbe2abf3dd0dee253988e8e53e7a91970a7c07ff97f9fa446f326667297c43de`
+`a9c7b7ae2dcbf5325aad599e1ae77c09db3a87b7d78f53e4c6a0b1d6317d222d`
 
 ### 3\. Run the Script
 
 **Interactively (Recommended)**
 
+Ideally run as root, if you are a sudo sure you can switch to root with `sudo su`
+
 ```
-sudo ./du_setup.sh
+./du_setup
+```
+Alternatively run with sudo -E, -E flag preserve the environment variables.
+
+```
+sudo -E ./du_setup.sh
 ```
 
 **Quiet Mode (For Automation)**
 
 ```
-sudo ./du_setup.sh --quiet
+sudo -E ./du_setup.sh --quiet
 ```
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding\!**
@@ -174,16 +181,16 @@ If locked out, use your provider’s console:
 
 1.  **Remove Hardened Configuration**:
     ```
-    rm /etc/ssh/sshd_config.d/99-hardening.conf
+    sudo rm /etc/ssh/sshd_config.d/99-hardening.conf
     ```
 2.  **Restore Original `sshd_config`**:
     ```
     LATEST_BACKUP=$(ls -td /root/setup_harden_backup_* | head -1)
-    cp "$LATEST_BACKUP"/sshd_config.backup_* /etc/ssh/sshd_config
+    sudo cp "$LATEST_BACKUP"/sshd_config.backup_* /etc/ssh/sshd_config
     ```
 3.  **Restart SSH**:
     ```
-    systemctl restart ssh
+    sudo systemctl restart ssh
     ```
 
 ### Backup Issues
@@ -191,10 +198,10 @@ If locked out, use your provider’s console:
 If backups fail:
 
 1.  **Verify SSH Key**:
-      * Check: `cat /root/.ssh/id_ed25519.pub`
-      * Copy (if needed): `ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
-      * For Hetzner: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`
-      * Test SSH: `ssh -p <backup_port> <backup_user@backup_host> exit`
+      * Check: `sudo cat /root/.ssh/id_ed25519.pub`
+      * Copy (if needed): `sudo ssh-copy-id -p <backup_port> -s <backup_user@backup_host>`
+      * For Hetzner: `sudo ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`
+      * Test SSH: `sudo ssh -p <backup_port> <backup_user@backup_host> exit`
 2.  **Check Logs**:
       * Review: `sudo less /var/log/backup_rsync.log`
       * If automated key copy fails: `cat /tmp/ssh-copy-id.log`
@@ -234,7 +241,7 @@ If Tailscale fails to connect:
 
 1.  **Verify Installation**:
       * Check: `command -v tailscale`
-      * Service status: `systemctl status tailscaled`
+      * Service status: `sudo systemctl status tailscaled`
 2.  **Check Connection**:
       * Run: `tailscale status`
       * Verify server: `tailscale status --json | grep ControlURL`
