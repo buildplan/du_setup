@@ -3,7 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.54 | 2025-07-02
 # Changelog:
-# - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu 
+# - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu, added wait in tailscale install for more relibility 
 # - v0.53: Fix for test_backup() - was failing if run as non root sudo user
 # - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
@@ -1062,38 +1062,104 @@ install_tailscale() {
         log "Tailscale installation skipped by user."
         return 0
     fi
+
     print_section "Tailscale VPN Installation and Configuration"
+
+    # Ensure script is running with effective root privileges
+    if [[ $(id -u) -ne 0 ]]; then
+        print_error "Tailscale installation must be run as root. Re-run with 'sudo -E' or as root."
+        log "Tailscale installation failed: Script not run as root (UID $(id -u))."
+        print_info "Action: Run the script with 'sudo -E ./du_setup.sh' or as the root user."
+        return 0
+    fi
+
     if command -v tailscale >/dev/null 2>&1; then
-        print_info "Tailscale already installed."
-        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
-            local TS_IPS TS_IPV4
-            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
-            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
-            print_success "Tailscale service is active and connected. Node IPv4 in tailnet: $TS_IPV4"
-            echo "$TS_IPS" > /tmp/tailscale_ips.txt
-            return 0
-        else
-            print_warning "Tailscale installed but service is not active or not connected."
-        fi
+        print_info "Tailscale is already installed. Skipping installation."
+        # Proceed to configuration
     else
-        print_info "Installing Tailscale..."
-        curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-        chmod +x /tmp/tailscale_install.sh
-        if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-            print_error "Downloaded Tailscale install script appears invalid."
-            rm -f /tmp/tailscale_install.sh
+        print_info "Installing Tailscale using the official script (https://tailscale.com/install.sh)..."
+
+        # Wait for dpkg and apt locks to be released
+        print_info "Waiting for any existing package manager jobs to finish..."
+        local lock_wait_count=0
+        local MAX_WAIT=12  # 12 * 10s = 120s timeout
+        while fuser /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            ((lock_wait_count++))
+            if ((lock_wait_count > MAX_WAIT)); then
+                local LOCK_PID=$(fuser /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null | awk '{print $1}' | head -1 || echo "unknown")
+                print_error "Timed out waiting for package manager lock after $((MAX_WAIT * 10)) seconds."
+                log "Tailscale installation failed: Timed out waiting for locks (PID: $LOCK_PID)."
+                print_info "Action: Wait a few minutes and retry, or check for locking processes with 'sudo lsof /var/lib/dpkg/lock-frontend' or 'sudo lsof /var/cache/apt/archives/lock'."
+                return 0
+            fi
+            if ((lock_wait_count == 1)); then
+                print_info "  ...package manager lock is held, waiting up to $((MAX_WAIT * 10)) seconds..."
+            fi
+            log "Waiting for package manager lock ($((lock_wait_count * 10))/$((MAX_WAIT * 10)) seconds)."
+            sleep 10
+        done
+
+        local INSTALL_SCRIPT="/tmp/tailscale_install.sh"
+        print_info "Downloading the official Tailscale installation script..."
+        if ! curl -fsSL https://tailscale.com/install.sh -o "$INSTALL_SCRIPT" 2>/dev/null; then
+            print_error "Failed to download Tailscale installation script. Check network connectivity."
+            log "Tailscale installation failed: curl command failed to download install.sh."
+            print_info "Action: Verify network connectivity and retry, or download https://tailscale.com/install.sh manually."
+            return 0
+        fi
+
+        # Validate the script (check for shebang and Tailscale-specific content)
+        if ! head -n 1 "$INSTALL_SCRIPT" | grep -q "^#!/bin/bash" || ! grep -q "tailscale.com" "$INSTALL_SCRIPT"; then
+            print_error "Downloaded Tailscale install script appears invalid or empty."
+            rm -f "$INSTALL_SCRIPT" 2>/dev/null
             log "Tailscale installation failed: Invalid install script."
+            print_info "Action: Verify https://tailscale.com/install.sh and retry, or contact Tailscale support."
             return 0
         fi
-        if ! /tmp/tailscale_install.sh; then
-            print_error "Failed to install Tailscale."
-            rm -f /tmp/tailscale_install.sh
-            log "Tailscale installation failed."
+        if ! chmod +x "$INSTALL_SCRIPT" 2>/dev/null; then
+            print_error "Failed to make Tailscale install script executable."
+            log "Tailscale installation failed: Cannot chmod +x $INSTALL_SCRIPT."
+            print_info "Action: Run 'chmod +x $INSTALL_SCRIPT' as root and retry."
             return 0
         fi
-        rm -f /tmp/tailscale_install.sh
-        print_success "Tailscale installation complete."
-        log "Tailscale installation completed."
+
+        # Run installation script with retries
+        local MAX_RETRIES=3
+        local RETRY_COUNT=0
+        local INSTALL_SUCCESS=false
+        print_info "Running the installation script..."
+        while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+            if "$INSTALL_SCRIPT" >/tmp/tailscale_install.log 2>&1; then
+                INSTALL_SUCCESS=true
+                break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            print_info "Attempt $RETRY_COUNT/$MAX_RETRIES failed. Retrying in 10 seconds..."
+            log "Tailscale installation attempt $RETRY_COUNT/$MAX_RETRIES failed. See /tmp/tailscale_install.log."
+            sleep 10
+        done
+
+        if $INSTALL_SUCCESS; then
+            print_success "Tailscale installation script completed successfully."
+            log "Tailscale installation completed."
+            rm -f /tmp/tailscale_install.log 2>/dev/null
+        else
+            print_error "Tailscale installation script failed after $MAX_RETRIES attempts."
+            log "Tailscale installation failed: See /tmp/tailscale_install.log for details."
+            print_info "Action: Review /tmp/tailscale_install.log, fix any issues (e.g., network, apt sources), and run 'sudo $INSTALL_SCRIPT' manually."
+            return 0
+        fi
+
+        # Clean up the downloaded script on success
+        rm -f "$INSTALL_SCRIPT" 2>/dev/null
+    fi
+
+    # Verify Tailscale installation
+    if ! command -v tailscale >/dev/null 2>&1; then
+        print_error "Tailscale binary not found after installation."
+        log "Tailscale installation failed: tailscale binary not found."
+        print_info "Action: Verify the installation with 'sudo apt-get install -y tailscale' or re-run 'sudo $INSTALL_SCRIPT'."
+        return 0
     fi
 
     # --- Configure Tailscale Connection ---
@@ -2095,6 +2161,16 @@ handle_error() {
 
 main() {
     trap 'handle_error $LINENO' ERR
+
+    # --- Root Check ---
+    if [[ $(id -u) -ne 0 ]]; then
+        echo -e "\n${RED}✗ Error: This script must be run with root privileges.${NC}"
+        echo "You are running as user '$(whoami)', but root is required for system changes."
+        echo -e "Please re-run the script using 'sudo -E':"
+        echo -e "  ${CYAN}sudo -E ./du_setup.sh${NC}\n"
+        exit 1
+    fi
+
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
