@@ -479,19 +479,28 @@ setup_user() {
             mkdir -p "$SSH_DIR"
             chmod 700 "$SSH_DIR"
             chown "$USERNAME:$USERNAME" "$SSH_DIR"
-            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q; then
-                print_error "Failed to generate SSH key for '$USERNAME'."
+
+            # Generate user key pair for login
+            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_user" -N "" -q; then
+                print_error "Failed to generate user SSH key for '$USERNAME'."
                 exit 1
             fi
-            cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+            cat "$SSH_DIR/id_ed25519_user.pub" >> "$AUTH_KEYS"
             chmod 600 "$AUTH_KEYS"
             chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
             print_success "SSH key generated and added to authorized_keys."
-            log "Generated and added SSH key for '$USERNAME'."
+            log "Generated and added user SSH key for '$USERNAME'."
+
+            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_server" -N "" -q; then
+                print_error "Failed to generate server SSH key for '$USERNAME'."
+                exit 1
+            fi
+            print_success "Server SSH key generated (not shared)."
+            log "Generated server SSH key for '$USERNAME'."
 
             TEMP_KEY_FILE="/tmp/${USERNAME}_ssh_key_$(date +%s)"
             trap 'rm -f "$TEMP_KEY_FILE" 2>/dev/null' EXIT
-            cp "$SSH_DIR/id_ed25519" "$TEMP_KEY_FILE"
+            cp "$SSH_DIR/id_ed25519_user" "$TEMP_KEY_FILE"
             chmod 600 "$TEMP_KEY_FILE"
             chown root:root "$TEMP_KEY_FILE"
 
@@ -501,13 +510,13 @@ setup_user() {
             echo
             echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
             echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
- 	    echo -e "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
+            echo -e "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
             cat "$TEMP_KEY_FILE"
-	    echo -e "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
+            echo -e "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
             echo
             echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
             echo    "====SSH PUBLIC KEY BELOW THIS LINE===="
-            cat "$SSH_DIR/id_ed25519.pub"
+            cat "$SSH_DIR/id_ed25519_user.pub"
             echo    "====SSH PUBLIC KEY END===="
             echo
             echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
