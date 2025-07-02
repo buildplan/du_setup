@@ -367,7 +367,12 @@ install_packages() {
 
 setup_user() {
     print_section "User Management"
-    local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2 SSH_PUBLIC_KEY
+    local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2 SSH_PUBLIC_KEY TEMP_KEY_FILE
+
+    if [[ -z "$USERNAME" ]]; then
+        print_error "USERNAME variable is not set. Cannot proceed with user setup."
+        exit 1
+    fi
 
     if [[ $USER_EXISTS == false ]]; then
         print_info "Creating user '$USERNAME'..."
@@ -449,6 +454,15 @@ setup_user() {
             print_info "No local SSH key provided. Generating a new key pair for '$USERNAME'."
             log "User opted not to provide a local SSH key. Generating a new one."
 
+            if ! command -v ssh-keygen >/dev/null 2>&1; then
+                print_error "ssh-keygen not found. Please install openssh-client."
+                exit 1
+            fi
+            if [[ ! -w /tmp ]]; then
+                print_error "Cannot write to /tmp. Unable to create temporary key file."
+                exit 1
+            fi
+
             mkdir -p "$SSH_DIR"
             chmod 700 "$SSH_DIR"
             chown "$USERNAME:$USERNAME" "$SSH_DIR"
@@ -462,8 +476,8 @@ setup_user() {
             print_success "SSH key generated and added to authorized_keys."
             log "Generated and added SSH key for '$USERNAME'."
 
-            # Save private key to a temporary file for secure display
-            local TEMP_KEY_FILE="/tmp/$USERNAME_ssh_key_$(date +%s)"
+            TEMP_KEY_FILE="/tmp/${USERNAME}_ssh_key_$(date +%s)"
+            trap 'rm -f "$TEMP_KEY_FILE" 2>/dev/null' EXIT
             cp "$SSH_DIR/id_ed25519" "$TEMP_KEY_FILE"
             chmod 600 "$TEMP_KEY_FILE"
             chown root:root "$TEMP_KEY_FILE"
@@ -473,26 +487,24 @@ setup_user() {
             echo -e "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
             echo
             echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
-            echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/$USERNAME_key:${NC}"
-            echo    "------------------ BEGIN PRIVATE KEY ------------------"
+            echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
+            echo    "${RED} ==PRIVATE KEY BELOW THIS LINE==  ${NC}"
             cat "$TEMP_KEY_FILE"
-            echo    "------------------- END PRIVATE KEY -------------------"
+            echo    "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
             echo
             echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
-            echo    "------------------ BEGIN PUBLIC KEY -------------------"
+            echo    "-----SSH PUBLIC KEY-----"
             cat "$SSH_DIR/id_ed25519.pub"
-            echo    "------------------- END PUBLIC KEY --------------------"
+            echo    "-----SSH PUBLIC KEY-----"
             echo
             echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
-            echo -e "${CYAN}   chmod 600 ~/.ssh/$USERNAME_key${NC}"
+            echo -e "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
             echo -e "${CYAN}4. Connect to the server using:${NC}"
-            echo -e "${CYAN}   ssh -i ~/.ssh/$USERNAME_key -p $SSH_PORT $USERNAME@$SERVER_IP${NC}"
+            echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP${NC}"
             echo
             echo -e "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
             read -rp "$(echo -e "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
-            rm -f "$TEMP_KEY_FILE"
             print_info "Temporary key file deleted."
-
             LOCAL_KEY_ADDED=true
         fi
         print_success "User '$USERNAME' created."
@@ -501,7 +513,6 @@ setup_user() {
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
-        # Check if authorized_keys exists and has valid keys
         if [[ ! -s "$AUTH_KEYS" || ! $(grep -E '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null) ]]; then
             print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
             print_info "You must manually add a public key to $AUTH_KEYS to enable SSH access."
