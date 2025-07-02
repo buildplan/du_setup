@@ -3,7 +3,8 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.54 | 2025-07-02
 # Changelog:
-# - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu 
+# - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu
+#	   Better error message if script is executed by non-root or without sudo
 # - v0.53: Fix for test_backup() - was failing if run as non root sudo user
 # - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
@@ -2095,6 +2096,16 @@ handle_error() {
 
 main() {
     trap 'handle_error $LINENO' ERR
+
+    # --- Root Check ---
+    if [[ $(id -u) -ne 0 ]]; then
+        echo -e "\n${RED}✗ Error: This script must be run with root privileges.${NC}"
+        echo "You are running as user '$(whoami)', but root is required for system changes."
+        echo -e "Please re-run the script using 'sudo -E':"
+        echo -e "  ${CYAN}sudo -E ./du_setup.sh${NC}\n"
+        exit 1
+    fi
+
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
