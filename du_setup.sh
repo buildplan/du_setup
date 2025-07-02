@@ -54,14 +54,27 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- GLOBAL VARIABLES & CONFIGURATION ---
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# --- Colors for output ---
+if command -v tput >/dev/null 2>&1 && tput setaf 1 >/dev/null 2>&1; then
+    RED=$(tput setaf 1)
+    GREEN=$(tput setaf 2)
+    YELLOW="$(tput bold)$(tput setaf 3)"
+    BLUE=$(tput setaf 4)
+    PURPLE=$(tput setaf 5)
+    CYAN=$(tput setaf 6)
+    BOLD=$(tput bold)
+    NC=$(tput sgr0)
+else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    PURPLE='\033[0;35m'
+    CYAN='\033[0;36m'
+    NC='\033[0m'
+    BOLD=''
+fi
+
 
 # Script variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -488,14 +501,14 @@ setup_user() {
             echo
             echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
             echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
-            echo    "${RED} ==PRIVATE KEY BELOW THIS LINE==  ${NC}"
+ 	    echo -e "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
             cat "$TEMP_KEY_FILE"
-            echo    "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
+	    echo -e "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
             echo
             echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
-            echo    "-----SSH PUBLIC KEY-----"
+            echo    "====SSH PUBLIC KEY BELOW THIS LINE===="
             cat "$SSH_DIR/id_ed25519.pub"
-            echo    "-----SSH PUBLIC KEY-----"
+            echo    "====SSH PUBLIC KEY END===="
             echo
             echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
             echo -e "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"

@@ -75,7 +75,7 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`891eb9bf1e1c2b51c9ba008d330612cade70a2c929e033dbd570259fa30ff33d`
+`e41a6ffcabd4eb30673aebe096de41f8cbbc9bb5824a509e9c1c41e4845ef78f`
 
 ### 3\. Run the Script
 
