@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.54 | 2025-07-02
+# Version: 0.55 | 2025-07-02
 # Changelog:
+# - v0.55: Improving setup_user() - ssh-keygen replaced the option to skip ssh key
 # - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu
 #	   Better error message if script is executed by non-root or without sudo
 # - v0.53: Fix for test_backup() - was failing if run as non root sudo user
@@ -94,7 +95,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.54 | 2025-07-02                         ║${NC}"
+    echo -e "${CYAN}║                      v0.55 | 2025-07-02                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -389,7 +390,6 @@ setup_user() {
                 log "Password setting skipped for '$USERNAME'."
                 break
             elif [[ "$PASS1" == "$PASS2" ]]; then
-                # **SECURITY FIX**: Do not tee chpasswd output to log file.
                 if echo "$USERNAME:$PASS1" | chpasswd >/dev/null 2>&1; then
                     print_success "Password for '$USERNAME' updated."
                     break
@@ -407,38 +407,106 @@ setup_user() {
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
 
+        # Check if home directory is writable
+        if [[ ! -w "$USER_HOME" ]]; then
+            print_error "Home directory $USER_HOME is not writable by $USERNAME."
+            print_info "Attempting to fix permissions..."
+            chown "$USERNAME:$USERNAME" "$USER_HOME"
+            chmod 700 "$USER_HOME"
+            if [[ ! -w "$USER_HOME" ]]; then
+                print_error "Failed to make $USER_HOME writable. Check filesystem permissions."
+                exit 1
+            fi
+            log "Fixed permissions for $USER_HOME."
+        fi
+
         if confirm "Add SSH public key(s) from your local machine now?"; then
-        while true; do # Loop to allow adding multiple keys
-            local SSH_PUBLIC_KEY # Declare locally to avoid issues
-            read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+            while true; do
+                local SSH_PUBLIC_KEY
+                read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
 
-            if validate_ssh_key "$SSH_PUBLIC_KEY"; then
-                mkdir -p "$SSH_DIR"
-                chmod 700 "$SSH_DIR"
-                echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
-                # De-duplicate keys after adding the new one
-                awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
-                chmod 600 "$AUTH_KEYS"
-                chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
-                print_success "SSH public key added."
-                log "Added SSH public key for '$USERNAME'."
-                LOCAL_KEY_ADDED=true # Set this flag to true since at least one key was added
-            else
-                print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
-            fi
+                if validate_ssh_key "$SSH_PUBLIC_KEY"; then
+                    mkdir -p "$SSH_DIR"
+                    chmod 700 "$SSH_DIR"
+                    chown "$USERNAME:$USERNAME" "$SSH_DIR"
+                    echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
+                    awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
+                    chmod 600 "$AUTH_KEYS"
+                    chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+                    print_success "SSH public key added."
+                    log "Added SSH public key for '$USERNAME'."
+                    LOCAL_KEY_ADDED=true
+                else
+                    print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
+                fi
 
-            if ! confirm "Do you have another SSH public key to add?" "n"; then
-                print_info "Finished adding SSH keys."
-                break # User answered 'n', break the loop
+                if ! confirm "Do you have another SSH public key to add?" "n"; then
+                    print_info "Finished adding SSH keys."
+                    break
+                fi
+            done
+        else
+            print_info "No local SSH key provided. Generating a new key pair for '$USERNAME'."
+            log "User opted not to provide a local SSH key. Generating a new one."
+
+            mkdir -p "$SSH_DIR"
+            chmod 700 "$SSH_DIR"
+            chown "$USERNAME:$USERNAME" "$SSH_DIR"
+            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q; then
+                print_error "Failed to generate SSH key for '$USERNAME'."
+                exit 1
             fi
-        done
-    fi
+            cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+            chmod 600 "$AUTH_KEYS"
+            chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+            print_success "SSH key generated and added to authorized_keys."
+            log "Generated and added SSH key for '$USERNAME'."
+
+            # Save private key to a temporary file for secure display
+            local TEMP_KEY_FILE="/tmp/$USERNAME_ssh_key_$(date +%s)"
+            cp "$SSH_DIR/id_ed25519" "$TEMP_KEY_FILE"
+            chmod 600 "$TEMP_KEY_FILE"
+            chown root:root "$TEMP_KEY_FILE"
+
+            echo
+            echo -e "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
+            echo -e "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
+            echo
+            echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
+            echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/$USERNAME_key:${NC}"
+            echo    "------------------ BEGIN PRIVATE KEY ------------------"
+            cat "$TEMP_KEY_FILE"
+            echo    "------------------- END PRIVATE KEY -------------------"
+            echo
+            echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
+            echo    "------------------ BEGIN PUBLIC KEY -------------------"
+            cat "$SSH_DIR/id_ed25519.pub"
+            echo    "------------------- END PUBLIC KEY --------------------"
+            echo
+            echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
+            echo -e "${CYAN}   chmod 600 ~/.ssh/$USERNAME_key${NC}"
+            echo -e "${CYAN}4. Connect to the server using:${NC}"
+            echo -e "${CYAN}   ssh -i ~/.ssh/$USERNAME_key -p $SSH_PORT $USERNAME@$SERVER_IP${NC}"
+            echo
+            echo -e "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
+            read -rp "$(echo -e "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+            rm -f "$TEMP_KEY_FILE"
+            print_info "Temporary key file deleted."
+
+            LOCAL_KEY_ADDED=true
+        fi
         print_success "User '$USERNAME' created."
     else
         print_info "Using existing user: $USERNAME"
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
+        # Check if authorized_keys exists and has valid keys
+        if [[ ! -s "$AUTH_KEYS" || ! $(grep -E '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null) ]]; then
+            print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
+            print_info "You must manually add a public key to $AUTH_KEYS to enable SSH access."
+            log "No valid SSH keys found for existing user '$USERNAME'."
+        fi
     fi
 
     print_info "Adding '$USERNAME' to sudo group..."
@@ -469,7 +537,7 @@ configure_system() {
 
     print_info "Configuring timezone..."
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter desired timezone (e.g., Etc/UTC, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
+        read -rp "$(echo -e "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
         TIMEZONE=${TIMEZONE:-Etc/UTC}
         if validate_timezone "$TIMEZONE"; then
             if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
