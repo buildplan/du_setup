@@ -23,13 +23,13 @@
 # README at GitHub: https://github.com/buildplan/du_setup/blob/main/README.md
 #
 # Prerequisites:
-# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./du_setup.sh or run as root ./du_setup.sh).
+# - Run as root on a fresh Debian 12 or Ubuntu server (e.g., sudo ./du_setup.sh or run as root -E ./du_setup.sh).
 # - Internet connectivity is required for package installation.
 #
 # Usage:
 #   Download: wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh
 #   Make it executable: chmod +x du_setup.sh
-#   Run it: sudo ./du_setup.sh [--quiet]
+#   Run it: sudo -E ./du_setup.sh [--quiet]
 #
 # Options:
 #   --quiet: Suppress non-critical output for automation. (Not recommended always best to review all the options)
