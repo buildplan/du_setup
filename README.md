@@ -77,6 +77,10 @@ Compare the output hash to the one below. They must match exactly.
 
 `e798fae8512483bfa1e3b26950cc99516c87e43ff95ee0e600c8d71ba8ccde91`
 
+Or echo the hash to check.
+
+`echo e798fae8512483bfa1e3b26950cc99516c87e43ff95ee0e600c8d71ba8ccde91  du_setup.sh | sha256sum --check -`
+
 ### 3\. Run the Script
 
 **Interactively (Recommended)**
