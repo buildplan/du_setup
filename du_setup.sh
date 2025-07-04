@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.55 | 2025-07-02
+# Version: 0.56 | 2025-07-04
 # Changelog:
+# - v0.56: Make tailscale config optional
 # - v0.55: Improving setup_user() - ssh-keygen replaced the option to skip ssh key
 # - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu
 #	   Better error message if script is executed by non-root or without sudo
@@ -1207,6 +1208,13 @@ install_tailscale() {
         echo "$TS_IPS" > /tmp/tailscale_ips.txt
         return 0
     fi
+
+    if ! confirm "Configure Tailscale now?"; then
+        print_info "You can configure Tailscale later by running: sudo tailscale up"
+        print_info "If you are using a custom Tailscale server, use: sudo tailscale up --login-server=<your_server_url>"
+        return 0
+    fi
+
     print_info "Configuring Tailscale connection..."
     echo -e "${CYAN}Choose Tailscale connection method:${NC}"
     echo -e "  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)"
