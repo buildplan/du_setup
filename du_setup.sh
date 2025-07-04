@@ -2068,13 +2068,13 @@ generate_summary() {
     fi
     local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
-    if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
-        local TS_IPS TS_IPV4
-        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
-        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
-        print_success "Service tailscaled is active and connected."
-        echo "$TS_IPS" > /tmp/tailscale_ips.txt
-    else
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            local TS_IPS TS_IPV4
+            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+            print_success "Service tailscaled is active and connected."
+            echo "$TS_IPS" > /tmp/tailscale_ips.txt
+        else
         if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
             print_error "Service tailscaled is NOT active"
             FAILED_SERVICES+=("tailscaled")
