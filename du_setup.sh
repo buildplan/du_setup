@@ -1166,7 +1166,6 @@ install_tailscale() {
         return 0
     fi
     print_section "Tailscale VPN Installation and Configuration"
-#--
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
             local TS_IPS TS_IPV4
