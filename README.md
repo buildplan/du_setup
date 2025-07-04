@@ -1,8 +1,8 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** v0.55
+**Version:** v0.56
 
-**Last Updated:** 2025-07-02
+**Last Updated:** 2025-07-04
 
 **Compatible With:**
 
@@ -75,12 +75,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`e798fae8512483bfa1e3b26950cc99516c87e43ff95ee0e600c8d71ba8ccde91`
+`68ffd12617a41c8933b275f468dcb116a888fc6f431d1bd8eee6a5c1bc9afb7c`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```
-echo e798fae8512483bfa1e3b26950cc99516c87e43ff95ee0e600c8d71ba8ccde91  du_setup.sh | sha256sum --check -
+echo 68ffd12617a41c8933b275f468dcb116a888fc6f431d1bd8eee6a5c1bc9afb7c du_setup.sh | sha256sum --check -
 ```
 
 ### 3\. Run the Script
