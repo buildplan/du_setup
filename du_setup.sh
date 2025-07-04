@@ -1167,16 +1167,17 @@ install_tailscale() {
     fi
     print_section "Tailscale VPN Installation and Configuration"
     if command -v tailscale >/dev/null 2>&1; then
-        print_info "Tailscale already installed."
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
             local TS_IPS TS_IPV4
             TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
             TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
-            print_success "Tailscale service is active and connected. Node IPv4 in tailnet: $TS_IPV4"
+            print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
-            return 0
         else
-            print_warning "Tailscale installed but service is not active or not connected."
+            print_warning "Service tailscaled is installed but not active or connected."
+            FAILED_SERVICES+=("tailscaled")
+            TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
+            TS_COMMAND=${TS_COMMAND:-""}  # Empty if no failure, not default command
         fi
     else
         print_info "Installing Tailscale..."
@@ -2074,10 +2075,14 @@ generate_summary() {
             print_success "Service tailscaled is active and connected."
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
         else
+        if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
             print_error "Service tailscaled is NOT active"
             FAILED_SERVICES+=("tailscaled")
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-"tailscale up --operator=$USERNAME"}
+            TS_COMMAND=${TS_COMMAND:-""}
+        else
+            print_info "Service tailscaled is installed but not configured."
+            TS_COMMAND=""
         fi
     fi
     if [[ "$AUDIT_RAN" == true ]]; then
@@ -2120,17 +2125,26 @@ generate_summary() {
         echo -e "  Remote Backup:   ${RED}Not configured${NC}"
     fi
     if command -v tailscale >/dev/null 2>&1; then
+    local TS_CONFIGURED=false
+    if [[ -f /tmp/tailscale_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt 2>/dev/null; then
+        TS_CONFIGURED=true
+    fi
+    if $TS_CONFIGURED; then
         local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
         local TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
-        # --- FIX: Format IPs to be on a single line ---
         local TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
         local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
-        echo -e "  Tailscale:       ${GREEN}Enabled${NC}"
-        printf "    %-16s%s\n" "- Server:" "$TS_SERVER"
-        printf "    %-16s%s\n" "- Tailscale IPs:" "$TS_IPS"
-        printf "    %-16s%s\n" "- Flags:" "$TS_FLAGS"
+        echo -e "  Tailscale:       ${GREEN}Configured and connected${NC}"
     else
-        echo -e "  Tailscale:       ${RED}Not configured${NC}"
+        echo -e "  Tailscale:       ${YELLOW}Installed but not configured${NC}"
+        print_info "You can configure Tailscale later by running: sudo tailscale up"
+        print_info "For custom servers, use: sudo tailscale up --login-server=<your_server_url>"
+    fi
+    printf "    %-16s%s\n" "- Server:" "${TS_SERVER:-Not set}"
+    printf "    %-16s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
+    printf "    %-16s%s\n" "- Flags:" "${TS_FLAGS:-None}"
+    else
+        echo -e "  Tailscale:       ${RED}Not installed${NC}"
     fi
     if [[ "$AUDIT_RAN" == true ]]; then
         echo -e "  Security Audit:  ${GREEN}Performed${NC}"
