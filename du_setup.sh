@@ -2075,15 +2075,16 @@ generate_summary() {
             print_success "Service tailscaled is active and connected."
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
         else
-        if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
-            print_error "Service tailscaled is NOT active"
-            FAILED_SERVICES+=("tailscaled")
-            TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-""}
-        else
-            print_info "Service tailscaled is installed but not configured."
-            TS_COMMAND=""
-        fi
+            if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
+                print_error "Service tailscaled is NOT active"
+                FAILED_SERVICES+=("tailscaled")
+                TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
+                TS_COMMAND=${TS_COMMAND:-""}
+            else
+                print_info "Service tailscaled is installed but not configured."
+                TS_COMMAND=""
+            fi
+         fi
     fi
     if [[ "$AUDIT_RAN" == true ]]; then
         print_success "Security audit performed."
