@@ -1168,6 +1168,8 @@ install_tailscale() {
         return 0
     fi
     print_section "Tailscale VPN Installation and Configuration"
+
+    # Check if Tailscale is already installed and active
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
             local TS_IPS TS_IPV4
@@ -1179,30 +1181,31 @@ install_tailscale() {
             print_warning "Service tailscaled is installed but not active or connected."
             FAILED_SERVICES+=("tailscaled")
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-""}  # Empty if no failure, not default command
+            TS_COMMAND=${TS_COMMAND:-""}
         fi
     else
         print_info "Installing Tailscale..."
-        curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-        chmod +x /tmp/tailscale_install.sh
-        if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-            print_error "Downloaded Tailscale install script appears invalid."
-            rm -f /tmp/tailscale_install.sh
-            log "Tailscale installation failed: Invalid install script."
-            return 0
+        # Gracefully handle download failures
+        if ! curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh; then
+            print_error "Failed to download the Tailscale installation script."
+            print_info "After setup completes, please try installing it manually: curl -fsSL https://tailscale.com/install.sh | sh"
+            rm -f /tmp/tailscale_install.sh # Clean up partial download
+            return 0 # Exit the function without exiting the main script
         fi
-        if ! /tmp/tailscale_install.sh; then
-            print_error "Failed to install Tailscale."
-            rm -f /tmp/tailscale_install.sh
+
+        # Execute the downloaded script with 'sh'
+        if ! sh /tmp/tailscale_install.sh; then
+            print_error "Tailscale installation script failed to execute."
             log "Tailscale installation failed."
-            return 0
+            rm -f /tmp/tailscale_install.sh # Clean up
+            return 0 # Exit the function gracefully
         fi
-        rm -f /tmp/tailscale_install.sh
+
+        rm -f /tmp/tailscale_install.sh # Clean up successful install
         print_success "Tailscale installation complete."
         log "Tailscale installation completed."
     fi
 
-    # --- Configure Tailscale Connection ---
     if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
         local TS_IPS TS_IPV4
         TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
