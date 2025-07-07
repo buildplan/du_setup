@@ -1708,7 +1708,6 @@ test_backup() {
     local SSH_KEY="/root/.ssh/id_ed25519"
     local SSH_COMMAND="ssh -p $BACKUP_PORT -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=no"
 
-    # Temporarily disable 'exit on error' to capture rsync's exit code without crashing
     set +e
     RSYNC_OUTPUT=$(timeout "$TIMEOUT_DURATION" rsync -avz --delete -e "$SSH_COMMAND" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
     RSYNC_EXIT_CODE=$?
@@ -1721,10 +1720,9 @@ test_backup() {
         print_success "Test backup successful! Check $BACKUP_LOG for details."
         log "Test backup successful."
     else
-        # If the test fails, print a helpful message and continue the script
         print_warning "The backup test failed. This is not critical, and the script will continue."
         print_info "You can troubleshoot this after the server setup is complete."
-        
+
         if [[ $RSYNC_EXIT_CODE -eq 124 ]]; then
             print_error "Test backup timed out after $TIMEOUT_DURATION seconds."
             log "Test backup failed: Timeout after $TIMEOUT_DURATION seconds."
@@ -1735,7 +1733,7 @@ test_backup() {
 
         print_info "Common troubleshooting steps:"
         print_info "  - Ensure the root SSH key is copied to the destination: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$SSH_KEY.pub\" \"$BACKUP_DEST\""
-        print_info "  - Verify the destination allows rsync over SSH. Some hosts (like Hetzner Storage Boxes) only allow SFTP."
+        print_info "  - Check firewall rules on both this server and the destination."
     fi
 
     # Clean up the temporary test directory
