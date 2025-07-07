@@ -3,7 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.57 | 2025-07-07
 # Changelog:
-# - v0.57: Fix for silent failure at test_backup()2
+# - v0.57: Fix for silent failure at test_backup()
 #	   Option to choose which directories to back up.
 # - v0.56: Make tailscale config optional
 # - v0.55: Improving setup_user() - ssh-keygen replaced the option to skip ssh key
