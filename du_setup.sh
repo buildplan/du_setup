@@ -2183,7 +2183,8 @@ generate_summary() {
     printf "  %-20s${CYAN}%s${NC}\n" "- SSH access:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
     printf "  %-20s${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-20s${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban status:" "sudo fail2ban-client status sshd"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban ssh jail status:" "sudo fail2ban-client status sshd"
+    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban ufw jail status:" "sudo fail2ban-client status ufw-probes"
     printf "  %-20s${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
     printf "  %-20s${CYAN}%s${NC}\n" "- Hostname:" "hostnamectl"
     if command -v docker >/dev/null 2>&1; then
