@@ -3,6 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.57 | 2025-07-07
 # Changelog:
+# - v0.58: improved fail2ban to parse ufw logs
 # - v0.57: Fix for silent failure at test_backup()
 #	   Option to choose which directories to back up.
 # - v0.56: Make tailscale config optional
@@ -111,7 +112,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.57 | 2025-07-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.58 | 2025-07-07                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1036,45 +1037,73 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
-    # Set the SSH port for Fail2Ban to monitor.
-    local SSH_PORTS_TO_MONITOR="$SSH_PORT"
-    local NEW_FAIL2BAN_CONFIG
+    # --- Define Desired Configurations ---
+    # Define content of config file.
+    local UFW_PROBES_CONFIG
+    UFW_PROBES_CONFIG=$(cat <<'EOF'
+[Definition]
+# This regex looks for the standard "[UFW BLOCK]" message in /var/log/ufw.log
+failregex = \[UFW BLOCK\] IN=.* OUT=.* SRC=<HOST>
+ignoreregex =
+EOF
+)
 
-    NEW_FAIL2BAN_CONFIG=$(mktemp)
-    tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
+    local JAIL_LOCAL_CONFIG
+    JAIL_LOCAL_CONFIG=$(cat <<EOF
 [DEFAULT]
-bantime = 1h
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1d
 findtime = 10m
-maxretry = 3
-backend = auto
+maxretry = 5
+banaction = ufw
+
 [sshd]
 enabled = true
-port = $SSH_PORTS_TO_MONITOR
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
+port = $SSH_PORT
+
+# This jail monitors UFW logs for rejected packets (port scans, etc.).
+[ufw-probes]
+enabled = true
+port = all
+filter = ufw-probes
+logpath = /var/log/ufw.log
+maxretry = 3
 EOF
-    if [[ -f /etc/fail2ban/jail.local ]] && cmp -s "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban configuration already correct. Skipping."
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    elif [[ -f /etc/fail2ban/jail.local ]] && grep -q "\[sshd\]" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban jail.local exists. Updating SSH port..."
-        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS_TO_MONITOR/" /etc/fail2ban/jail.local
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    else
-        print_info "Creating Fail2Ban local jail configuration..."
-        mv "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local
-        chmod 644 /etc/fail2ban/jail.local
+)
+
+    local UFW_FILTER_PATH="/etc/fail2ban/filter.d/ufw-probes.conf"
+    local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
+
+    # --- Idempotency Check ---
+    # This checks if the on-disk files are already identical to our desired configuration.
+    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" ]] && \
+       cmp -s "$UFW_FILTER_PATH" <<<"$UFW_PROBES_CONFIG" && \
+       cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG"; then
+        print_info "Fail2Ban is already configured correctly. Skipping."
+        log "Fail2Ban configuration is already correct."
+        return 0
     fi
-    print_info "Enabling and restarting Fail2Ban..."
+
+    # --- Apply Configuration ---
+    # If the check above fails, we write the correct configuration files.
+    print_info "Applying new Fail2Ban configuration..."
+    mkdir -p /etc/fail2ban/filter.d
+    echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
+    echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
+
+    # --- Restart and Verify Fail2ban ---
+    print_info "Enabling and restarting Fail2Ban to apply new rules..."
     systemctl enable fail2ban
     systemctl restart fail2ban
-    sleep 2
+    sleep 2 # Give the service a moment to initialize.
+
     if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS_TO_MONITOR."
-        fail2ban-client status sshd | tee -a "$LOG_FILE"
+        print_success "Fail2Ban is active with the new configuration."
+        # Show the status of the enabled jails for confirmation.
+        fail2ban-client status | tee -a "$LOG_FILE"
     else
-        print_error "Fail2Ban service failed to start."
-        exit 1
+        print_error "Fail2Ban service failed to start. Check 'journalctl -u fail2ban' for errors."
+        FAILED_SERVICES+=("fail2ban")
     fi
     log "Fail2Ban configuration completed."
 }
@@ -1168,6 +1197,8 @@ install_tailscale() {
         return 0
     fi
     print_section "Tailscale VPN Installation and Configuration"
+
+    # Check if Tailscale is already installed and active
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
             local TS_IPS TS_IPV4
@@ -1179,30 +1210,31 @@ install_tailscale() {
             print_warning "Service tailscaled is installed but not active or connected."
             FAILED_SERVICES+=("tailscaled")
             TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-""}  # Empty if no failure, not default command
+            TS_COMMAND=${TS_COMMAND:-""}
         fi
     else
         print_info "Installing Tailscale..."
-        curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh
-        chmod +x /tmp/tailscale_install.sh
-        if ! grep -q "tailscale" /tmp/tailscale_install.sh; then
-            print_error "Downloaded Tailscale install script appears invalid."
-            rm -f /tmp/tailscale_install.sh
-            log "Tailscale installation failed: Invalid install script."
-            return 0
+        # Gracefully handle download failures
+        if ! curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh; then
+            print_error "Failed to download the Tailscale installation script."
+            print_info "After setup completes, please try installing it manually: curl -fsSL https://tailscale.com/install.sh | sh"
+            rm -f /tmp/tailscale_install.sh # Clean up partial download
+            return 0 # Exit the function without exiting the main script
         fi
-        if ! /tmp/tailscale_install.sh; then
-            print_error "Failed to install Tailscale."
-            rm -f /tmp/tailscale_install.sh
+
+        # Execute the downloaded script with 'sh'
+        if ! sh /tmp/tailscale_install.sh; then
+            print_error "Tailscale installation script failed to execute."
             log "Tailscale installation failed."
-            return 0
+            rm -f /tmp/tailscale_install.sh # Clean up
+            return 0 # Exit the function gracefully
         fi
-        rm -f /tmp/tailscale_install.sh
+
+        rm -f /tmp/tailscale_install.sh # Clean up successful install
         print_success "Tailscale installation complete."
         log "Tailscale installation completed."
     fi
 
-    # --- Configure Tailscale Connection ---
     if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
         local TS_IPS TS_IPV4
         TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
