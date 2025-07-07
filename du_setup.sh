@@ -3,6 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.57 | 2025-07-07
 # Changelog:
+# - v0.58: improved fail2ban to parse ufw logs
 # - v0.57: Fix for silent failure at test_backup()
 #	   Option to choose which directories to back up.
 # - v0.56: Make tailscale config optional
@@ -111,7 +112,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.57 | 2025-07-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.58 | 2025-07-07                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1036,45 +1037,58 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
-    # Set the SSH port for Fail2Ban to monitor.
-    local SSH_PORTS_TO_MONITOR="$SSH_PORT"
-    local NEW_FAIL2BAN_CONFIG
+    # --- Create UFW Probes Filter for Fail2ban ---
+    # This custom filter tells Fail2ban what to look for in UFW's log file.
+    print_info "Creating Fail2ban filter for UFW probes..."
+    mkdir -p /etc/fail2ban/filter.d
+    tee /etc/fail2ban/filter.d/ufw-probes.conf > /dev/null <<'EOF'
+[Definition]
+# This regex looks for the standard "[UFW BLOCK]" message in /var/log/ufw.log
+failregex = \[UFW BLOCK\] IN=.* OUT=.* SRC=<HOST>
+ignoreregex =
+EOF
 
-    NEW_FAIL2BAN_CONFIG=$(mktemp)
-    tee "$NEW_FAIL2BAN_CONFIG" > /dev/null <<EOF
+    # --- Create Enhanced jail.local Configuration ---
+    # This new configuration sets more robust defaults and adds the UFW monitoring jail.
+    print_info "Creating enhanced Fail2ban local jail configuration..."
+    tee /etc/fail2ban/jail.local > /dev/null <<EOF
 [DEFAULT]
-bantime = 1h
+# IPs to ignore. 127.0.0.1/8 is localhost.
+ignoreip = 127.0.0.1/8 ::1
+# Ban for 1 day, as 1 hour is often too short for persistent bots.
+bantime = 1d
 findtime = 10m
-maxretry = 3
-backend = auto
+maxretry = 5
+# Set the default banning action to use UFW.
+banaction = ufw
+
 [sshd]
 enabled = true
-port = $SSH_PORTS_TO_MONITOR
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
+port = $SSH_PORT
+
+# This jail monitors UFW logs for rejected packets (port scans, etc.).
+[ufw-probes]
+enabled = true
+port = all
+filter = ufw-probes
+logpath = /var/log/ufw.log
+maxretry = 3
 EOF
-    if [[ -f /etc/fail2ban/jail.local ]] && cmp -s "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban configuration already correct. Skipping."
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    elif [[ -f /etc/fail2ban/jail.local ]] && grep -q "\[sshd\]" /etc/fail2ban/jail.local; then
-        print_info "Fail2Ban jail.local exists. Updating SSH port..."
-        sed -i "s/^\(port\s*=\s*\).*/\1$SSH_PORTS_TO_MONITOR/" /etc/fail2ban/jail.local
-        rm -f "$NEW_FAIL2BAN_CONFIG"
-    else
-        print_info "Creating Fail2Ban local jail configuration..."
-        mv "$NEW_FAIL2BAN_CONFIG" /etc/fail2ban/jail.local
-        chmod 644 /etc/fail2ban/jail.local
-    fi
-    print_info "Enabling and restarting Fail2Ban..."
+
+    # --- Restart and Verify Fail2ban ---
+    print_info "Enabling and restarting Fail2Ban to apply new rules..."
     systemctl enable fail2ban
     systemctl restart fail2ban
-    sleep 2
+    sleep 2 # Give the service a moment to initialize.
+
     if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban is active and monitoring port(s) $SSH_PORTS_TO_MONITOR."
-        fail2ban-client status sshd | tee -a "$LOG_FILE"
+        print_success "Fail2Ban is active with the new configuration."
+        # Show the status of the enabled jails for confirmation.
+        fail2ban-client status | tee -a "$LOG_FILE"
     else
-        print_error "Fail2Ban service failed to start."
-        exit 1
+        print_error "Fail2Ban service failed to start. Check 'journalctl -u fail2ban' for errors."
+        # No longer exits the script, just reports the failure.
+        FAILED_SERVICES+=("fail2ban")
     fi
     log "Fail2Ban configuration completed."
 }
