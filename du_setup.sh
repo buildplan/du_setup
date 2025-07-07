@@ -1037,29 +1037,24 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
-    # --- Create UFW Probes Filter for Fail2ban ---
-    # This custom filter tells Fail2ban what to look for in UFW's log file.
-    print_info "Creating Fail2ban filter for UFW probes..."
-    mkdir -p /etc/fail2ban/filter.d
-    tee /etc/fail2ban/filter.d/ufw-probes.conf > /dev/null <<'EOF'
+    # --- Define Desired Configurations ---
+    # Define content of config file.
+    local UFW_PROBES_CONFIG
+    UFW_PROBES_CONFIG=$(cat <<'EOF'
 [Definition]
 # This regex looks for the standard "[UFW BLOCK]" message in /var/log/ufw.log
 failregex = \[UFW BLOCK\] IN=.* OUT=.* SRC=<HOST>
 ignoreregex =
 EOF
+)
 
-    # --- Create Enhanced jail.local Configuration ---
-    # This new configuration sets more robust defaults and adds the UFW monitoring jail.
-    print_info "Creating enhanced Fail2ban local jail configuration..."
-    tee /etc/fail2ban/jail.local > /dev/null <<EOF
+    local JAIL_LOCAL_CONFIG
+    JAIL_LOCAL_CONFIG=$(cat <<EOF
 [DEFAULT]
-# IPs to ignore. 127.0.0.1/8 is localhost.
 ignoreip = 127.0.0.1/8 ::1
-# Ban for 1 day, as 1 hour is often too short for persistent bots.
 bantime = 1d
 findtime = 10m
 maxretry = 5
-# Set the default banning action to use UFW.
 banaction = ufw
 
 [sshd]
@@ -1074,6 +1069,27 @@ filter = ufw-probes
 logpath = /var/log/ufw.log
 maxretry = 3
 EOF
+)
+
+    local UFW_FILTER_PATH="/etc/fail2ban/filter.d/ufw-probes.conf"
+    local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
+
+    # --- Idempotency Check ---
+    # This checks if the on-disk files are already identical to our desired configuration.
+    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" ]] && \
+       cmp -s "$UFW_FILTER_PATH" <<<"$UFW_PROBES_CONFIG" && \
+       cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG"; then
+        print_info "Fail2Ban is already configured correctly. Skipping."
+        log "Fail2Ban configuration is already correct."
+        return 0
+    fi
+
+    # --- Apply Configuration ---
+    # If the check above fails, we write the correct configuration files.
+    print_info "Applying new Fail2Ban configuration..."
+    mkdir -p /etc/fail2ban/filter.d
+    echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
+    echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
 
     # --- Restart and Verify Fail2ban ---
     print_info "Enabling and restarting Fail2Ban to apply new rules..."
@@ -1087,7 +1103,6 @@ EOF
         fail2ban-client status | tee -a "$LOG_FILE"
     else
         print_error "Fail2Ban service failed to start. Check 'journalctl -u fail2ban' for errors."
-        # No longer exits the script, just reports the failure.
         FAILED_SERVICES+=("fail2ban")
     fi
     log "Fail2Ban configuration completed."
