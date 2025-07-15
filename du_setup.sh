@@ -4,6 +4,7 @@
 # Version: 0.59 | 2025-07-15
 # Changelog:
 # - v0.59: Add a new optional function that applies a set of recommended sysctl security settings to harden the kernel.
+#          Script can now check for update and can run self-update.
 # - v0.58: improved fail2ban to parse ufw logs
 # - v0.57: Fix for silent failure at test_backup()
 #	   Option to choose which directories to back up.
@@ -56,6 +57,11 @@
 # - Ensure sufficient disk space (>2GB) for swap file creation.
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
+
+# --- Update Configuration ---
+CURRENT_VERSION="0.59"
+SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
+CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
 # --- GLOBAL VARIABLES & CONFIGURATION ---
 
@@ -229,6 +235,87 @@ convert_to_bytes() {
         echo $((value * 1024 * 1024))
     else
         echo 0
+    fi
+}
+
+# --- script update check ---
+run_update_check() {
+    print_section "Checking for Script Updates"
+    local latest_version
+
+    # Fetch the latest script from GitHub and parse the version number from it.
+    if ! latest_version=$(curl -sL "$SCRIPT_URL" | grep '^CURRENT_VERSION=' | head -n 1 | awk -F'"' '{print $2}'); then
+        print_warning "Could not check for updates. Please check your internet connection."
+        log "Update check failed: Could not fetch script from $SCRIPT_URL"
+        return
+    fi
+
+    if [[ -z "$latest_version" ]]; then
+        print_warning "Failed to find the version number in the remote script."
+        log "Update check failed: Could not parse version string from remote script."
+        return
+    fi
+
+    local lower_version
+    lower_version=$(printf '%s\n' "$CURRENT_VERSION" "$latest_version" | sort -V | head -n 1)
+
+    if [[ "$lower_version" == "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$latest_version" ]]; then
+        print_success "A new version ($latest_version) is available!"
+
+        if ! confirm "Would you like to update to version $latest_version now?"; then
+            return
+        fi
+
+        local temp_dir
+        if ! temp_dir=$(mktemp -d); then
+            print_error "Failed to create temporary directory. Update aborted."
+            exit 1
+        fi
+        trap 'rm -rf -- "$temp_dir"' EXIT
+
+        local temp_script="$temp_dir/du_setup.sh"
+        local temp_checksum="$temp_dir/checksum.sha256"
+
+        print_info "Downloading new script version..."
+        if ! curl -sL "$SCRIPT_URL" -o "$temp_script"; then
+            print_error "Failed to download the new script. Update aborted."
+            exit 1
+        fi
+
+        print_info "Downloading checksum..."
+        if ! curl -sL "$CHECKSUM_URL" -o "$temp_checksum"; then
+            print_error "Failed to download the checksum file. Update aborted."
+            exit 1
+        fi
+
+        print_info "Verifying checksum..."
+        if ! (cd "$temp_dir" && sha256sum -c "checksum.sha256" --quiet); then
+            print_error "Checksum verification failed! The downloaded file may be corrupt. Update aborted."
+            exit 1
+        fi
+        print_success "Checksum verified successfully."
+
+        print_info "Checking script syntax..."
+        if ! bash -n "$temp_script"; then
+            print_error "Downloaded file has a syntax error. Update aborted to prevent issues."
+            exit 1
+        fi
+        print_success "Syntax check passed."
+
+        if ! mv "$temp_script" "$0"; then
+            print_error "Failed to replace the old script file. You may need to run 'mv' manually."
+            exit 1
+        fi
+        chmod +x "$0"
+
+        trap - EXIT
+        rm -rf -- "$temp_dir"
+
+        print_success "Update successful. Please run the script again to use the new version."
+        exit 0
+    else
+        print_info "You are running the latest version ($CURRENT_VERSION)."
+        log "No new version found. Current: $CURRENT_VERSION, Latest: $latest_version"
     fi
 }
 
@@ -2359,6 +2446,7 @@ main() {
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
+    run_update_check
     print_header
     check_dependencies
     check_system
