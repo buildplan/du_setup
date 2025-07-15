@@ -2239,8 +2239,8 @@ generate_summary() {
     print_section "Setup Complete!"
 
     echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
-    echo -e "A detailed report has been saved to: ${BOLD}$REPORT_FILE${NC}"
-    echo -e "The full execution log is available at: ${BOLD}$LOG_FILE${NC}"
+    echo -e "${CYAN}📋 A detailed report has been saved to:${NC} ${BOLD}$REPORT_FILE${NC}"
+    echo -e "${CYAN}📜 The full execution log is available at:${NC}    ${BOLD}$LOG_FILE${NC}"
     echo
 
     echo -e "${YELLOW}Final Service Status Check:${NC}"
@@ -2387,7 +2387,7 @@ generate_summary() {
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
-        echo -e "  Security Audit:"
+        echo -e "  ${YELLOW}Security Audit:${NC}"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
     echo
