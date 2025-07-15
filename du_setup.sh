@@ -2144,8 +2144,10 @@ final_cleanup() {
 }
 
 generate_summary() {
+    # Create the report file and set permissions first
     touch "$REPORT_FILE" && chmod 600 "$REPORT_FILE"
 
+    # Using a subshell to group all output and tee it to the report file
     (
     print_section "Setup Complete!"
 
@@ -2155,36 +2157,48 @@ generate_summary() {
     echo
 
     echo -e "${YELLOW}Final Service Status Check:${NC}"
-    # --- Service Checks ---
     for service in "$SSH_SERVICE" fail2ban chrony; do
         if systemctl is-active --quiet "$service"; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
         else
             printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "$service"
+            FAILED_SERVICES+=("$service")
         fi
     done
     if ufw status | grep -q "Status: active"; then
         printf "  %-20s ${GREEN}✓ Active${NC}\n" "ufw (firewall)"
     else
         printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "ufw (firewall)"
+        FAILED_SERVICES+=("ufw")
     fi
     if command -v docker >/dev/null 2>&1; then
         if systemctl is-active --quiet docker; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "docker"
         else
             printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "docker"
+            FAILED_SERVICES+=("docker")
         fi
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        if systemctl is-active --quiet tailscaled; then
-            if tailscale ip >/dev/null 2>&1; then
-                printf "  %-20s ${GREEN}✓ Active & Connected${NC}\n" "tailscaled"
-            else
-                printf "  %-20s ${YELLOW}⚠ Active but not connected${NC}\n" "tailscaled"
-            fi
+        if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
+            printf "  %-20s ${GREEN}✓ Active & Connected${NC}\n" "tailscaled"
+            tailscale ip 2>/dev/null > /tmp/tailscale_ips.txt || true
         else
-             printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "tailscaled"
+            if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
+                printf "  %-20s ${RED}✗ INACTIVE (Connection Failed)${NC}\n" "tailscaled"
+                FAILED_SERVICES+=("tailscaled")
+                TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
+                TS_COMMAND=${TS_COMMAND:-""}
+            else
+                printf "  %-20s ${YELLOW}⚠ Installed but not configured${NC}\n" "tailscaled"
+                TS_COMMAND=""
+            fi
         fi
+    fi
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
+        printf "  %-20s ${GREEN}✓ Performed${NC}\n" "Security Audit"
+    else
+        printf "  %-20s ${YELLOW}⚠ Not Performed${NC}\n" "Security Audit"
     fi
     echo
 
@@ -2255,11 +2269,11 @@ generate_summary() {
     fi
 
     # --- Security Audit Summary ---
-    if [[ "$AUDIT_RAN" == true ]]; then
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
         echo -e "  Security Audit:     ${GREEN}Performed${NC}"
-        printf "    %-17s%s\n" "- Audit Log:" "$AUDIT_LOG"
+        printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
         printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
-        printf "    %-17s%s\n" "- Vulnerabilities:" "$DEBSECAN_VULNS"
+        printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
     else
         echo -e "  Security Audit:     ${RED}Not run${NC}"
     fi
@@ -2285,9 +2299,9 @@ generate_summary() {
         printf "    %-23s ${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
-    if [[ "$AUDIT_RAN" == true ]]; then
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
         echo -e "  Security Audit:"
-        printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less $AUDIT_LOG"
+        printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
     echo
 
@@ -2295,11 +2309,11 @@ generate_summary() {
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
         print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
     fi
-    if [[ -n "$TS_COMMAND" ]]; then
+    if [[ -n "${TS_COMMAND:-}" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
         echo -e "${CYAN}  $TS_COMMAND${NC}"
     fi
-    if [[ -f /root/run_backup.sh ]] && [[ "$KEY_COPY_CHOICE" != "1" ]]; then
+    if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
         print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
     fi
 
