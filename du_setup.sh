@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.59 | 2025-07-15
+# Version: 0.60 | 2025-07-15
 # Changelog:
+# - v0.60: CI for shellcheck
 # - v0.59: Add a new optional function that applies a set of recommended sysctl security settings to harden the kernel.
 #          Script can now check for update and can run self-update.
 # - v0.58: improved fail2ban to parse ufw logs
@@ -120,7 +121,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.59 | 2025-07-15                         ║${NC}"
+    echo -e "${CYAN}║                      v0.60 | 2025-07-15                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -864,7 +865,7 @@ rollback_ssh_changes() {
         SSH_SERVICE="ssh.socket"
         print_info "Detected SSH socket activation: using ssh.socket."
         log "Rollback: Using ssh.socket for SSH service."
-    elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]$SSH_SERVICE[[:space:]]" >/dev/null 2>&1; then
+    elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]${SSH_SERVICE}[[:space:]]" >/dev/null 2>&1; then
         SSH_SERVICE="ssh.service" # Fallback for Ubuntu
         print_warning "SSH service $SSH_SERVICE not found, falling back to ssh.service."
         log "Rollback warning: Using fallback SSH service ssh.service."

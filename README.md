@@ -1,6 +1,12 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** v0.59
+[![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Compatibility](https://img.shields.io/badge/Compatibility-Debian%2012%20%7C%20Ubuntu%2022.04%20%2F%2024.04-orange)](https://www.debian.org/)
+[![Shell](https://img.shields.io/badge/Shell-Bash%204.4%2B-green)](https://www.gnu.org/software/bash/)
+[![Type](https://img.shields.io/badge/Type-Setup%20%26%20Hardening-blue)](https://github.com/buildplan/du_setup)
+
+**Version:** v0.60
 
 **Last Updated:** 2025-07-15
 
@@ -76,12 +82,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`9f0430e9d930fbdbd0bb5f148a6db1baa0290c14c697e1d56006630f0c3c19ae`
+`882b87ef9b3f21ed2df0b76c395aa9ed8864f8e1dad3b4bee627c9c9e7f301b0`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```
-echo 9f0430e9d930fbdbd0bb5f148a6db1baa0290c14c697e1d56006630f0c3c19ae du_setup.sh | sha256sum --check -
+echo 882b87ef9b3f21ed2df0b76c395aa9ed8864f8e1dad3b4bee627c9c9e7f301b0 du_setup.sh | sha256sum --check -
 ```
 
 ### 3\. Run the Script

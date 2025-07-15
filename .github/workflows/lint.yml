@@ -1,0 +1,30 @@
+name: Shell Script Linter
+
+on:
+  push:
+    branches: [ "main", "test" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run Shellcheck (Show All Issues & Fail on Errors)
+        run: |
+          set -o pipefail
+
+          echo "--- Checking for all warnings and style issues ---"
+          shellcheck -f gcc ./du_setup.sh | while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1)
+            line_no=$(echo "$line" | cut -d: -f2)
+            message=$(echo "$line" | cut -d: -f4-)
+            echo "::warning file=$file,line=$line_no::$message"
+          done || true
+
+          echo "--- Checking for critical errors ---"
+          shellcheck --severity=error ./du_setup.sh
