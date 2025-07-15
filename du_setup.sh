@@ -2287,7 +2287,7 @@ generate_summary() {
     printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
     printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban ufw jail:" "sudo fail2ban-client status ufw-probes"
     printf "  %-25s ${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl -a | grep 'du-hardening'"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
     if command -v docker >/dev/null 2>&1; then
         printf "  %-25s ${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
