@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.57 | 2025-07-07
+# Version: 0.59 | 2025-07-15
 # Changelog:
+# - v0.59: Add a new optional function that applies a set of recommended sysctl security settings to harden the kernel.
+#          Script can now check for update and can run self-update.
 # - v0.58: improved fail2ban to parse ufw logs
 # - v0.57: Fix for silent failure at test_backup()
 #	   Option to choose which directories to back up.
@@ -56,6 +58,11 @@
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
+# --- Update Configuration ---
+CURRENT_VERSION="0.59"
+SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
+CHECKSUM_URL="${SCRIPT_URL}.sha256"
+
 # --- GLOBAL VARIABLES & CONFIGURATION ---
 
 # --- Colors for output ---
@@ -84,6 +91,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_LOG="/var/log/backup_rsync.log"
+REPORT_FILE="/var/log/du_setup_report_$(date +%Y%m%d_%H%M%S).txt"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
 IS_CONTAINER=false
@@ -112,7 +120,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.58 | 2025-07-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.59 | 2025-07-15                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -227,6 +235,87 @@ convert_to_bytes() {
         echo $((value * 1024 * 1024))
     else
         echo 0
+    fi
+}
+
+# --- script update check ---
+run_update_check() {
+    print_section "Checking for Script Updates"
+    local latest_version
+
+    # Fetch the latest script from GitHub and parse the version number from it.
+    if ! latest_version=$(curl -sL "$SCRIPT_URL" | grep '^CURRENT_VERSION=' | head -n 1 | awk -F'"' '{print $2}'); then
+        print_warning "Could not check for updates. Please check your internet connection."
+        log "Update check failed: Could not fetch script from $SCRIPT_URL"
+        return
+    fi
+
+    if [[ -z "$latest_version" ]]; then
+        print_warning "Failed to find the version number in the remote script."
+        log "Update check failed: Could not parse version string from remote script."
+        return
+    fi
+
+    local lower_version
+    lower_version=$(printf '%s\n' "$CURRENT_VERSION" "$latest_version" | sort -V | head -n 1)
+
+    if [[ "$lower_version" == "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$latest_version" ]]; then
+        print_success "A new version ($latest_version) is available!"
+
+        if ! confirm "Would you like to update to version $latest_version now?"; then
+            return
+        fi
+
+        local temp_dir
+        if ! temp_dir=$(mktemp -d); then
+            print_error "Failed to create temporary directory. Update aborted."
+            exit 1
+        fi
+        trap 'rm -rf -- "$temp_dir"' EXIT
+
+        local temp_script="$temp_dir/du_setup.sh"
+        local temp_checksum="$temp_dir/checksum.sha256"
+
+        print_info "Downloading new script version..."
+        if ! curl -sL "$SCRIPT_URL" -o "$temp_script"; then
+            print_error "Failed to download the new script. Update aborted."
+            exit 1
+        fi
+
+        print_info "Downloading checksum..."
+        if ! curl -sL "$CHECKSUM_URL" -o "$temp_checksum"; then
+            print_error "Failed to download the checksum file. Update aborted."
+            exit 1
+        fi
+
+        print_info "Verifying checksum..."
+        if ! (cd "$temp_dir" && sha256sum -c "checksum.sha256" --quiet); then
+            print_error "Checksum verification failed! The downloaded file may be corrupt. Update aborted."
+            exit 1
+        fi
+        print_success "Checksum verified successfully."
+
+        print_info "Checking script syntax..."
+        if ! bash -n "$temp_script"; then
+            print_error "Downloaded file has a syntax error. Update aborted to prevent issues."
+            exit 1
+        fi
+        print_success "Syntax check passed."
+
+        if ! mv "$temp_script" "$0"; then
+            print_error "Failed to replace the old script file. You may need to run 'mv' manually."
+            exit 1
+        fi
+        chmod +x "$0"
+
+        trap - EXIT
+        rm -rf -- "$temp_dir"
+
+        print_success "Update successful. Please run the script again to use the new version."
+        exit 0
+    else
+        print_info "You are running the latest version ($CURRENT_VERSION)."
+        log "No new version found. Current: $CURRENT_VERSION, Latest: $latest_version"
     fi
 }
 
@@ -1127,6 +1216,86 @@ configure_auto_updates() {
         print_info "Skipping automatic security updates."
     fi
     log "Automatic updates configuration completed."
+}
+
+configure_kernel_hardening() {
+    print_section "Kernel Parameter Hardening (sysctl)"
+    if ! confirm "Apply recommended kernel security settings (sysctl)?"; then
+        print_info "Skipping kernel hardening."
+        log "Kernel hardening skipped by user."
+        return 0
+    fi
+
+    local KERNEL_HARDENING_CONFIG
+    KERNEL_HARDENING_CONFIG=$(mktemp)
+    # create the config in a temporary file
+    tee "$KERNEL_HARDENING_CONFIG" > /dev/null <<'EOF'
+# Recommended Security Settings managed by du_setup.sh
+# For details, see: https://www.kernel.org/doc/Documentation/sysctl/
+
+# --- IPV4 Networking ---
+# Protect against IP spoofing
+net.ipv4.conf.default.rp_filter=1
+net.ipv4.conf.all.rp_filter=1
+# Block SYN-FLOOD attacks
+net.ipv4.tcp_syncookies=1
+# Ignore ICMP redirects
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.all.secure_redirects=1
+net.ipv4.conf.default.secure_redirects=1
+# Ignore source-routed packets
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+# Log martian packets (packets with impossible source addresses)
+net.ipv4.conf.all.log_martians=1
+net.ipv4.conf.default.log_martians=1
+
+# --- IPV6 Networking (if enabled) ---
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.default.accept_redirects=0
+net.ipv6.conf.all.accept_source_route=0
+net.ipv6.conf.default.accept_source_route=0
+
+# --- Kernel Security ---
+# Enable ASLR (Address Space Layout Randomization) for better security
+kernel.randomize_va_space=2
+# Restrict access to kernel pointers in /proc to prevent leaks
+kernel.kptr_restrict=2
+# Restrict access to dmesg for unprivileged users
+kernel.dmesg_restrict=1
+# Restrict ptrace scope to prevent process injection attacks
+kernel.yama.ptrace_scope=1
+
+# --- Filesystem Security ---
+# Protect against TOCTOU (Time-of-Check to Time-of-Use) race conditions
+fs.protected_hardlinks=1
+fs.protected_symlinks=1
+EOF
+
+    local SYSCTL_CONF_FILE="/etc/sysctl.d/99-du-hardening.conf"
+
+    # Idempotency check: only update if the file doesn't exist or has changed
+    if [[ -f "$SYSCTL_CONF_FILE" ]] && cmp -s "$KERNEL_HARDENING_CONFIG" "$SYSCTL_CONF_FILE"; then
+        print_info "Kernel security settings are already configured correctly."
+        rm -f "$KERNEL_HARDENING_CONFIG"
+        log "Kernel hardening settings already in place."
+        return 0
+    fi
+
+    print_info "Applying settings to $SYSCTL_CONF_FILE..."
+    # Move the new config into place
+    mv "$KERNEL_HARDENING_CONFIG" "$SYSCTL_CONF_FILE"
+    chmod 644 "$SYSCTL_CONF_FILE"
+
+    print_info "Loading new settings..."
+    if sysctl -p "$SYSCTL_CONF_FILE" >/dev/null 2>&1; then
+        print_success "Kernel security settings applied successfully."
+        log "Applied kernel hardening settings."
+    else
+        print_error "Failed to apply kernel settings. Check for kernel compatibility."
+        log "sysctl -p failed for kernel hardening config."
+    fi
 }
 
 install_docker() {
@@ -2062,61 +2231,79 @@ final_cleanup() {
 }
 
 generate_summary() {
+    # Create the report file and set permissions first
+    touch "$REPORT_FILE" && chmod 600 "$REPORT_FILE"
+
+    # Using a subshell to group all output and tee it to the report file
+    (
     print_section "Setup Complete!"
-    print_info "Checking critical services..."
+
+    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
+    echo -e "${CYAN}📋 A detailed report has been saved to:${NC} ${BOLD}$REPORT_FILE${NC}"
+    echo -e "${CYAN}📜 The full execution log is available at:${NC}    ${BOLD}$LOG_FILE${NC}"
+    echo
+
+    echo -e "${YELLOW}Final Service Status Check:${NC}"
     for service in "$SSH_SERVICE" fail2ban chrony; do
         if systemctl is-active --quiet "$service"; then
-            print_success "Service $service is active."
+            printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
         else
-            print_error "Service $service is NOT active."
+            printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "$service"
             FAILED_SERVICES+=("$service")
         fi
     done
     if ufw status | grep -q "Status: active"; then
-        print_success "Service ufw is active."
+        printf "  %-20s ${GREEN}✓ Active${NC}\n" "ufw (firewall)"
     else
-        print_error "Service ufw is NOT active."
+        printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "ufw (firewall)"
         FAILED_SERVICES+=("ufw")
     fi
     if command -v docker >/dev/null 2>&1; then
         if systemctl is-active --quiet docker; then
-            print_success "Service docker is active."
+            printf "  %-20s ${GREEN}✓ Active${NC}\n" "docker"
         else
-            print_error "Service docker is NOT active."
+            printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "docker"
             FAILED_SERVICES+=("docker")
         fi
     fi
-    local TS_COMMAND=""
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
-            local TS_IPS TS_IPV4
-            TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
-            TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
-            print_success "Service tailscaled is active and connected."
-            echo "$TS_IPS" > /tmp/tailscale_ips.txt
+            printf "  %-20s ${GREEN}✓ Active & Connected${NC}\n" "tailscaled"
+            tailscale ip 2>/dev/null > /tmp/tailscale_ips.txt || true
         else
             if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
-                print_error "Service tailscaled is NOT active"
+                printf "  %-20s ${RED}✗ INACTIVE (Connection Failed)${NC}\n" "tailscaled"
                 FAILED_SERVICES+=("tailscaled")
                 TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
                 TS_COMMAND=${TS_COMMAND:-""}
             else
-                print_info "Service tailscaled is installed but not configured."
+                printf "  %-20s ${YELLOW}⚠ Installed but not configured${NC}\n" "tailscaled"
                 TS_COMMAND=""
             fi
-         fi
+        fi
     fi
-    if [[ "$AUDIT_RAN" == true ]]; then
-        print_success "Security audit performed."
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
+        printf "  %-20s ${GREEN}✓ Performed${NC}\n" "Security Audit"
     else
-        print_info "Security audit not performed."
+        printf "  %-20s ${YELLOW}⚠ Not Performed${NC}\n" "Security Audit"
     fi
-    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
+    echo
+
+    # --- Main Configuration Summary ---
     echo -e "${YELLOW}Configuration Summary:${NC}"
-    printf "  %-16s%s\n" "Admin User:" "$USERNAME"
-    printf "  %-16s%s\n" "Hostname:" "$SERVER_NAME"
-    printf "  %-16s%s\n" "SSH Port:" "$SSH_PORT"
-    printf "  %-16s%s\n" "Server IP:" "$SERVER_IP"
+    printf "  %-20s%s\n" "Admin User:" "$USERNAME"
+    printf "  %-20s%s\n" "Hostname:" "$SERVER_NAME"
+    printf "  %-20s%s\n" "SSH Port:" "$SSH_PORT"
+    printf "  %-20s%s\n" "Server IP:" "$SERVER_IP"
+
+    # --- Kernel Hardening Status ---
+    if [[ -f /etc/sysctl.d/99-du-hardening.conf ]]; then
+        printf "  %-20s${GREEN}Applied${NC}\n" "Kernel Hardening:"
+    else
+        printf "  %-20s${YELLOW}Not Applied${NC}\n" "Kernel Hardening:"
+    fi
+
+    # --- Backup Configuration Summary ---
     if [[ -f /root/run_backup.sh ]]; then
         local CRON_SCHEDULE=$(crontab -u root -l 2>/dev/null | grep -F "/root/run_backup.sh" | awk '{print $1, $2, $3, $4, $5}' || echo "Not configured")
         local NOTIFICATION_STATUS="None"
@@ -2128,93 +2315,95 @@ generate_summary() {
         elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
             NOTIFICATION_STATUS="Discord"
         fi
-        echo -e "  Remote Backup:   ${GREEN}Enabled${NC}"
-        printf "    %-16s%s\n" "- Backup Script:" "/root/run_backup.sh"
-        printf "    %-16s%s\n" "- Destination:" "$BACKUP_DEST"
-        printf "    %-16s%s\n" "- SSH Port:" "$BACKUP_PORT"
-        printf "    %-16s%s\n" "- Remote Path:" "$REMOTE_BACKUP_PATH"
-        printf "    %-16s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
-        printf "    %-16s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
+        echo -e "  Remote Backup:      ${GREEN}Enabled${NC}"
+        printf "    %-17s%s\n" "- Backup Script:" "/root/run_backup.sh"
+        printf "    %-17s%s\n" "- Destination:" "$BACKUP_DEST"
+        printf "    %-17s%s\n" "- SSH Port:" "$BACKUP_PORT"
+        printf "    %-17s%s\n" "- Remote Path:" "$REMOTE_BACKUP_PATH"
+        printf "    %-17s%s\n" "- Cron Schedule:" "$CRON_SCHEDULE"
+        printf "    %-17s%s\n" "- Notifications:" "$NOTIFICATION_STATUS"
         if [[ -f "$BACKUP_LOG" ]] && grep -q "Test backup successful" "$BACKUP_LOG" 2>/dev/null; then
-            printf "    %-16s%s\n" "- Test Status:" "${GREEN}Successful${NC}"
+            printf "    %-17s%s\n" "- Test Status:" "${GREEN}Successful${NC}"
         elif [[ -f "$BACKUP_LOG" ]]; then
-            printf "    %-16s%s\n" "- Test Status:" "Failed (check $BACKUP_LOG)"
+            printf "    %-17s%s\n" "- Test Status:" "Failed (check $BACKUP_LOG)"
         else
-            printf "    %-16s%s\n" "- Test Status:" "Not run"
+            printf "    %-17s%s\n" "- Test Status:" "Not run"
         fi
     else
-        echo -e "  Remote Backup:   ${RED}Not configured${NC}"
+        echo -e "  Remote Backup:      ${RED}Not configured${NC}"
     fi
+
+    # --- Tailscale Summary ---
     if command -v tailscale >/dev/null 2>&1; then
-    local TS_CONFIGURED=false
-    if [[ -f /tmp/tailscale_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt 2>/dev/null; then
-        TS_CONFIGURED=true
-    fi
-    if $TS_CONFIGURED; then
-        local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
-        local TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
-        local TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
-        local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
-        echo -e "  Tailscale:       ${GREEN}Configured and connected${NC}"
+        local TS_CONFIGURED=false
+        if [[ -f /tmp/tailscale_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt 2>/dev/null; then
+            TS_CONFIGURED=true
+        fi
+        if $TS_CONFIGURED; then
+            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
+            local TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
+            local TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
+            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+            echo -e "  Tailscale:          ${GREEN}Configured and connected${NC}"
+            printf "    %-17s%s\n" "- Server:" "${TS_SERVER:-Not set}"
+            printf "    %-17s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
+            printf "    %-17s%s\n" "- Flags:" "${TS_FLAGS:-None}"
+        else
+            echo -e "  Tailscale:          ${YELLOW}Installed but not configured${NC}"
+        fi
     else
-        echo -e "  Tailscale:       ${YELLOW}Installed but not configured${NC}"
-        print_info "You can configure Tailscale later by running: sudo tailscale up"
-        print_info "For custom servers, use: sudo tailscale up --login-server=<your_server_url>"
+        echo -e "  Tailscale:          ${RED}Not installed${NC}"
     fi
-    printf "    %-16s%s\n" "- Server:" "${TS_SERVER:-Not set}"
-    printf "    %-16s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
-    printf "    %-16s%s\n" "- Flags:" "${TS_FLAGS:-None}"
+
+    # --- Security Audit Summary ---
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
+        echo -e "  Security Audit:     ${GREEN}Performed${NC}"
+        printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
+        printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
+        printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
     else
-        echo -e "  Tailscale:       ${RED}Not installed${NC}"
-    fi
-    if [[ "$AUDIT_RAN" == true ]]; then
-        echo -e "  Security Audit:  ${GREEN}Performed${NC}"
-        printf "    %-16s%s\n" "- Audit Log:" "$AUDIT_LOG"
-        printf "    %-16s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
-        printf "    %-16s%s\n" "- Vulnerabilities:" "$DEBSECAN_VULNS"
-    else
-        echo -e "  Security Audit:  ${RED}Not run${NC}"
+        echo -e "  Security Audit:     ${RED}Not run${NC}"
     fi
     echo
-    printf "${PURPLE}%-16s%s${NC}\n" "Log File:" "$LOG_FILE"
-    printf "${PURPLE}%-16s%s${NC}\n" "Backups:" "$BACKUP_DIR"
-    echo
+
+    # --- Post-Reboot Verification ---
     echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
-    printf "  %-20s${CYAN}%s${NC}\n" "- SSH access:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban ssh jail status:" "sudo fail2ban-client status sshd"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Fail2Ban ufw jail status:" "sudo fail2ban-client status ufw-probes"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
-    printf "  %-20s${CYAN}%s${NC}\n" "- Hostname:" "hostnamectl"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- SSH access:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban ufw jail:" "sudo fail2ban-client status ufw-probes"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
+    printf "  %-25s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
     if command -v docker >/dev/null 2>&1; then
-        printf "  %-20s${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
+        printf "  %-25s ${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        printf "  %-20s${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
+        printf "  %-25s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Verify SSH key:" "sudo cat /root/.ssh/id_ed25519.pub"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Copy key if needed:" "ssh-copy-id -p $BACKUP_PORT -s $BACKUP_DEST"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
+        printf "    %-23s ${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
+        printf "    %-23s ${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
-    if [[ "$AUDIT_RAN" == true ]]; then
-        echo -e "  Security Audit:"
-        printf "    %-18s${CYAN}%s${NC}\n" "- Check results:" "sudo less $AUDIT_LOG"
+    if [[ "${AUDIT_RAN:-false}" == true ]]; then
+        echo -e "  ${YELLOW}Security Audit:${NC}"
+        printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
+    echo
+
+    # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
         print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
     fi
-    if [[ -n "$TS_COMMAND" ]]; then
+    if [[ -n "${TS_COMMAND:-}" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
         echo -e "${CYAN}  $TS_COMMAND${NC}"
     fi
-    if [[ -f /root/run_backup.sh && "$KEY_COPY_CHOICE" == "2" ]]; then
-        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to $BACKUP_DEST."
+    if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
+        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
     fi
-    print_warning "ACTION REQUIRED: If remote backup is enabled, ensure the root SSH key is copied to the destination server."
+
     print_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm "Reboot now?" "y"; then
@@ -2227,7 +2416,10 @@ generate_summary() {
     else
         print_warning "Quiet mode enabled. Please reboot manually with 'sudo reboot'."
     fi
-    log "Script finished successfully."
+
+    ) | tee -a "$REPORT_FILE"
+
+    log "Script finished successfully. Report generated at $REPORT_FILE"
 }
 
 handle_error() {
@@ -2254,6 +2446,7 @@ main() {
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
+    run_update_check
     print_header
     check_dependencies
     check_system
@@ -2266,6 +2459,7 @@ main() {
     configure_fail2ban
     configure_auto_updates
     configure_time_sync
+    configure_kernel_hardening
     install_docker
     install_tailscale
     setup_backup
