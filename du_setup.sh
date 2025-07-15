@@ -864,7 +864,7 @@ rollback_ssh_changes() {
         SSH_SERVICE="ssh.socket"
         print_info "Detected SSH socket activation: using ssh.socket."
         log "Rollback: Using ssh.socket for SSH service."
-    elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]$SSH_SERVICE[[:space:]]" >/dev/null 2>&1; then
+    elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]${SSH_SERVICE}[[:space:]]" >/dev/null 2>&1; then
         SSH_SERVICE="ssh.service" # Fallback for Ubuntu
         print_warning "SSH service $SSH_SERVICE not found, falling back to ssh.service."
         log "Rollback warning: Using fallback SSH service ssh.service."
