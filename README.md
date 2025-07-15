@@ -1,13 +1,13 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-**Version:** v0.58
+**Version:** v0.59
 
-**Last Updated:** 2025-07-07
+**Last Updated:** 2025-07-15
 
 **Compatible With:**
 
   * Debian 12
-  * Ubuntu 22.04, 24.04, 24.10 (24.10 experimental)
+  * Ubuntu 22.04, 24.04 (24.10 & 25.04 experimental)
 
 ## Overview
 
@@ -19,6 +19,7 @@ This script automates the initial setup and security hardening of a fresh Debian
   * **SSH Hardening**: Configures a custom SSH port, enforces key-based authentication, and applies security best practices.
   * **Firewall Configuration**: Sets up UFW with secure defaults and customizable rules.
   * **Intrusion Prevention**: Installs and configures **Fail2Ban** to block malicious IPs.
+  * **Kernel Hardening**: Optionally applies a set of recommended `sysctl` security settings to harden the kernel against common network and memory-related threats.
   * **Automated Security Updates**: Enables `unattended-upgrades` for automatic security patches.
   * **System Stability**: Configures NTP time synchronization with `chrony` and optional swap file setup for low-RAM systems.
   * **Remote rsync Backups**: Configures automated `rsync` backups over SSH to any compatible server (e.g., Hetzner Storage Box), with SSH key automation (`sshpass` or manual), cron scheduling, ntfy/Discord notifications, and a customizable exclude file.
@@ -75,12 +76,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`bb7b738b264aac1c04d3d13d94eac994dad9aa0f61290f0b67f37765b3c812c3`
+`9e53fa4230e99a0997629465bf106182cb4066ec39d40dead00fb1a6d4644687`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```
-echo bb7b738b264aac1c04d3d13d94eac994dad9aa0f61290f0b67f37765b3c812c3 du_setup.sh | sha256sum --check -
+echo 9e53fa4230e99a0997629465bf106182cb4066ec39d40dead00fb1a6d4644687 du_setup.sh | sha256sum --check -
 ```
 
 ### 3\. Run the Script
@@ -110,22 +111,26 @@ sudo -E ./du_setup.sh --quiet
 
 ## What It Does
 
-| Task                   | Description                                                                                                                                                                                          |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **System Checks** | Verifies OS compatibility, root privileges, and internet connectivity.                                                                                                                       |
-| **Package Management** | Updates packages and installs tools (`ufw`, `fail2ban`, `chrony`, `rsync`, `lynis`, `debsecan`, etc.).                                                                                        |
-| **Admin User Creation**| Creates a `sudo` user with a password and/or SSH public key.                                                                                                                                  |
-| **SSH Hardening** | Disables root login, enforces key-based auth, and sets a custom port.                                                                                                                        |
-| **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific ports.                                                                                                                 |
-| **Remote Backup Setup**| Configures `rsync` backups to an SSH server (e.g., `u457300-sub4@u457300.your-storagebox.de:23`). Creates `/root/run_backup.sh`, `/root/rsync_exclude.txt`, and schedules a cron job. Supports ntfy/Discord notifications. |
-| **Backup Testing** | Performs an optional test backup to verify rsync configuration, logging results to `/var/log/backup_rsync.log`.                                                                                 |
-| **Security Auditing** | Runs optional **Lynis** and **debsecan** audits, logging results to `/var/log/setup_harden_security_audit_*.log`.                                                                              |
-| **Tailscale Setup** | Installs Tailscale and connects to the standard Tailscale network (pre-auth key starting with `tskey-auth-`) or a custom server (any valid key). Configures optional flags (`--ssh`, `--advertise-exit-node`, `--accept-dns`, `--accept-routes`). |
-| **System Backups** | Saves timestamped configuration backups in `/root/setup_harden_backup_*`.                                                                                                                     |
-| **Swap File Setup** | Creates an optional swap file (e.g., 2G) with tuned settings.                                                                                                                                  |
-| **Timezone & Locales** | Configures timezone and system locales interactively.                                                                                                                                         |
-| **Docker Install** | Installs Docker Engine and adds the user to the `docker` group.                                                                                                                               |
-| **Final Cleanup** | Removes unused packages and reloads daemons.                                                                                                                                                  |
+| Task | Description |
+| :--- | :--- |
+| **System Checks** | Verifies OS compatibility, root privileges, and internet connectivity. |
+| **Package Management** | Updates packages and installs essential tools (`ufw`, `fail2ban`, `chrony`, `rsync`, etc.). |
+| **Admin User Creation**| Creates a `sudo` user with a password and/or SSH public key. |
+| **SSH Hardening** | Disables root login, enforces key-based auth, and sets a custom port with a robust rollback mechanism. |
+| **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific user-defined ports. |
+| **Fail2Ban Setup** | Configures Fail2Ban to monitor SSH and UFW logs, blocking suspicious IPs. |
+| **Auto-Updates Setup** | Enables and configures `unattended-upgrades` for automatic security patches. |
+| **Time Sync Setup** | Ensures `chrony` is active for accurate network time synchronization. |
+| **Kernel Hardening** | Applies optional `sysctl` security settings to protect against IP spoofing and SYN floods. |
+| **Docker Install** | Installs Docker Engine and Docker Compose, then adds the admin user to the `docker` group. |
+| **Tailscale Setup** | Installs Tailscale and connects to a mesh network using a pre-auth key, with optional advanced flags. |
+| **Remote Backup Setup**| Configures `rsync` backups to an SSH server, creating `/root/run_backup.sh` and a cron job. |
+| **Backup Testing** | Performs an optional test backup to verify the `rsync` configuration. |
+| **Swap File Setup** | Creates an optional swap file with tuned `swappiness` and `vfs_cache_pressure` settings. |
+| **Security Auditing** | Runs optional **Lynis** and **debsecan** audits and logs the results. |
+| **System Backups** | Saves timestamped backups of modified configuration files in `/root/setup_harden_backup_*`. |
+| **Final Summary** | Generates a detailed report of all changes and saves it to `/var/log/du_setup_report_*.txt`. |
+| **Final Cleanup** | Removes unused packages and reloads system daemons. |
 
 ## Logs & Backups
 
@@ -144,6 +149,9 @@ After rebooting, verify the setup:
   * **Fail2Ban Status**: `sudo fail2ban-client status sshd`
   * **Swap Status**: `sudo swapon --show && free -h`
   * **Hostname**: `hostnamectl`
+  * **Kernal Hardening** (if configured):
+      * Check the conf file: `sudo cat /etc/sysctl.d/99-du-hardening.conf`
+      * Checks the live value of a few key parameters that script sets: `sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope net.ipv4.tcp_syncookies`
   * **Docker Status** (if installed): `docker ps`
   * **Tailscale Status** (if installed): `tailscale status`
   * **Tailscale Verification** (if configured):
@@ -164,8 +172,8 @@ After rebooting, verify the setup:
 ## Tested On
 
   * Debian 12
-  * Ubuntu 22.04, 24.04, 24.10 (experimental)
-  * Cloud providers: DigitalOcean, Oracle Cloud, Hetzner, Netcup
+  * Ubuntu 22.04, 24.04 - 24.10 & 25.04 (experimental)
+  * Cloud providers: DigitalOcean, Oracle Cloud, OVH Cloud, Hetzner, Netcup
   * Backup destinations: Hetzner Storage Box (SSH, port 23), custom SSH servers
   * Tailscale: Standard network, custom self-hosted servers
 
