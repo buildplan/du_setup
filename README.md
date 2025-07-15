@@ -1,5 +1,11 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
+[![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Compatibility](https://img.shields.io/badge/Compatibility-Debian%2012%20%7C%20Ubuntu%2022.04%20%2F%2024.04-orange)](https://www.debian.org/)
+[![Shell](https://img.shields.io/badge/Shell-Bash%204.4%2B-green)](https://www.gnu.org/software/bash/)
+[![Type](https://img.shields.io/badge/Type-Setup%20%26%20Hardening-blue)](https://github.com/buildplan/du_setup)
+
 **Version:** v0.60
 
 **Last Updated:** 2025-07-15
