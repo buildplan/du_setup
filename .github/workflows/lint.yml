@@ -1,5 +1,8 @@
 name: Shell Script Linter
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ "main", "test" ]
