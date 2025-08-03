@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.60 | 2025-07-15
+# Version: 0.61 | 2025-08-03
 # Changelog:
 # - v0.61: Display Lynis suggestions in summary, hide tailscale auth key, cleanup temp files
 # - v0.60: CI for shellcheck
