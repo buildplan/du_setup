@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.60 | 2025-07-15
+# Version: 0.61 | 2025-08-03
 # Changelog:
+# - v0.61: Display Lynis suggestions in summary, hide tailscale auth key, cleanup temp files
 # - v0.60: CI for shellcheck
 # - v0.59: Add a new optional function that applies a set of recommended sysctl security settings to harden the kernel.
 #          Script can now check for update and can run self-update.
@@ -60,7 +61,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.60"
+CURRENT_VERSION="0.61"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -121,7 +122,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.60 | 2025-07-15                         ║${NC}"
+    echo -e "${CYAN}║                      v0.61 | 2025-08-03                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1434,7 +1435,8 @@ install_tailscale() {
         done
     fi
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        read -sp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        echo
         if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
         elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
             print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
@@ -2175,6 +2177,8 @@ configure_security_audit() {
             log "Lynis audit completed successfully."
             # Extract hardening index
             HARDENING_INDEX=$(grep -oP "Hardening index : \K\d+" "$AUDIT_LOG" || echo "Unknown")
+            #Extract top suggestions
+            grep "Suggestion:" /var/log/lynis-report.dat | head -n 5 > /tmp/lynis_suggestions.txt 2>/dev/null || true
             # Append Lynis system log for persistence
             cat /var/log/lynis.log >> "$AUDIT_LOG" 2>/dev/null
         else
@@ -2362,6 +2366,10 @@ generate_summary() {
         printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
         printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
         printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
+        if [[ -s /tmp/lynis_suggestions.txt ]]; then
+            echo -e "    ${YELLOW}- Top Lynis Suggestions:${NC}"
+            sed 's/^/      /' /tmp/lynis_suggestions.txt
+        fi
     else
         echo -e "  Security Audit:     ${RED}Not run${NC}"
     fi
@@ -2434,6 +2442,7 @@ handle_error() {
 
 main() {
     trap 'handle_error $LINENO' ERR
+    trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
 
     # --- Root Check ---
     if [[ $(id -u) -ne 0 ]]; then
