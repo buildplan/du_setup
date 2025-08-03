@@ -3,7 +3,7 @@
 # Debian 12 and Ubuntu Server Hardening Interactive Script
 # Version: 0.60 | 2025-07-15
 # Changelog:
-# - v0.61: Display Lynis suggestions in summary and hide tailscale auth key
+# - v0.61: Display Lynis suggestions in summary, hide tailscale auth key, cleanup temp files
 # - v0.60: CI for shellcheck
 # - v0.59: Add a new optional function that applies a set of recommended sysctl security settings to harden the kernel.
 #          Script can now check for update and can run self-update.
@@ -61,7 +61,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.60"
+CURRENT_VERSION="0.61"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -2442,6 +2442,7 @@ handle_error() {
 
 main() {
     trap 'handle_error $LINENO' ERR
+    trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
 
     # --- Root Check ---
     if [[ $(id -u) -ne 0 ]]; then
