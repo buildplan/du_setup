@@ -1182,6 +1182,12 @@ EOF
     echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
     echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
 
+    # --- Ensure the log file exists BEFORE restarting the service ---
+    if [[ ! -f /var/log/ufw.log ]]; then
+        touch /var/log/ufw.log
+        print_info "Created empty /var/log/ufw.log to ensure Fail2Ban starts correctly."
+    fi
+
     # --- Restart and Verify Fail2ban ---
     print_info "Enabling and restarting Fail2Ban to apply new rules..."
     systemctl enable fail2ban
