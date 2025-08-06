@@ -123,7 +123,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      0.621 | 202508-063                         ║${NC}"
+    echo -e "${CYAN}║                      v0.62 | 2025-08-06                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
