@@ -1192,6 +1192,7 @@ EOF
     print_info "Enabling and restarting Fail2Ban to apply new rules..."
     systemctl enable fail2ban
     systemctl restart fail2ban
+    sleep 2 # Give the service a moment to initialize.
 
     if systemctl is-active --quiet fail2ban; then
         print_success "Fail2Ban is active with the new configuration."
