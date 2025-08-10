@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.62 | 2025-08-06
+# Version: 0.63 | 2025-08-10
 # Changelog:
+# - v0.63: Added ssh install in key packages
 # - v0.62: Added fix for fail2ban by creating empty ufw log file
 # - v0.61: Display Lynis suggestions in summary, hide tailscale auth key, cleanup temp files
 # - v0.60: CI for shellcheck
@@ -62,7 +63,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.62"
+CURRENT_VERSION="0.63"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -466,7 +467,7 @@ install_packages() {
         ufw fail2ban unattended-upgrades chrony \
         rsync wget vim htop iotop nethogs netcat-traditional ncdu \
         tree rsyslog cron jq gawk coreutils perl skopeo git \
-        openssh-client openssh-server; then
+        ssh openssh-client openssh-server; then
         print_error "Failed to install one or more essential packages."
         exit 1
     fi
