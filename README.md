@@ -1,19 +1,20 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
+[![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&labelColor=555&logo=debian&logoColor=white)](https://www.debian.org/releases/)
+[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-%23E95420?style=flat&labelColor=555&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)
 [![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Compatibility](https://img.shields.io/badge/Compatibility-Debian%2012%20%7C%20Ubuntu%2022.04%20%2F%2024.04-orange)](https://www.debian.org/)
 [![Shell](https://img.shields.io/badge/Shell-Bash%204.4%2B-green)](https://www.gnu.org/software/bash/)
 [![Type](https://img.shields.io/badge/Type-Setup%20%26%20Hardening-blue)](https://github.com/buildplan/du_setup)
 
-**Version:** v0.63
+**Version:** v0.64
 
-**Last Updated:** 2025-08-10
+**Last Updated:** 2025-08-15
 
 **Compatible With:**
 
-  * Debian 12
-  * Ubuntu 22.04, 24.04 (24.10 & 25.04 experimental)
+  * Debian 12, 13
+  * Ubuntu 20.04, 22.04, 24.04 (24.10 & 25.04 experimental)
 
 ## Overview
 
@@ -82,12 +83,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`200bec06b7eb818616fc8073e4aa479c2dd3aa8c262a2e273173d31cda0286a3`
+`39dfc5716377b3468ecacd9f7a557fedca0397720c3652e5b14d8788241df789`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```
-echo 200bec06b7eb818616fc8073e4aa479c2dd3aa8c262a2e273173d31cda0286a3 du_setup.sh | sha256sum --check -
+echo 39dfc5716377b3468ecacd9f7a557fedca0397720c3652e5b14d8788241df789 du_setup.sh | sha256sum --check -
 ```
 
 ### 3\. Run the Script
@@ -177,7 +178,7 @@ After rebooting, verify the setup:
 
 ## Tested On
 
-  * Debian 12
+  * Debian 12, 13
   * Ubuntu 22.04, 24.04 - 24.10 & 25.04 (experimental)
   * Cloud providers: DigitalOcean, Oracle Cloud, OVH Cloud, Hetzner, Netcup
   * Backup destinations: Hetzner Storage Box (SSH, port 23), custom SSH servers
