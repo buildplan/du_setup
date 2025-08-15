@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Debian 12 and Ubuntu Server Hardening Interactive Script
-# Version: 0.63 | 2025-08-10
+# Debian and Ubuntu Server Hardening Interactive Script
+# Version: 0.64 | 2025-08-15
 # Changelog:
+# - v0.64: Tested at Debian 13 to confirm it works as expected
 # - v0.63: Added ssh install in key packages
 # - v0.62: Added fix for fail2ban by creating empty ufw log file
 # - v0.61: Display Lynis suggestions in summary, hide tailscale auth key, cleanup temp files
@@ -63,7 +64,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.63"
+CURRENT_VERSION="0.64"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -124,7 +125,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.62 | 2025-08-06                         ║${NC}"
+    echo -e "${CYAN}║                      v0.64 | 2025-08-15                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -362,11 +363,11 @@ check_system() {
     if [[ -f /etc/os-release ]]; then
         source /etc/os-release
         ID=$ID  # Populate global ID variable
-        if [[ $ID == "debian" && $VERSION_ID == "12" ]] || \
+	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
         else
-            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12 or Ubuntu 20.04/22.04/24.04 LTS."
+            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12/13 or Ubuntu 20.04/22.04/24.04 LTS."
             if ! confirm "Continue anyway?"; then exit 1; fi
         fi
     else
@@ -660,6 +661,11 @@ setup_user() {
 
 configure_system() {
     print_section "System Configuration"
+
+    # Warn about /tmp being a RAM-backed filesystem on Debian 13+
+    print_info "Note: Debian 13 uses tmpfs for /tmp by default (stored in RAM)"
+    print_info "Large temporary files may consume system memory"
+
     mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
     cp /etc/hosts "$BACKUP_DIR/hosts.backup"
     cp /etc/fstab "$BACKUP_DIR/fstab.backup"
