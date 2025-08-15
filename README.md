@@ -1,7 +1,7 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
-[![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&logo=debian&logoColor=white)](https://www.debian.org/releases/)
-[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-%23E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)
+[![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-lightgrey?style=flat&labelColor=555&logo=debian&logoColor=%23A81D33)](https://www.debian.org/releases/)
+[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-lightgrey?style=flat&labelColor=555&logo=ubuntu&logoColor=%23E95420)](https://ubuntu.com/download/server)
 [![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Shell](https://img.shields.io/badge/Shell-Bash%204.4%2B-green)](https://www.gnu.org/software/bash/)
