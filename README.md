@@ -2,10 +2,10 @@
 
 [![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&logo=debian&logoColor=white)](https://www.debian.org/releases/)
-[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-%23E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)
 [![Shell](https://img.shields.io/badge/Shell-Bash%204.4%2B-green)](https://www.gnu.org/software/bash/)
 [![Type](https://img.shields.io/badge/Type-Setup%20%26%20Hardening-blue)](https://github.com/buildplan/du_setup)
+[![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&logo=debian&logoColor=white)](https://www.debian.org/releases/)
+[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-%23E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)
 
 **Version:** v0.64
 
