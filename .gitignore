@@ -2,23 +2,40 @@
 *.tmp
 *.bak
 *.swp
-
-.DS_Store
-.AppleDouble
-.LSOverride
-
-*~
-
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
-
 .env
 secrets.env
-
 *.backup
+
+### Linux ###
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+### macOS ###
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+*.icloud
