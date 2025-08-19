@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.64 | 2025-08-15
+# Version: 0.65 | 2025-08-19
 # Changelog:
+# - v0.65: If reconfigure locales - appy newly configured locale to the current environment.
 # - v0.64: Tested at Debian 13 to confirm it works as expected
 # - v0.63: Added ssh install in key packages
 # - v0.62: Added fix for fail2ban by creating empty ufw log file
@@ -64,7 +65,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.64"
+CURRENT_VERSION="0.65"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -125,7 +126,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.64 | 2025-08-15                         ║${NC}"
+    echo -e "${CYAN}║                      v0.65 | 2025-08-19                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -691,6 +692,15 @@ configure_system() {
 
     if confirm "Configure system locales interactively?"; then
         dpkg-reconfigure locales
+        print_info "Applying new locale settings to the current session..."
+        if [[ -f /etc/default/locale ]]; then
+            . /etc/default/locale
+            export $(grep -v '^#' /etc/default/locale | cut -d= -f1)
+            print_success "Locale environment updated for this session."
+            log "Sourced /etc/default/locale to update script's environment."
+        else
+            print_warning "Could not find /etc/default/locale to update session environment."
+        fi
     else
         print_info "Skipping locale configuration."
     fi
