@@ -800,7 +800,7 @@ configure_ssh() {
         echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "${CYAN} Using IPv6:    ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+        echo -e "${CYAN} Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
