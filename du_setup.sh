@@ -449,7 +449,9 @@ collect_config() {
     done
     SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
     SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
-    print_info "Detected server IPv4: $SERVER_IP_V4"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        print_info "Detected server IPv4: $SERVER_IP_V4"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         print_info "Detected server IPv6: $SERVER_IP_V6"
     fi
@@ -457,7 +459,9 @@ collect_config() {
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
-    printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
@@ -787,7 +791,9 @@ configure_ssh() {
 
     print_warning "SSH Key Authentication Required for Next Steps!"
     echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
-    echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         echo -e "${CYAN}  Or IPv6:    ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
@@ -854,7 +860,9 @@ EOF
     fi
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         print_info "Or IPv6:  ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
@@ -2339,7 +2347,9 @@ generate_summary() {
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
-    printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
@@ -2421,21 +2431,23 @@ generate_summary() {
     # --- Post-Reboot Verification Steps ---
     echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
     echo -e "  - SSH access:"
-    printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+        printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         printf "    %-21s ${CYAN}%s${NC}\n" "- Or IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban ufw jail:" "sudo fail2ban-client status ufw-probes"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban ufw jail:" "sudo fail2ban-client status ufw-probes"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
+    printf "  %-28s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
     if command -v docker >/dev/null 2>&1; then
-        printf "  %-25s ${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
+        printf "  %-28s ${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
     fi
     if command -v tailscale >/dev/null 2>&1; then
-        printf "  %-25s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
+        printf "  %-28s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         echo -e "  Remote Backup:"
