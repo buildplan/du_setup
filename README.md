@@ -83,12 +83,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`3d40a44dbd1d6d777a75e0a0c920818a5ed85b8a68db55c1ec322b92df15ab33`
+`dccfec8e19289b957222d8b4d8ec7e2791c6e14a8b8c294059b38fd7f071b979`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```
-echo 3d40a44dbd1d6d777a75e0a0c920818a5ed85b8a68db55c1ec322b92df15ab33 du_setup.sh | sha256sum --check -
+echo dccfec8e19289b957222d8b4d8ec7e2791c6e14a8b8c294059b38fd7f071b979 du_setup.sh | sha256sum --check -
 ```
 
 ### 3\. Run the Script
