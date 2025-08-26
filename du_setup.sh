@@ -454,12 +454,12 @@ collect_config() {
         print_info "Detected server IPv6: $SERVER_IP_V6"
     fi
     echo -e "\n${YELLOW}Configuration Summary:${NC}"
-    echo -e "  Username:   $USERNAME"
-    echo -e "  Hostname:   $SERVER_NAME"
-    echo -e "  SSH Port:   $SSH_PORT"
-    echo -e "  Server IPv4:  $SERVER_IP_V4"
+    printf "  %-15s %s\n" "Username:" "$USERNAME"
+    printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
+    printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+    printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "  Server IPv6:  $SERVER_IP_V6"
+        printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
     if ! confirm "\nContinue with this configuration?" "y"; then print_info "Exiting."; exit 0; fi
     log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6"
@@ -2336,12 +2336,12 @@ generate_summary() {
 
     # --- Main Configuration Summary ---
     echo -e "${YELLOW}Configuration Summary:${NC}"
-    printf "  %-20s%s\n" "Admin User:" "$USERNAME"
-    printf "  %-20s%s\n" "Hostname:" "$SERVER_NAME"
-    printf "  %-20s%s\n" "SSH Port:" "$SSH_PORT"
-    printf "  %-20s%s\n" "Server IPv4:" "$SERVER_IP_V4"
+    printf "  %-15s %s\n" "Admin User:" "$USERNAME"
+    printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
+    printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+    printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "  %-20s%s\n" "Server IPv6:" "$SERVER_IP_V6"
+        printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
     # --- Kernel Hardening Status ---
