@@ -2418,9 +2418,13 @@ generate_summary() {
     fi
     echo
 
-    # --- Post-Reboot Verification ---
+    # --- Post-Reboot Verification Steps ---
     echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
-    printf "  %-25s ${CYAN}%s${NC}\n" "- SSH access:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    echo -e "  - SSH access:"
+    printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        printf "    %-21s ${CYAN}%s${NC}\n" "- Or IPv6:" "ssh -p $SSH_PORT $USERNAME@[$SERVER_IP_V6]"
+    fi
     printf "  %-25s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-25s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
     printf "  %-25s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
