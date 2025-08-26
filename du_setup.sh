@@ -789,7 +789,7 @@ configure_ssh() {
     echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
     echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "${CYAN}  Or IPv6:    ssh -p $CURRENT_SSH_PORT $USERNAME@[$SERVER_IP_V6]${NC}"
+        echo -e "${CYAN}  Or IPv6:    ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
@@ -856,7 +856,7 @@ EOF
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
     print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        print_info "Or IPv6:  ssh -p $SSH_PORT $USERNAME@[$SERVER_IP_V6]"
+        print_info "Or IPv6:  ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
 
     # Retry loop for SSH connection test
@@ -2423,7 +2423,7 @@ generate_summary() {
     echo -e "  - SSH access:"
     printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "    %-21s ${CYAN}%s${NC}\n" "- Or IPv6:" "ssh -p $SSH_PORT $USERNAME@[$SERVER_IP_V6]"
+        printf "    %-21s ${CYAN}%s${NC}\n" "- Or IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
     printf "  %-25s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-25s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
