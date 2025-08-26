@@ -800,7 +800,7 @@ configure_ssh() {
         echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "${CYAN} Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+        echo -e "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
@@ -869,7 +869,7 @@ EOF
         print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        print_info "Use IPv6:  ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+        print_info "Use IPv6: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
 
     # Retry loop for SSH connection test
@@ -2437,10 +2437,10 @@ generate_summary() {
     echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
     echo -e "  - SSH access:"
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-        printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "    %-21s ${CYAN}%s${NC}\n" "- Using IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
     printf "  %-28s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
