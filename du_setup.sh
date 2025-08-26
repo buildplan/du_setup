@@ -633,7 +633,12 @@ setup_user() {
             echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
             echo -e "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
             echo -e "${CYAN}4. Connect to the server using:${NC}"
-            echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP${NC}"
+            if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+            fi
+            if [[ "$SERVER_IP_V6" != "not available" ]]; then
+                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+            fi
             echo
             echo -e "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
             read -rp "$(echo -e "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
