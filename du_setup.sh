@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.65 | 2025-08-19
+# Version: 0.66 | 2025-08-26
 # Changelog:
+# - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
 # - v0.65: If reconfigure locales - appy newly configured locale to the current environment.
 # - v0.64: Tested at Debian 13 to confirm it works as expected
 # - v0.63: Added ssh install in key packages
@@ -65,7 +66,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.65"
+CURRENT_VERSION="0.66"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -126,7 +127,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.65 | 2025-08-19                         ║${NC}"
+    echo -e "${CYAN}║                      v0.66 | 2025-08-26                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -446,15 +447,22 @@ collect_config() {
         SSH_PORT=${SSH_PORT:-2222}
         if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
     done
-    SERVER_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "unknown")
-    print_info "Detected server IP: $SERVER_IP"
+    SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
+    SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
+    print_info "Detected server IPv4: $SERVER_IP_V4"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        print_info "Detected server IPv6: $SERVER_IP_V6"
+    fi
     echo -e "\n${YELLOW}Configuration Summary:${NC}"
     echo -e "  Username:   $USERNAME"
     echo -e "  Hostname:   $SERVER_NAME"
     echo -e "  SSH Port:   $SSH_PORT"
-    echo -e "  Server IP:  $SERVER_IP"
+    echo -e "  Server IPv4:  $SERVER_IP_V4"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        echo -e "  Server IPv6:  $SERVER_IP_V6"
+    fi
     if ! confirm "\nContinue with this configuration?" "y"; then print_info "Exiting."; exit 0; fi
-    log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT"
+    log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6"
 }
 
 install_packages() {
@@ -778,7 +786,12 @@ configure_ssh() {
     fi
 
     print_warning "SSH Key Authentication Required for Next Steps!"
-    echo -e "${CYAN}Test SSH access from a SEPARATE terminal now: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP${NC}"
+    echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
+    echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        echo -e "${CYAN}  Or IPv6:    ssh -p $CURRENT_SSH_PORT $USERNAME@[$SERVER_IP_V6]${NC}"
+    fi
+
     if ! confirm "Can you successfully log in using your SSH key?"; then
         print_error "SSH key authentication is mandatory to proceed."
         return 1
@@ -841,7 +854,10 @@ EOF
     fi
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    print_info "Use: ssh -p $SSH_PORT $USERNAME@$SERVER_IP"
+    print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        print_info "Or IPv6:  ssh -p $SSH_PORT $USERNAME@[$SERVER_IP_V6]"
+    fi
 
     # Retry loop for SSH connection test
     local retry_count=0
@@ -2323,7 +2339,10 @@ generate_summary() {
     printf "  %-20s%s\n" "Admin User:" "$USERNAME"
     printf "  %-20s%s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-20s%s\n" "SSH Port:" "$SSH_PORT"
-    printf "  %-20s%s\n" "Server IP:" "$SERVER_IP"
+    printf "  %-20s%s\n" "Server IPv4:" "$SERVER_IP_V4"
+    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+        printf "  %-20s%s\n" "Server IPv6:" "$SERVER_IP_V6"
+    fi
 
     # --- Kernel Hardening Status ---
     if [[ -f /etc/sysctl.d/99-du-hardening.conf ]]; then
