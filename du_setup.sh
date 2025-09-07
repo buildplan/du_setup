@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.66 | 2025-08-26
+# Version: 0.67 | 2025-09-07
 # Changelog:
+# - v0.67: Do not log taiscale auth key in log file
 # - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
 # - v0.65: If reconfigure locales - appy newly configured locale to the current environment.
 # - v0.64: Tested at Debian 13 to confirm it works as expected
@@ -66,7 +67,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.66"
+CURRENT_VERSION="0.67"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -127,7 +128,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.66 | 2025-08-26                         ║${NC}"
+    echo -e "${CYAN}║                      v0.67 | 2025-09-07                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1503,12 +1504,13 @@ install_tailscale() {
         TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
     fi
     TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME"
-    print_info "Connecting to Tailscale with: $TS_COMMAND"
+    TS_COMMAND_SAFE=$(echo "$TS_COMMAND" | sed -E 's/--auth-key=[^[:space:]]+/--auth-key=REDACTED/g')
+    print_info "Connecting to Tailscale with: $TS_COMMAND_SAFE"
     if ! $TS_COMMAND; then
         print_warning "Failed to connect to Tailscale. Possible issues: invalid pre-auth key, network restrictions, or server unavailability."
         print_info "Please run the following command manually after resolving the issue:"
-        echo -e "${CYAN}  $TS_COMMAND${NC}"
-        log "Tailscale connection failed: $TS_COMMAND"
+        echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+        log "Tailscale connection failed: $TS_COMMAND_SAFE"
     else
         # Verify connection status with retries
         local RETRIES=3
@@ -1529,7 +1531,7 @@ install_tailscale() {
         done
         if $CONNECTED; then
             print_success "Tailscale connected successfully. Node IPv4 in tailnet: $TS_IPV4"
-            log "Tailscale connected: $TS_COMMAND"
+            log "Tailscale connected: $TS_COMMAND_SAFE"
             # Store connection details for summary
             echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
@@ -1537,8 +1539,8 @@ install_tailscale() {
         else
             print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
             print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-            echo -e "${CYAN}  $TS_COMMAND${NC}"
-            log "Tailscale connection not verified: $TS_COMMAND"
+            echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+            log "Tailscale connection not verified: $TS_COMMAND_SAFE"
             tailscale status > /tmp/tailscale_status.txt 2>&1
             log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
         fi
@@ -1572,12 +1574,13 @@ install_tailscale() {
                 TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
             fi
             TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME $TS_FLAGS"
-            print_info "Reconfiguring Tailscale with additional options: $TS_COMMAND"
+            TS_COMMAND_SAFE=$(echo "$TS_COMMAND" | sed -E 's/--auth-key=[^[:space:]]+/--auth-key=REDACTED/g')
+            print_info "Reconfiguring Tailscale with additional options: $TS_COMMAND_SAFE"
             if ! $TS_COMMAND; then
                 print_warning "Failed to reconfigure Tailscale with additional options."
                 print_info "Please run the following command manually after resolving the issue:"
-                echo -e "${CYAN}  $TS_COMMAND${NC}"
-                log "Tailscale reconfiguration failed: $TS_COMMAND"
+                echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                log "Tailscale reconfiguration failed: $TS_COMMAND_SAFE"
             else
                 # Verify reconfiguration status with retries
                 local RETRIES=3
@@ -1598,14 +1601,14 @@ install_tailscale() {
                 done
                 if $CONNECTED; then
                     print_success "Tailscale reconfigured with additional options. Node IPv4 in tailnet: $TS_IPV4"
-                    log "Tailscale reconfigured: $TS_COMMAND"
+                    log "Tailscale reconfigured: $TS_COMMAND_SAFE"
 		    # Store flags and IPs for summary
                     echo "$TS_FLAGS" | sed 's/ --/ /g' | sed 's/^ *//' > /tmp/tailscale_flags
                     echo "$TS_IPS" > /tmp/tailscale_ips.txt
                 else
                     print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
                     print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-                    echo -e "${CYAN}  $TS_COMMAND${NC}"
+                    echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
                     tailscale status > /tmp/tailscale_status.txt 2>&1
                     log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
