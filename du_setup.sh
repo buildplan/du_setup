@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.67 | 2025-09-07
+# Version: 0.68 | 2025-09-07
 # Changelog:
+# - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
 # - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
 # - v0.65: If reconfigure locales - appy newly configured locale to the current environment.
@@ -67,7 +68,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.67"
+CURRENT_VERSION="0.68"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -128,7 +129,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.67 | 2025-09-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.68 | 2025-09-07                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -1157,6 +1158,25 @@ configure_firewall() {
             fi
         done
     fi
+
+    # --- Enable IPv6 Support if Available ---
+    if [[ -f /proc/net/if_inet6 ]]; then
+        print_info "IPv6 detected. Ensuring UFW is configured for IPv6..."
+        if grep -q '^IPV6=yes' /etc/default/ufw; then
+            print_info "UFW IPv6 support is already enabled."
+        else
+            sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
+            if ! grep -q '^IPV6=yes' /etc/default/ufw; then
+                echo "IPV6=yes" >> /etc/default/ufw
+            fi
+            print_success "Enabled IPv6 support in /etc/default/ufw."
+            log "Enabled UFW IPv6 support."
+        fi
+    else
+        print_info "No IPv6 detected on this system. Skipping UFW IPv6 configuration."
+        log "UFW IPv6 configuration skipped as no kernel support was detected."
+    fi
+    
     print_info "Enabling firewall..."
     if ! ufw --force enable; then
         print_error "Failed to enable UFW. Check 'journalctl -u ufw' for details."
