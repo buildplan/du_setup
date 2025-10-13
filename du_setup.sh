@@ -853,7 +853,7 @@ EOF
 ******************************************************************************
 EOF
     print_info "Testing SSH configuration syntax..."
-    if ! sshd -t 2>&1 | tee -a "$LOGFILE"; then
+	if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
         print_warning "SSH configuration test detected potential issues (see above)."
         print_info "This may be due to existing configuration files on the system."
         if ! confirm "Continue despite configuration warnings?"; then
