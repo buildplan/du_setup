@@ -780,6 +780,10 @@ configure_ssh() {
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
 
+    print_info "Backing up original SSH config..."
+    SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
+    cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
+
     # Store the current active port as the previous port
     PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
@@ -815,10 +819,6 @@ configure_ssh() {
         print_error "SSH key authentication is mandatory to proceed."
         return 1
     fi
-
-    print_info "Backing up original SSH config..."
-    SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
-    cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
     # Apply port override
     if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
@@ -860,6 +860,10 @@ EOF
             print_error "Aborting SSH configuration."
             rm /etc/ssh/sshd_config.d/99-hardening.conf
             rm /etc/issue.net
+            rm -rf /etc/systemd/system/ssh.socket.d
+            rm -rf /etc/systemd/system/ssh.service.d
+            rm -rf /etc/systemd/system/sshd.service.d
+            systemctl daemon-reload
             return 1
         fi
     fi
