@@ -121,18 +121,6 @@ SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
 
-# --- PARSE ARGUMENTS ---
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --quiet) VERBOSE=false; shift ;;
-        --cleanup-preview) CLEANUP_PREVIEW=true; shift ;;
-        --cleanup-only) CLEANUP_ONLY=true; shift ;;
-        --skip-cleanup) SKIP_CLEANUP=true; shift ;;
-        -h|--help) show_usage ;;
-        *) shift ;;
-    esac
-done
-
 show_usage() {
     cat << EOF
 ${CYAN}Debian/Ubuntu Server Setup and Hardening Script${NC}
@@ -164,6 +152,18 @@ For more information: https://github.com/buildplan/du-setup
 EOF
     exit 0
 }
+
+# --- PARSE ARGUMENTS ---
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --quiet) VERBOSE=false; shift ;;
+        --cleanup-preview) CLEANUP_PREVIEW=true; shift ;;
+        --cleanup-only) CLEANUP_ONLY=true; shift ;;
+        --skip-cleanup) SKIP_CLEANUP=true; shift ;;
+        -h|--help) show_usage ;;
+        *) shift ;;
+    esac
+done
 
 # --- LOGGING & PRINT FUNCTIONS ---
 
@@ -237,18 +237,18 @@ detect_environment() {
     local PRODUCT=""
     local IS_CLOUD_VPS=false
     
-    # Method 1: systemd-detect-virt (most reliable)
+    # systemd-detect-virt
     if command -v systemd-detect-virt &>/dev/null; then
         VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "none")
     fi
     
-    # Method 2: dmidecode for hardware info (requires root)
+    # dmidecode for hardware info
     if command -v dmidecode &>/dev/null && [[ $(id -u) -eq 0 ]]; then
         MANUFACTURER=$(dmidecode -s system-manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
         PRODUCT=$(dmidecode -s system-product-name 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
     fi
     
-    # Method 3: Check /sys/class/dmi/id/ (fallback, doesn't require dmidecode)
+    # Check /sys/class/dmi/id/ (fallback, doesn't require dmidecode)
     if [[ -z "$MANUFACTURER" || "$MANUFACTURER" == "unknown" ]]; then
         if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
             MANUFACTURER=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
@@ -278,7 +278,6 @@ detect_environment() {
         "equinix metal"
         "lightsail"
         "scaleway"
-        
         # Major Cloud Platforms
         "amazon"
         "amazon ec2"
@@ -292,7 +291,6 @@ detect_environment() {
         "alibaba"
         "tencent"
         "rackspace"
-        
         # Virtualization indicating cloud VPS
         "droplet"
         "linodekvm"
