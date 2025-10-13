@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.68 | 2025-09-07
+# Version: 0.69 | 2025-10-13
 # Changelog:
+# - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
 # - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
@@ -68,7 +69,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.68"
+CURRENT_VERSION="0.69"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -129,7 +130,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.68 | 2025-09-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.69 | 2025-10-13                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -749,6 +750,7 @@ cleanup_and_exit() {
             print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
         fi
     fi
+    trap - ERR
     exit $exit_code
 }
 
@@ -779,6 +781,10 @@ configure_ssh() {
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
 
+    print_info "Backing up original SSH config..."
+    SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
+    cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
+
     # Store the current active port as the previous port
     PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
@@ -788,9 +794,14 @@ configure_ssh() {
 
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
-        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"
+        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+        # Verify the key was added
+        if [[ ! -s "$AUTH_KEYS" ]]; then
+            print_error "Failed to create authorized_keys file."
+            return 1
+        fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
         echo -e "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
@@ -798,10 +809,10 @@ configure_ssh() {
 
     print_warning "SSH Key Authentication Required for Next Steps!"
     echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
         echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
         echo -e "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
@@ -809,10 +820,6 @@ configure_ssh() {
         print_error "SSH key authentication is mandatory to proceed."
         return 1
     fi
-
-    print_info "Backing up original SSH config..."
-    SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
-    cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
     # Apply port override
     if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
@@ -846,7 +853,21 @@ EOF
             ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
-
+    print_info "Testing SSH configuration syntax..."
+	if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
+        print_warning "SSH configuration test detected potential issues (see above)."
+        print_info "This may be due to existing configuration files on the system."
+        if ! confirm "Continue despite configuration warnings?"; then
+            print_error "Aborting SSH configuration."
+            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+            rm -f /etc/issue.net
+            rm -f /etc/systemd/system/ssh.socket.d/override.conf
+            rm -f /etc/systemd/system/ssh.service.d/override.conf
+            rm -f /etc/systemd/system/sshd.service.d/override.conf
+            systemctl daemon-reload
+            return 1
+        fi
+    fi
     print_info "Reloading systemd and restarting SSH service..."
     systemctl daemon-reload
     systemctl restart "$SSH_SERVICE"
@@ -859,6 +880,7 @@ EOF
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
+    sleep 2
     if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
         print_error "Root SSH login is still possible! Check configuration."
         return 1
@@ -867,10 +889,10 @@ EOF
     fi
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
         print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
         print_info "Use IPv6: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
 
@@ -1176,7 +1198,7 @@ configure_firewall() {
         print_info "No IPv6 detected on this system. Skipping UFW IPv6 configuration."
         log "UFW IPv6 configuration skipped as no kernel support was detected."
     fi
-    
+
     print_info "Enabling firewall..."
     if ! ufw --force enable; then
         print_error "Failed to enable UFW. Check 'journalctl -u ufw' for details."
