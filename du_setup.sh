@@ -251,13 +251,13 @@ detect_environment() {
     # Check /sys/class/dmi/id/ (fallback, doesn't require dmidecode)
     if [[ -z "$MANUFACTURER" || "$MANUFACTURER" == "unknown" ]]; then
         if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
-            MANUFACTURER=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+            MANUFACTURER=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "unknown")
         fi
     fi
-    
+
     if [[ -z "$PRODUCT" || "$PRODUCT" == "unknown" ]]; then
         if [[ -r /sys/class/dmi/id/product_name ]]; then
-            PRODUCT=$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+            PRODUCT=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/product_name 2>/dev/null || echo "unknown")
         fi
     fi
     
