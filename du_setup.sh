@@ -763,7 +763,6 @@ configure_ssh() {
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
         print_error "openssh-server package is not installed."
-        trap - ERR
         return 1
     fi
 
@@ -777,7 +776,6 @@ configure_ssh() {
         SSH_SERVICE="sshd.service"
     else
         print_error "No SSH service or daemon detected."
-        trap - ERR
         return 1
     fi
     print_info "Using SSH service: $SSH_SERVICE"
@@ -802,7 +800,6 @@ configure_ssh() {
         # Verify the key was added
         if [[ ! -s "$AUTH_KEYS" ]]; then
             print_error "Failed to create authorized_keys file."
-            trap - ERR
             return 1
         fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
@@ -821,7 +818,6 @@ configure_ssh() {
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
         print_error "SSH key authentication is mandatory to proceed."
-        trap - ERR
         return 1
     fi
 
@@ -869,7 +865,6 @@ EOF
             rm -f /etc/systemd/system/ssh.service.d/override.conf
             rm -f /etc/systemd/system/sshd.service.d/override.conf
             systemctl daemon-reload
-            trap - ERR
             return 1
         fi
     fi
@@ -879,7 +874,6 @@ EOF
     sleep 5
     if ! ss -tuln | grep -q ":$SSH_PORT"; then
         print_error "SSH not listening on port $SSH_PORT after restart!"
-        trap - ERR
         return 1
     fi
     print_success "SSH service restarted on port $SSH_PORT."
@@ -889,7 +883,6 @@ EOF
     sleep 2
     if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
         print_error "Root SSH login is still possible! Check configuration."
-        trap - ERR
         return 1
     else
         print_success "Confirmed: Root SSH login is disabled."
@@ -923,7 +916,6 @@ EOF
                 else
                     print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
                 fi
-                trap - ERR
                 return 1
             fi
         fi
