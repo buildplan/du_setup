@@ -704,12 +704,12 @@ cleanup_provider_packages() {
                 qemu-guest-agent)
                     echo -e "${RED}⚠ $pkg${NC}"
                     echo "   Purpose: VM-host communication for snapshots and graceful shutdowns"
-                    echo "   ${RED}CRITICAL RISKS if removed:${NC}"
+                    echo -e "   ${RED}CRITICAL RISKS if removed:${NC}"
                     echo "     - Snapshot backups will FAIL or be inconsistent"
                     echo "     - Console access may break"
                     echo "     - Graceful shutdowns replaced with forced stops"
                     echo "     - Provider backup systems will malfunction"
-                    echo "   ${RED}STRONGLY RECOMMENDED to keep${NC}"
+                    echo -e "   ${RED}STRONGLY RECOMMENDED to keep${NC}"
                     ;;
                 *-agent|*-monitoring)
                     echo -e "${YELLOW}⚠ $pkg${NC}"
@@ -717,12 +717,12 @@ cleanup_provider_packages() {
                     echo "   Risks if removed:"
                     echo "     - Provider dashboard metrics will disappear"
                     echo "     - May affect support troubleshooting"
-                    echo "   ${YELLOW}Remove only if you don't need provider monitoring${NC}"
+                    echo -e "  ${YELLOW}Remove only if you don't need provider monitoring${NC}"
                     ;;
                 *)
                     echo -e "${CYAN}ℹ $pkg${NC}"
                     echo "   Purpose: Provider-specific tooling"
-                    echo "   ${YELLOW}Review before removing${NC}"
+                    echo -e "  ${YELLOW}Review before removing${NC}"
                     ;;
             esac
             echo
