@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.68 | 2025-09-07
+# Version: 0.69 | 2025-10-13
 # Changelog:
+# - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
 # - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
@@ -68,7 +69,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.68"
+CURRENT_VERSION="0.69"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -129,7 +130,7 @@ print_header() {
     echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.68 | 2025-09-07                         ║${NC}"
+    echo -e "${CYAN}║                      v0.69 | 2025-10-13                         ║${NC}"
     echo -e "${CYAN}║                                                                 ║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     echo
@@ -788,9 +789,14 @@ configure_ssh() {
 
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
-        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"
+        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+        # Verify the key was added
+        if [[ ! -s "$AUTH_KEYS" ]]; then
+            print_error "Failed to create authorized_keys file."
+            return 1
+        fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
         echo -e "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
@@ -846,7 +852,17 @@ EOF
             ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
-
+    print_info "Testing SSH configuration syntax..."
+    if ! sshd -t 2>&1 | tee -a "$LOGFILE"; then
+        print_warning "SSH configuration test detected potential issues (see above)."
+        print_info "This may be due to existing configuration files on the system."
+        if ! confirm "Continue despite configuration warnings?"; then
+            print_error "Aborting SSH configuration."
+            rm /etc/ssh/sshd_config.d/99-hardening.conf
+            rm /etc/issue.net
+            return 1
+        fi
+    fi
     print_info "Reloading systemd and restarting SSH service..."
     systemctl daemon-reload
     systemctl restart "$SSH_SERVICE"
@@ -859,6 +875,7 @@ EOF
 
     # Verify root SSH is disabled
     print_info "Verifying root SSH login is disabled..."
+    sleep 2
     if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
         print_error "Root SSH login is still possible! Check configuration."
         return 1
@@ -1176,7 +1193,7 @@ configure_firewall() {
         print_info "No IPv6 detected on this system. Skipping UFW IPv6 configuration."
         log "UFW IPv6 configuration skipped as no kernel support was detected."
     fi
-    
+
     print_info "Enabling firewall..."
     if ! ufw --force enable; then
         print_error "Failed to enable UFW. Check 'journalctl -u ufw' for details."
