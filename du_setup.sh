@@ -701,7 +701,7 @@ cleanup_provider_packages() {
         else
             if confirm "Review and potentially remove root SSH keys?" "n"; then
                 local backup_file
-                local backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
+                backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
                 cp /root/.ssh/authorized_keys "$backup_file"
                 log "Backed up /root/.ssh/authorized_keys to $backup_file"
 
