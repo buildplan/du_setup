@@ -121,48 +121,46 @@ sudo -E ./du_setup.sh --quiet
 
 | Task | Description |
 | :--- | :--- |
-| **System Checks** | Verifies OS compatibility, root privileges, and internet connectivity. |
-| **Package Management** | Updates packages and installs essential tools (`ufw`, `fail2ban`, `chrony`, `rsync`, etc.). |
-| **Admin User Creation**| Creates a `sudo` user with a password and/or SSH public key. |
-| **SSH Hardening** | Disables root login, enforces key-based auth, and sets a custom port with a robust rollback mechanism. |
+| **Provider Package Cleanup** | Detects and optionally removes cloud provider packages, monitoring agents, and default provisioning users to reduce attack surface and unnecessary services. |
+| **System Compatibility Checks** | Verifies OS compatibility, root privileges, and internet connectivity. |
+| **Package Management** | Verifies root privileges, OS version compatibility, and internet connectivity. Prevents running on unsupported environments. |
+| **Setup User Creation & Management**| Creates or uses an existing admin user with optional SSH key setup and strong password enforcement. Includes marker file for cleanup exclusion. |
+| **SSH Hardening and Rollback** | Disables root login, configures key-based authentication, sets custom SSH port, and supports rollback of SSH configuration if connectivity fails. |
 | **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific user-defined ports. |
 | **Fail2Ban Setup** | Configures Fail2Ban to monitor SSH and UFW logs, blocking suspicious IPs. |
 | **Auto-Updates Setup** | Enables and configures `unattended-upgrades` for automatic security patches. |
 | **Time Sync Setup** | Ensures `chrony` is active for accurate network time synchronization. |
-| **Kernel Hardening** | Applies optional `sysctl` security settings to protect against IP spoofing and SYN floods. |
+| **Kernel and Sysctl Hardening** | Optional improvements to kernel parameters to mitigate common network attacks and improve system hardening. |
 | **Docker Install** | Installs Docker Engine and Docker Compose, then adds the admin user to the `docker` group. |
 | **Tailscale Setup** | Installs Tailscale and connects to a mesh network using a pre-auth key, with optional advanced flags. |
-| **Remote Backup Setup**| Configures `rsync` backups to an SSH server, creating `/root/run_backup.sh` and a cron job. |
-| **Backup Testing** | Performs an optional test backup to verify the `rsync` configuration. |
+| **Automated Remote Backup**| Sets up cron-driven `rsync` backup script to remote SSH servers, integrates with notifications and performs backup verification. |
 | **Swap File Setup** | Creates an optional swap file with tuned `swappiness` and `vfs_cache_pressure` settings. |
-| **Security Auditing** | Runs optional **Lynis** and **debsecan** audits and logs the results. |
-| **System Backups** | Saves timestamped backups of modified configuration files in `/root/setup_harden_backup_*`. |
+| **Security Auditing** | Runs optional **Lynis** and **debsecan** vulnerability audits and logs the results for review. |
+| **Logging and Reporting** | Logs all actions and generates a detailed report of setup and cleanup in `/var/log` and backup directories. Saves timestamped backups of modified configuration files in `/root/setup_harden_backup_*`. |
+| **Cleanup & Maintenance** | 	Performs `autoremove` and `autoclean` of unused packages and services after setup or cleanup phases. |
 | **Final Summary** | Generates a detailed report of all changes and saves it to `/var/log/du_setup_report_*.txt`. |
-| **Final Cleanup** | Removes unused packages and reloads system daemons. |
 
 ## Provider Package Cleanup (Since v0.70)
 
-This script can now detect and optionally remove provider-installed packages, monitoring agents, and default users for enhanced security.
+Detects and optionally removes provider-installed packages, monitoring agents, and default provisioning users to enhance server security.
+
+Cleanup is optional but recommended for commercial VPS environments to reduce attack surface. Review preview outputs carefully before applying cleanup.  
 
 ### Usage
 
-* Preview what would be cleaned: `sudo ./du_setup.sh --cleanup-preview`
-* Run cleanup only: `sudo ./du_setup.sh --cleanup-only`
-* Skip cleanup: `sudo ./du_setup.sh --skip-cleanup`
+* **Preview cleanup actions:** `sudo ./du_setup.sh --cleanup-preview`  
+  Shows what would be removed without making changes.
+* **Run cleanup only:** `sudo ./du_setup.sh --cleanup-only`  
+  Executes provider cleanup on existing servers without full setup.
+* **Skip cleanup:** `sudo ./du_setup.sh --skip-cleanup`  
+  Runs full setup but skips the cleanup phase.
 
 ### What it detects
 
-* Cloud provider monitoring agents (DigitalOcean, Hetzner, Vultr, etc.)
-* Guest tools (qemu-guest-agent, cloud-init)
+* Common cloud provider monitoring agents (e.g., DigitalOcean, Hetzner, Vultr) 
+* Virtualization guest tools (qemu-guest-agent, cloud-init)
 * Default provisioning users (ubuntu, debian, admin, cloud-user)
-* Unexpected SSH keys in /root/.ssh/authorized_keys
-
-## Logs & Backups
-
-* **Log Files**: `/var/log/du_setup_*.log`
-* **Backup Logs**: `/var/log/backup_rsync.log` (for remote backup operations)
-* **Audit Logs**: `/var/log/setup_harden_security_audit_*.log` (for Lynis and debsecan results)
-* **Configuration Backups**: `/root/setup_harden_backup_*`
+* Unexpected SSH keys in `/root/.ssh/authorized_keys`
 
 ## Post-Reboot Verification
 
