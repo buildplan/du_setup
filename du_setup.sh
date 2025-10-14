@@ -879,10 +879,6 @@ cleanup_provider_packages() {
                 print_warning "User $user has $proc_count running process(es)."
             fi
 
-            if [[ $proc_count -gt 1 ]]; then
-                print_warning "User $user has $((proc_count - 1)) running process(es)."
-            fi
-
             if [[ -d "/home/$user" ]] && [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
                 local key_count=0
                 key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0)
