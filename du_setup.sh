@@ -364,6 +364,7 @@ detect_environment() {
         ENVIRONMENT_TYPE="unknown"
     fi
 
+    DETECTED_PROVIDER_NAME=""
     case "$ENVIRONMENT_TYPE" in
         commercial-cloud)
             if [[ "$MANUFACTURER" =~ digitalocean ]]; then
@@ -657,8 +658,8 @@ cleanup_provider_packages() {
     print_info "Auditing /root/.ssh/authorized_keys for unexpected keys..."
     if [[ -f /root/.ssh/authorized_keys ]]; then
         local key_count
-        key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
-        if [[ $key_count -gt 0 ]]; then
+        key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0) | tr -dc '0-9' )
+        if [ "$key_count" -gt 0 ]; then
             print_warning "Found $key_count SSH key(s) in /root/.ssh/authorized_keys"
             ROOT_SSH_KEYS=("present")
         fi
@@ -878,15 +879,15 @@ cleanup_provider_packages() {
             echo -e "${YELLOW}Found user: $user${NC}"
 
             local proc_count
-            proc_count=$(ps -u "$user" --no-headers 2>/dev/null | wc -l)
+            proc_count=$( (ps -u "$user" --no-headers 2>/dev/null || true) | wc -l)
             if [[ $proc_count -gt 0 ]]; then
                 print_warning "User $user has $proc_count running process(es)."
             fi
 
             if [[ -d "/home/$user" ]] && [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
                 local key_count=0
-                key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0)
-                if [[ $key_count -gt 0 ]]; then
+                key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0) | tr -dc '0-9' )
+                if [ "$key_count" -gt 0 ]; then
                     print_warning "User $user has $key_count SSH key(s) configured."
                 fi
             fi
