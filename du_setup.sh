@@ -89,14 +89,14 @@ if command -v tput >/dev/null 2>&1 && tput setaf 1 >/dev/null 2>&1; then
     BOLD=$(tput bold)
     NC=$(tput sgr0)
 else
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    PURPLE='\033[0;35m'
-    CYAN='\033[0;36m'
-    NC='\033[0m'
-    BOLD=''
+    RED='\e[0;31m'
+    GREEN='\e[0;32m'
+    YELLOW='\e[1;33m'
+    BLUE='\e[0;34m'
+    PURPLE='\e[0;35m'
+    CYAN='\e[0;36m'
+    NC='\e[0m'
+    BOLD='\e[1m'
 fi
 
 
@@ -125,37 +125,37 @@ FAILED_SERVICES=()
 
 show_usage() {
     printf "\n"
-    printf "${CYAN}%s${NC}\n" "Debian/Ubuntu Server Setup & Hardening Script"
+    printf "%s%s%s\n" "$CYAN" "Debian/Ubuntu Server Setup & Hardening Script" "$NC"
 
-    printf "\n${BOLD}Usage:${NC}\n"
+    printf "\n%sUsage:%s\n" "$BOLD" "$NC"
     printf "  %s [OPTIONS]\n" "$(basename "$0")"
 
-    printf "\n${BOLD}Description:${NC}\n"
+    printf "\n%sDescription:%s\n" "$BOLD" "$NC"
     printf "  This script provisions a fresh Debian or Ubuntu server with secure base configurations.\n"
     printf "  It handles updates, firewall, SSH hardening, user creation, and optional tools.\n"
 
-    printf "\n${BOLD}Operational Modes:${NC}\n"
+    printf "\n%sOperational Modes:%s\n" "$BOLD" "$NC"
     printf "  %-22s %s\n" "--cleanup-preview" "Show which provider packages/users would be cleaned without making changes."
     printf "  %-22s %s\n" "--cleanup-only" "Run only the provider cleanup function (for existing servers)."
 
-    printf "\n${BOLD}Modifiers:${NC}\n"
+    printf "\n%sModifiers:%s\n" "$BOLD" "$NC"
     printf "  %-22s %s\n" "--skip-cleanup" "Skip provider cleanup entirely during a full setup run."
     printf "  %-22s %s\n" "--quiet" "Suppress verbose output (intended for automation)."
     printf "  %-22s %s\n" "-h, --help" "Display this help message and exit."
 
-    printf "\n${BOLD}Usage Examples:${NC}\n"
+    printf "\n%sUsage Examples:%s\n" "$BOLD" "$NC"
     printf "  # Run the full interactive setup\n"
-    printf "  ${YELLOW}sudo ./%s${NC}\n\n" "$(basename "$0")"
+    printf "  %ssudo ./%s%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
     printf "  # Preview provider cleanup actions without applying them\n"
-    printf "  ${YELLOW}sudo ./%s --cleanup-preview${NC}\n\n" "$(basename "$0")"
+    printf "  %ssudo ./%s --cleanup-preview%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
     printf "  # Run a full setup but skip the provider cleanup step\n"
-    printf "  ${YELLOW}sudo ./%s --skip-cleanup${NC}\n" "$(basename "$0")"
+    printf "  %ssudo ./%s --skip-cleanup%s\n" "$YELLOW" "$(basename "$0")" "$NC"
 
-    printf "\n${BOLD}Important Notes:${NC}\n"
-    printf "  - Logs are saved to ${BOLD}/var/log/du_setup_*.log${NC}\n"
-    printf "  - Backups of modified configs are in ${BOLD}/root/setup_harden_backup_*${NC}\n"
+    printf "\n%sImportant Notes:%s\n" "$BOLD" "$NC"
+    printf "  - Logs are saved to %s/var/log/du_setup_*.log%s\n" "$BOLD" "$NC"
+    printf "  - Backups of modified configs are in %s/root/setup_harden_backup_*%s\n" "$BOLD" "$NC"
     printf "  - For full documentation, see the project repository:\n"
-    printf "    ${CYAN}%s${NC}\n" "https://github.com/buildplan/du-setup"
+    printf "    %s%s%s\n" "$CYAN" "https://github.com/buildplan/du-setup" "$NC"
 
     printf "\n"
     exit 0
