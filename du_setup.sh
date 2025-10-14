@@ -96,7 +96,7 @@ else
     PURPLE='\033[0;35m'
     CYAN='\033[0;36m'
     NC='\033[0m'
-    BOLD='\033[1m'
+    BOLD=''
 fi
 
 
