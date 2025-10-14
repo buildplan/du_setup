@@ -861,7 +861,7 @@ cleanup_provider_packages() {
         print_section "Provider User Cleanup"
         print_warning "Default users created during provisioning can be security risks."
         echo
-    
+
         for user in "${PROVIDER_USERS[@]}"; do
             echo -e "${YELLOW}Found user: $user${NC}"
 
@@ -881,7 +881,7 @@ cleanup_provider_packages() {
                     print_warning "User $user has $key_count SSH key(s) configured."
                 fi
             fi
-        
+
             if id -nG "$user" 2>/dev/null | grep -qwE '(sudo|admin)'; then
                 print_warning "User $user has sudo/admin privileges!"
             fi
