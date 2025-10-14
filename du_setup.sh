@@ -415,6 +415,13 @@ detect_environment() {
 cleanup_provider_packages() {
     print_section "Provider Package Cleanup (Optional)"
 
+    # --quiet mode check
+    if [[ "$VERBOSE" == "false" ]]; then
+        print_warning "Provider cleanup cannot be run in --quiet mode due to its interactive nature. Skipping."
+        log "Provider cleanup skipped due to --quiet mode."
+        return 0
+    fi
+
     # Validate required variables
     if [[ -z "${LOG_FILE:-}" ]]; then
         LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
