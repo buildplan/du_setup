@@ -701,7 +701,7 @@ cleanup_provider_packages() {
         else
             if confirm "Review and potentially remove root SSH keys?" "n"; then
                 local backup_file
-                backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
+                local backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
                 cp /root/.ssh/authorized_keys "$backup_file"
                 log "Backed up /root/.ssh/authorized_keys to $backup_file"
 
@@ -782,8 +782,13 @@ cleanup_provider_packages() {
                 print_success "cloud-init disabled successfully."
                 print_info "To re-enable: sudo rm /etc/cloud/cloud-init.disabled && systemctl enable cloud-init.service"
             fi
-
-            PROVIDER_PACKAGES=("${PROVIDER_PACKAGES[@]/cloud-init/}")
+            local filtered_packages=()
+            for pkg in "${PROVIDER_PACKAGES[@]}"; do
+                if [[ "$pkg" != "cloud-init" && -n "$pkg" ]]; then
+                    filtered_packages+=("$pkg")
+                fi
+            done
+            PROVIDER_PACKAGES=("${filtered_packages[@]}")
         else
             print_info "Keeping cloud-init enabled."
         fi
