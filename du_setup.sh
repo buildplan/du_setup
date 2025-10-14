@@ -95,7 +95,7 @@ else
     PURPLE='\033[0;35m'
     CYAN='\033[0;36m'
     NC='\033[0m'
-    BOLD=''
+    BOLD='\033[1m'
 fi
 
 
@@ -123,34 +123,40 @@ ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
 
 show_usage() {
-    cat << EOF
-${CYAN}Debian/Ubuntu Server Setup and Hardening Script${NC}
+    printf "\n"
+    printf "${CYAN}%s${NC}\n" "Debian/Ubuntu Server Setup & Hardening Script"
 
-Usage: $(basename "$0") [OPTIONS]
+    printf "\n${BOLD}Usage:${NC}\n"
+    printf "  %s [OPTIONS]\n" "$(basename "$0")"
 
-Options:
-  --quiet              Suppress verbose output
-  --cleanup-preview    Preview what cleanup would do without making changes
-  --cleanup-only       Run only the provider cleanup function (for existing servers)
-  --skip-cleanup       Skip the provider cleanup function entirely
-  -h, --help           Display this help message
+    printf "\n${BOLD}Description:${NC}\n"
+    printf "  This script provisions a fresh Debian or Ubuntu server with secure base configurations.\n"
+    printf "  It handles updates, firewall, SSH hardening, user creation, and optional tools.\n"
+    
+    printf "\n${BOLD}Operational Modes:${NC}\n"
+    printf "  %-22s %s\n" "--cleanup-preview" "Show which provider packages/users would be cleaned without making changes."
+    printf "  %-22s %s\n" "--cleanup-only" "Run only the provider cleanup function (for existing servers)."
+    
+    printf "\n${BOLD}Modifiers:${NC}\n"
+    printf "  %-22s %s\n" "--skip-cleanup" "Skip provider cleanup entirely during a full setup run."
+    printf "  %-22s %s\n" "--quiet" "Suppress verbose output (intended for automation)."
+    printf "  %-22s %s\n" "-h, --help" "Display this help message and exit."
 
-Examples:
-  # Normal interactive run (includes cleanup prompt)
-  sudo ./du_setup.sh
+    printf "\n${BOLD}Usage Examples:${NC}\n"
+    printf "  # Run the full interactive setup\n"
+    printf "  ${YELLOW}sudo ./%s${NC}\n\n" "$(basename "$0")"
+    printf "  # Preview provider cleanup actions without applying them\n"
+    printf "  ${YELLOW}sudo ./%s --cleanup-preview${NC}\n\n" "$(basename "$0")"
+    printf "  # Run a full setup but skip the provider cleanup step\n"
+    printf "  ${YELLOW}sudo ./%s --skip-cleanup${NC}\n" "$(basename "$0")"
 
-  # Preview what cleanup would detect and remove
-  sudo ./du_setup.sh --cleanup-preview
+    printf "\n${BOLD}Important Notes:${NC}\n"
+    printf "  - Logs are saved to ${BOLD}/var/log/du_setup_*.log${NC}\n"
+    printf "  - Backups of modified configs are in ${BOLD}/root/setup_harden_backup_*${NC}\n"
+    printf "  - For full documentation, see the project repository:\n"
+    printf "    ${CYAN}%s${NC}\n" "https://github.com/buildplan/du-setup"
 
-  # Run only cleanup on an existing server
-  sudo ./du_setup.sh --cleanup-only
-
-  # Run full setup but skip cleanup
-  sudo ./du_setup.sh --skip-cleanup
-
-For more information: https://github.com/buildplan/du-setup
-
-EOF
+    printf "\n"
     exit 0
 }
 
