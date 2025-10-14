@@ -861,25 +861,28 @@ cleanup_provider_packages() {
         print_section "Provider User Cleanup"
         print_warning "Default users created during provisioning can be security risks."
         echo
-
+    
         for user in "${PROVIDER_USERS[@]}"; do
             echo -e "${YELLOW}Found user: $user${NC}"
 
-            local proc_count
-            proc_count=$(ps -u "$user" 2>/dev/null | wc -l)
+            local proc_count=1
+            if ps -u "$user" >/dev/null 2>&1; then
+                proc_count=$(ps -u "$user" 2>/dev/null | wc -l || echo 1)
+            fi
+
             if [[ $proc_count -gt 1 ]]; then
                 print_warning "User $user has $((proc_count - 1)) running process(es)."
             fi
 
-            if [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
-                local key_count
+            if [[ -d "/home/$user" ]] && [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
+                local key_count=0
                 key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0)
                 if [[ $key_count -gt 0 ]]; then
                     print_warning "User $user has $key_count SSH key(s) configured."
                 fi
             fi
-
-            if execute_check groups "$user" 2>/dev/null | grep -qE '\bsudo\b|\badmin\b'; then
+        
+            if id -nG "$user" 2>/dev/null | grep -qwE '(sudo|admin)'; then
                 print_warning "User $user has sudo/admin privileges!"
             fi
 
