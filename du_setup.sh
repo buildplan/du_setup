@@ -414,15 +414,8 @@ cleanup_provider_packages() {
     fi
 
     if [[ -z "${USERNAME:-}" ]]; then
-        if [[ $EUID -eq 0 ]]; then
-            USERNAME="root"
-            print_warning "USERNAME not set, defaulting to 'root' for cleanup context."
-            log "USERNAME defaulted to 'root' for cleanup-only mode"
-        else
-            USERNAME="${SUDO_USER:-$USER}"
-            print_warning "USERNAME not set, defaulting to '$USERNAME' for cleanup context."
-            log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
-        fi
+        USERNAME="${SUDO_USER:-root}"
+        log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
     fi
 
     # Validate required variables
