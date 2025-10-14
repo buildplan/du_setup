@@ -873,9 +873,10 @@ cleanup_provider_packages() {
         for user in "${PROVIDER_USERS[@]}"; do
             echo -e "${YELLOW}Found user: $user${NC}"
 
-            local proc_count=1
-            if ps -u "$user" >/dev/null 2>&1; then
-                proc_count=$(ps -u "$user" 2>/dev/null | wc -l || echo 1)
+            local proc_count
+            proc_count=$(ps -u "$user" --no-headers 2>/dev/null | wc -l)
+            if [[ $proc_count -gt 0 ]]; then
+                print_warning "User $user has $proc_count running process(es)."
             fi
 
             if [[ $proc_count -gt 1 ]]; then
