@@ -3,9 +3,9 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.70 | 2025-10-14
 # Changelog:
-# - v0.70: Option to remove cloud VPS provider packages (like cloud-init)
-#          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup
-# -        Add help and usage instructions for new cleanup options and --help flag
+# - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
+#          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
+#          Add help and usage instructions with --help flag.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
@@ -133,11 +133,11 @@ show_usage() {
     printf "\n${BOLD}Description:${NC}\n"
     printf "  This script provisions a fresh Debian or Ubuntu server with secure base configurations.\n"
     printf "  It handles updates, firewall, SSH hardening, user creation, and optional tools.\n"
-    
+
     printf "\n${BOLD}Operational Modes:${NC}\n"
     printf "  %-22s %s\n" "--cleanup-preview" "Show which provider packages/users would be cleaned without making changes."
     printf "  %-22s %s\n" "--cleanup-only" "Run only the provider cleanup function (for existing servers)."
-    
+
     printf "\n${BOLD}Modifiers:${NC}\n"
     printf "  %-22s %s\n" "--skip-cleanup" "Skip provider cleanup entirely during a full setup run."
     printf "  %-22s %s\n" "--quiet" "Suppress verbose output (intended for automation)."
