@@ -452,6 +452,7 @@ cleanup_provider_packages() {
     echo "Virtualization Type: ${DETECTED_VIRT_TYPE:-unknown}"
     echo "System Manufacturer: ${DETECTED_MANUFACTURER:-unknown}"
     echo "Product Name: ${DETECTED_PRODUCT:-unknown}"
+    echo "Environment Type: ${ENVIRONMENT_TYPE:-unknown}"
     if [[ -n "${DETECTED_BIOS_VENDOR}" && "${DETECTED_BIOS_VENDOR}" != "unknown" ]]; then
         echo "BIOS Vendor: ${DETECTED_BIOS_VENDOR}"
     fi
