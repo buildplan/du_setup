@@ -4,6 +4,7 @@
 # Version: 0.70 | 2025-10-14
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init)
+# -        Aded help and usage instructions for new cleanup options
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
