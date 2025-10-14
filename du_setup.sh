@@ -639,10 +639,18 @@ cleanup_provider_packages() {
         fi
     done
 
-    # Check for provider-created users (excluding current admin user)
+    # Check for provider-created users (excluding current admin user and script-managed user)
     print_info "Scanning for default provisioning users..."
+    local MANAGED_USER=""
+    if [[ -f /root/.du_setup_managed_user ]]; then
+        MANAGED_USER=$(cat /root/.du_setup_managed_user 2>/dev/null | tr -d '[:space:]')
+        log "Script-managed user detected: $MANAGED_USER (will be excluded from cleanup)"
+    fi
+
     for user in "${COMMON_PROVIDER_USERS[@]}"; do
-        if execute_check id "$user" &>/dev/null && [[ "$user" != "$USERNAME" ]]; then
+        if execute_check id "$user" &>/dev/null && \
+           [[ "$user" != "$USERNAME" ]] && \
+           [[ "$user" != "$MANAGED_USER" ]]; then
             PROVIDER_USERS+=("$user")
         fi
     done
@@ -1463,8 +1471,16 @@ setup_user() {
             LOCAL_KEY_ADDED=true
         fi
         print_success "User '$USERNAME' created."
+        echo "$USERNAME" > /root/.du_setup_managed_user
+        chmod 600 /root/.du_setup_managed_user
+        log "Marked '$USERNAME' as script-managed user (excluded from provider cleanup)"
     else
         print_info "Using existing user: $USERNAME"
+        if [[ ! -f /root/.du_setup_managed_user ]]; then
+            echo "$USERNAME" > /root/.du_setup_managed_user
+            chmod 600 /root/.du_setup_managed_user
+            log "Marked existing user '$USERNAME' as script-managed"
+        fi
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
