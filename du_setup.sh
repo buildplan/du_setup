@@ -407,7 +407,7 @@ detect_environment() {
 cleanup_provider_packages() {
     print_section "Provider Package Cleanup (Optional)"
 
-    # Validate required global variables
+    # Validate required variables
     if [[ -z "${LOG_FILE:-}" ]]; then
         LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
         echo "Warning: LOG_FILE not set, using: $LOG_FILE"
@@ -418,7 +418,6 @@ cleanup_provider_packages() {
         log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
     fi
 
-    # Validate required variables
     if [[ -z "${BACKUP_DIR:-}" ]]; then
         BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$BACKUP_DIR"
