@@ -408,19 +408,25 @@ cleanup_provider_packages() {
     print_section "Provider Package Cleanup (Optional)"
 
     # Validate required global variables
-    if [[ -z "$LOG_FILE" ]]; then
+    if [[ -z "${LOG_FILE:-}" ]]; then
         LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
         echo "Warning: LOG_FILE not set, using: $LOG_FILE"
     fi
 
-    if [[ -z "$USERNAME" ]]; then
-        print_error "ERROR: USERNAME variable not set. Cannot proceed safely."
-        log "cleanup_provider_packages() failed: USERNAME not defined"
-        return 1
+    if [[ -z "${USERNAME:-}" ]]; then
+        if [[ $EUID -eq 0 ]]; then
+            USERNAME="root"
+            print_warning "USERNAME not set, defaulting to 'root' for cleanup context."
+            log "USERNAME defaulted to 'root' for cleanup-only mode"
+        else
+            USERNAME="${SUDO_USER:-$USER}"
+            print_warning "USERNAME not set, defaulting to '$USERNAME' for cleanup context."
+            log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
+        fi
     fi
 
     # Validate required variables
-    if [[ -z "$BACKUP_DIR" ]]; then
+    if [[ -z "${BACKUP_DIR:-}" ]]; then
         BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         log "Created backup directory: $BACKUP_DIR"
