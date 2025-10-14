@@ -1546,7 +1546,9 @@ configure_system() {
         dpkg-reconfigure locales
         print_info "Applying new locale settings to the current session..."
         if [[ -f /etc/default/locale ]]; then
+            # shellcheck disable=SC1091
             . /etc/default/locale
+            # shellcheck disable=SC2046
             export $(grep -v '^#' /etc/default/locale | cut -d= -f1)
             print_success "Locale environment updated for this session."
             log "Sourced /etc/default/locale to update script's environment."
@@ -2867,7 +2869,8 @@ test_backup() {
     fi
 
     # Create a temporary directory and file for the test
-    local TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
+    local TEST_DIR
+    TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
     if ! mkdir -p "$TEST_DIR" || ! echo "Test file for backup verification" > "$TEST_DIR/test.txt"; then
         print_error "Failed to create test directory or file in /root/."
         log "Backup test failed: Cannot create test directory/file."
@@ -3262,11 +3265,12 @@ generate_summary() {
 
     # --- Backup Configuration Summary ---
     if [[ -f /root/run_backup.sh ]]; then
-        local CRON_SCHEDULE=$(crontab -u root -l 2>/dev/null | grep -F "/root/run_backup.sh" | awk '{print $1, $2, $3, $4, $5}' || echo "Not configured")
-        local NOTIFICATION_STATUS="None"
-        local BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
-        local BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
-        local REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        local CRON_SCHEDULE NOTIFICATION_STATUS BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH
+        CRON_SCHEDULE=$(crontab -u root -l 2>/dev/null | grep -F "/root/run_backup.sh" | awk '{print $1, $2, $3, $4, $5}' || echo "Not configured")
+        NOTIFICATION_STATUS="None"
+        BACKUP_DEST=$(grep "^REMOTE_DEST=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        BACKUP_PORT=$(grep "^SSH_PORT=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
+        REMOTE_BACKUP_PATH=$(grep "^REMOTE_PATH=" /root/run_backup.sh | cut -d'"' -f2 || echo "Unknown")
         if grep -q "NTFY_URL=" /root/run_backup.sh && ! grep -q 'NTFY_URL=""' /root/run_backup.sh; then
             NOTIFICATION_STATUS="ntfy"
         elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
@@ -3297,10 +3301,11 @@ generate_summary() {
             TS_CONFIGURED=true
         fi
         if $TS_CONFIGURED; then
-            local TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
-            local TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
-            local TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
-            local TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+            local TS_SERVER TS_IPS_RAW TS_IPS TS_FLAGS
+            TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
+            TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
+            TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
+            TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
             echo -e "  Tailscale:          ${GREEN}Configured and connected${NC}"
             printf "    %-17s%s\n" "- Server:" "${TS_SERVER:-Not set}"
             printf "    %-17s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
