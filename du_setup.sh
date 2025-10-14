@@ -20,18 +20,18 @@
 #          Script can now check for update and can run self-update.
 # - v0.58: improved fail2ban to parse ufw logs
 # - v0.57: Fix for silent failure at test_backup()
-#	   Option to choose which directories to back up.
+#          Option to choose which directories to back up.
 # - v0.56: Make tailscale config optional
 # - v0.55: Improving setup_user() - ssh-keygen replaced the option to skip ssh key
 # - v0.54: Fix for rollback_ssh_changes() - more reliable on newer Ubuntu
-#	   Better error message if script is executed by non-root or without sudo
+#          Better error message if script is executed by non-root or without sudo
 # - v0.53: Fix for test_backup() - was failing if run as non root sudo user
 # - v0.52: Roll-back SSH config on failure to configure SSH port, confirmed SSH config support for Ubuntu 24.10
 # - v0.51: corrected repo links
 # - v0.50: versioning format change and repo name change
 # - v4.3: Add SHA256 integrity verification
 # - v4.2: Added Security Audit Tools (Integrating Lynis and Optionally Debsecan) & option to do Backup Testing
-#	  Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
+#         Fixed debsecan compatibility (Debian-only), added global BACKUP_LOG, added backup testing
 # - v4.1: Added tailscale config to connect to tailscale or headscale server
 # - v4.0: Added automated backup config. Mainly for Hetzner Storage Box but can be used for any rsync/SSH enabled remote solution.
 # - v3.*: Improvements to script flow and fixed bugs which were found in tests at Oracle Cloud
