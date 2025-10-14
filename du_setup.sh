@@ -574,38 +574,30 @@ cleanup_provider_packages() {
         print_warning "Removing critical packages can break system functionality."
     fi
 
-    # Arrays to track findings
     local PROVIDER_PACKAGES=()
     local PROVIDER_SERVICES=()
     local PROVIDER_USERS=()
     local ROOT_SSH_KEYS=()
 
-    # Extended list of common provider and virtualization packages
+    # List of common provider and virtualization packages
     local COMMON_PROVIDER_PKGS=(
-        # QEMU/KVM, Virtio, Generic virtualization
         "qemu-guest-agent"
         "virtio-utils"
         "virt-what"
-        # Cloud-init and cloud utilities
         "cloud-init"
         "cloud-guest-utils"
         "cloud-initramfs-growroot"
         "cloud-utils"
-        # VMware, Xen, Hyper-V, Oracle
         "open-vm-tools"
         "xe-guest-utilities"
         "xen-tools"
         "hyperv-daemons"
         "oracle-cloud-agent"
-        # AWS
         "aws-systems-manager-agent"
         "amazon-ssm-agent"
-        # Google Cloud
         "google-compute-engine"
         "google-osconfig-agent"
-        # Azure
         "walinuxagent"
-        # Popular VPS Providers
         "hetzner-needrestart"
         "digitalocean-agent"
         "do-agent"
@@ -613,7 +605,6 @@ cleanup_provider_packages() {
         "vultr-monitoring"
         "scaleway-ecosystem"
         "ovh-rtm"
-        # OpenStack (guest-side only)
         "openstack-guest-utils"
         "openstack-nova-agent"
     )
@@ -692,7 +683,7 @@ cleanup_provider_packages() {
         echo
     fi
 
-    # 1. SSH KEY AUDIT
+    # Audit and optionally clean up root SSH keys
     if [[ ${#ROOT_SSH_KEYS[@]} -gt 0 ]]; then
         print_section "Root SSH Key Audit"
         print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
@@ -738,7 +729,7 @@ cleanup_provider_packages() {
         echo
     fi
 
-    # 2. CLOUD-INIT HANDLING
+    # Special handling for cloud-init due to its complexity
     if [[ " ${PROVIDER_PACKAGES[*]} " =~ " cloud-init " ]]; then
         print_section "Cloud-Init Management"
         echo -e "${CYAN}ℹ cloud-init${NC}"
@@ -802,7 +793,7 @@ cleanup_provider_packages() {
         echo
     fi
 
-    # 3. PACKAGE REMOVAL
+    # Remove identified provider packages
     if [[ ${#PROVIDER_PACKAGES[@]} -gt 0 ]]; then
         print_section "Provider Package Removal"
 
@@ -877,7 +868,7 @@ cleanup_provider_packages() {
         echo
     fi
 
-    # 4. SYSTEM USER CLEANUP
+    # Check and remove default users
     if [[ ${#PROVIDER_USERS[@]} -gt 0 ]]; then
         print_section "Provider User Cleanup"
         print_warning "Default users created during provisioning can be security risks."
@@ -967,7 +958,7 @@ cleanup_provider_packages() {
         echo
     fi
 
-    # 5. CLEANUP
+    # Final cleanup step
     if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove residual configuration files and unused dependencies?" "y"; then
         if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
             print_info "[PREVIEW] Would run: apt-get autoremove --purge -y"
