@@ -643,7 +643,7 @@ cleanup_provider_packages() {
     print_info "Scanning for default provisioning users..."
     local MANAGED_USER=""
     if [[ -f /root/.du_setup_managed_user ]]; then
-        MANAGED_USER=$(cat /root/.du_setup_managed_user 2>/dev/null | tr -d '[:space:]')
+        MANAGED_USER=$(tr -d '[:space:]' < /root/.du_setup_managed_user 2>/dev/null)
         log "Script-managed user detected: $MANAGED_USER (will be excluded from cleanup)"
     fi
 
