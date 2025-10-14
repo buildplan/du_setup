@@ -3445,7 +3445,6 @@ main() {
     run_update_check
     print_header
     check_dependencies
-    check_system
     collect_config
     install_packages
     setup_user
