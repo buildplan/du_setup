@@ -1220,7 +1220,7 @@ check_system() {
             print_info "Preliminary check: ssh.service detected."
         elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
             print_info "Preliminary check: sshd.service detected."
-        elif ps aux | grep -q "[s]shd"; then
+        elif pgrep -q sshd; then
             print_warning "Preliminary check: SSH daemon running but no standard service detected."
         else
             print_warning "No SSH service or daemon detected. Ensure SSH is working after package installation."
@@ -1345,9 +1345,9 @@ setup_user() {
         fi
         print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
-            read -sp "$(echo -e "${CYAN}New password: ${NC}")" PASS1
+            read -rsp "$(echo -e "${CYAN}New password: ${NC}")" PASS1
             echo
-            read -sp "$(echo -e "${CYAN}Retype new password: ${NC}")" PASS2
+            read -rsp "$(echo -e "${CYAN}Retype new password: ${NC}")" PASS2
             echo
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
@@ -1494,7 +1494,7 @@ setup_user() {
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
-        if [[ ! -s "$AUTH_KEYS" || ! $(grep -E '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null) ]]; then
+        if [[ ! -s "$AUTH_KEYS" ]] || ! grep -qE '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null; then
             print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
             print_info "You must manually add a public key to $AUTH_KEYS to enable SSH access."
             log "No valid SSH keys found for existing user '$USERNAME'."
@@ -2371,7 +2371,7 @@ install_tailscale() {
         done
     fi
     while true; do
-        read -sp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        read -rsp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
         echo
         if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
         elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
@@ -2579,10 +2579,13 @@ setup_backup() {
     if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
         if ! command -v sshpass >/dev/null 2>&1; then
             print_info "Installing sshpass for automated key copying..."
-            apt-get update -qq && apt-get install -y -qq sshpass || { print_warning "Failed to install sshpass. Falling back to manual copy."; KEY_COPY_CHOICE=2; }
+            if ! { apt-get update -qq && apt-get install -y -qq sshpass; }; then
+                print_warning "Failed to install sshpass. Falling back to manual copy."
+                KEY_COPY_CHOICE=2
+            fi
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
-            read -sp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
+            read -rsp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
             # Ensure ~/.ssh/ exists on remote for Hetzner
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
@@ -2934,7 +2937,7 @@ configure_swap() {
     existing_swap=$(swapon --show --noheadings | awk '{print $1}' || true)
     if [[ -n "$existing_swap" ]]; then
         local current_size
-        current_size=$(ls -lh "$existing_swap" | awk '{print $5}')
+        current_size=$(du -h "$existing_swap" | awk '{print $1}')
         print_info "Existing swap file found: $existing_swap ($current_size)"
         if confirm "Modify existing swap file size?"; then
             local SWAP_SIZE
