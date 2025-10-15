@@ -1834,14 +1834,11 @@ rollback_ssh_changes() {
     fi
 
     # Remove systemd overrides for both service and socket
-    local OVERRIDE_DIR="/etc/systemd/system/${SSH_SERVICE}.d"
-    local SOCKET_OVERRIDE_DIR="/etc/systemd/system/ssh.socket.d"
-    local SERVICE_OVERRIDE_DIR="/etc/systemd/system/ssh.service.d"
-    if ! rm -rf "$OVERRIDE_DIR" "$SOCKET_OVERRIDE_DIR" "$SERVICE_OVERRIDE_DIR" 2>/dev/null; then
-        print_warning "Failed to remove systemd overrides at $OVERRIDE_DIR, $SOCKET_OVERRIDE_DIR, or $SERVICE_OVERRIDE_DIR."
+    if ! rm -rf /etc/systemd/system/ssh.service.d /etc/systemd/system/sshd.service.d /etc/systemd/system/ssh.socket.d 2>/dev/null; then
+        print_warning "Could not remove one or more systemd override directories."
         log "Rollback warning: Failed to remove systemd overrides."
     else
-        log "Removed systemd overrides: $OVERRIDE_DIR, $SOCKET_OVERRIDE_DIR, $SERVICE_OVERRIDE_DIR"
+        log "Removed all potential systemd override directories for SSH."
     fi
 
     # Remove custom SSH configuration
