@@ -1772,6 +1772,7 @@ EOF
     fi
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
+    print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
     if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
         print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
@@ -1821,8 +1822,9 @@ rollback_ssh_changes() {
         print_info "Detected SSH socket activation: using ssh.socket."
         log "Rollback: Using ssh.socket for SSH service."
     elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]${SSH_SERVICE}[[:space:]]" >/dev/null 2>&1; then
+        local initial_service_check="$SSH_SERVICE"
         SSH_SERVICE="ssh.service" # Fallback for Ubuntu
-        print_warning "SSH service $SSH_SERVICE not found, falling back to ssh.service."
+        print_warning "SSH service '$initial_service_check' not found, falling back to '$SSH_SERVICE'."
         log "Rollback warning: Using fallback SSH service ssh.service."
         # Verify fallback service exists
         if ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]ssh.service[[:space:]]" >/dev/null 2>&1; then
@@ -1834,14 +1836,11 @@ rollback_ssh_changes() {
     fi
 
     # Remove systemd overrides for both service and socket
-    local OVERRIDE_DIR="/etc/systemd/system/${SSH_SERVICE}.d"
-    local SOCKET_OVERRIDE_DIR="/etc/systemd/system/ssh.socket.d"
-    local SERVICE_OVERRIDE_DIR="/etc/systemd/system/ssh.service.d"
-    if ! rm -rf "$OVERRIDE_DIR" "$SOCKET_OVERRIDE_DIR" "$SERVICE_OVERRIDE_DIR" 2>/dev/null; then
-        print_warning "Failed to remove systemd overrides at $OVERRIDE_DIR, $SOCKET_OVERRIDE_DIR, or $SERVICE_OVERRIDE_DIR."
+    if ! rm -rf /etc/systemd/system/ssh.service.d /etc/systemd/system/sshd.service.d /etc/systemd/system/ssh.socket.d 2>/dev/null; then
+        print_warning "Could not remove one or more systemd override directories."
         log "Rollback warning: Failed to remove systemd overrides."
     else
-        log "Removed systemd overrides: $OVERRIDE_DIR, $SOCKET_OVERRIDE_DIR, $SERVICE_OVERRIDE_DIR"
+        log "Removed all potential systemd override directories for SSH."
     fi
 
     # Remove custom SSH configuration
