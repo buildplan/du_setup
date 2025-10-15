@@ -3498,9 +3498,9 @@ main() {
     install_packages
     setup_user
     configure_system
-    configure_ssh
     configure_firewall
     configure_fail2ban
+    configure_ssh
     configure_auto_updates
     configure_time_sync
     configure_kernel_hardening
