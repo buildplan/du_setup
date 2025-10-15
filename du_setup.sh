@@ -3468,9 +3468,9 @@ main() {
     log "Starting Debian/Ubuntu hardening script."
 
     # --- PRELIMINARY CHECKS ---
+    print_header
     check_system
     run_update_check
-    print_header
     check_dependencies
 
     # --- HANDLE SPECIAL OPERATIONAL MODES ---
