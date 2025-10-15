@@ -118,18 +118,20 @@ DETECTED_MANUFACTURER=""
 DETECTED_PRODUCT=""
 IS_CLOUD_PROVIDER=false
 IS_CONTAINER=false
+
 SSHD_BACKUP_FILE=""
 LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
 
+# --- --help ---
 show_usage() {
     printf "\n"
     printf "%s%s%s\n" "$CYAN" "Debian/Ubuntu Server Setup & Hardening Script" "$NC"
 
     printf "\n%sUsage:%s\n" "$BOLD" "$NC"
-    printf "  %s [OPTIONS]\n" "$(basename "$0")"
+    printf "  sudo -E %s [OPTIONS]\n" "$(basename "$0")"
 
     printf "\n%sDescription:%s\n" "$BOLD" "$NC"
     printf "  This script provisions a fresh Debian or Ubuntu server with secure base configurations.\n"
@@ -146,13 +148,16 @@ show_usage() {
 
     printf "\n%sUsage Examples:%s\n" "$BOLD" "$NC"
     printf "  # Run the full interactive setup\n"
-    printf "  %ssudo ./%s%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
+    printf "  %ssudo -E ./%s%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
     printf "  # Preview provider cleanup actions without applying them\n"
-    printf "  %ssudo ./%s --cleanup-preview%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
+    printf "  %ssudo -E ./%s --cleanup-preview%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
     printf "  # Run a full setup but skip the provider cleanup step\n"
-    printf "  %ssudo ./%s --skip-cleanup%s\n" "$YELLOW" "$(basename "$0")" "$NC"
+    printf "  %ssudo -E ./%s --skip-cleanup%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
+    printf "  # Run in quiet mode for automation\n"
+    printf "  %ssudo -E ./%s --quiet%s\n" "$YELLOW" "$(basename "$0")" "$NC"
 
     printf "\n%sImportant Notes:%s\n" "$BOLD" "$NC"
+    printf "  - The -E flag preserves your environment variables (recommended)\n"
     printf "  - Logs are saved to %s/var/log/du_setup_*.log%s\n" "$BOLD" "$NC"
     printf "  - Backups of modified configs are in %s/root/setup_harden_backup_*%s\n" "$BOLD" "$NC"
     printf "  - For full documentation, see the project repository:\n"
