@@ -107,6 +107,7 @@ BACKUP_LOG="/var/log/backup_rsync.log"
 REPORT_FILE="/var/log/du_setup_report_$(date +%Y%m%d_%H%M%S).txt"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
+ORIGINAL_ARGS="$*"
 
 CLEANUP_PREVIEW=false # If true, show what would be cleaned up without making changes
 CLEANUP_ONLY=false # If true, only perform cleanup tasks
@@ -172,6 +173,37 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+
+# --- Root Check ---
+if [[ $EUID -ne 0 ]]; then
+    printf "\n"
+    printf "%s✗ You are running as user '%s'. This script must be run as root.%s\n" "$RED" "$(whoami)" "$NC"
+    printf "\n"
+    printf "This script makes system-level changes including:\n"
+    printf "  - Package installation/removal\n"
+    printf "  - Firewall configuration\n"
+    printf "  - SSH hardening\n"
+    printf "  - User account management\n"
+    printf "\n"
+    printf "Choose one of the following methods to run this script:\n"
+    printf "\n"
+    printf "%s%sRun with sudo (-E preserves environment):%s\n" "$BOLD" "$GREEN" "$NC"
+    if [[ -n "$ORIGINAL_ARGS" ]]; then
+        printf "  %ssudo -E %s %s%s\n" "$CYAN" "$0" "$ORIGINAL_ARGS" "$NC"
+    else
+        printf "  %ssudo -E %s%s\n" "$CYAN" "$0" "$NC"
+    fi
+    printf "\n"
+    printf "%s%sAlternative methods:%s\n" "$BOLD" "$YELLOW" "$NC"
+    printf "  %ssudo su -%s    # Switch to root\n" "$CYAN" "$NC"
+    if [[ -n "$ORIGINAL_ARGS" ]]; then
+        printf "  And run: %s%s %s%s\n" "$CYAN" "$0" "$ORIGINAL_ARGS" "$NC"
+    else
+        printf "  And run: %s%s%s\n" "$CYAN" "$0" "$NC"
+    fi
+    printf "\n"
+    exit 1
+fi
 
 # --- LOGGING & PRINT FUNCTIONS ---
 
@@ -3419,7 +3451,6 @@ main() {
     trap 'handle_error $LINENO' ERR
     trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
 
-    # --- Root Check ---
     if [[ $(id -u) -ne 0 ]]; then
         echo -e "\n${RED}✗ Error: This script must be run with root privileges.${NC}"
         echo "You are running as user '$(whoami)', but root is required for system changes."
