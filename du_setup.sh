@@ -3467,10 +3467,13 @@ main() {
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
-    # Existing system checks
+    # --- PRELIMINARY CHECKS ---
     check_system
+    run_update_check
+    print_header
+    check_dependencies
 
-    # Handle --cleanup-only flag
+    # --- HANDLE SPECIAL OPERATIONAL MODES ---
     if [[ "$CLEANUP_ONLY" == "true" ]]; then
         print_info "Running in cleanup-only mode..."
         detect_environment
@@ -3479,7 +3482,6 @@ main() {
         exit 0
     fi
 
-    # Handle --cleanup-preview flag
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
         print_info "Running cleanup preview mode..."
         detect_environment
@@ -3488,20 +3490,10 @@ main() {
         exit 0
     fi
 
-    # Normal flow - detect environment first
+    # --- NORMAL EXECUTION FLOW ---
+    # Detect environment used for the summary report at the end.
     detect_environment
-
-    # Run cleanup unless --skip-cleanup is set
-    if [[ "$SKIP_CLEANUP" == "false" ]]; then
-        cleanup_provider_packages
-    else
-        print_info "Skipping provider cleanup (--skip-cleanup flag set)."
-        log "Provider cleanup skipped via --skip-cleanup flag."
-    fi
-
-    run_update_check
-    print_header
-    check_dependencies
+    # --- CORE SETUP AND HARDENING ---
     collect_config
     install_packages
     setup_user
@@ -3517,6 +3509,16 @@ main() {
     setup_backup
     configure_swap
     configure_security_audit
+
+    # --- PROVIDER PACKAGE CLEANUP ---
+    if [[ "$SKIP_CLEANUP" == "false" ]]; then
+        cleanup_provider_packages
+    else
+        print_info "Skipping provider cleanup (--skip-cleanup flag set)."
+        log "Provider cleanup skipped via --skip-cleanup flag."
+    fi
+
+    # --- FINAL STEPS ---
     final_cleanup
     generate_summary
 }
