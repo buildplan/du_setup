@@ -1821,8 +1821,9 @@ rollback_ssh_changes() {
         print_info "Detected SSH socket activation: using ssh.socket."
         log "Rollback: Using ssh.socket for SSH service."
     elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]${SSH_SERVICE}[[:space:]]" >/dev/null 2>&1; then
+        local initial_service_check="$SSH_SERVICE"
         SSH_SERVICE="ssh.service" # Fallback for Ubuntu
-        print_warning "SSH service $SSH_SERVICE not found, falling back to ssh.service."
+        print_warning "SSH service '$initial_service_check' not found, falling back to '$SSH_SERVICE'."
         log "Rollback warning: Using fallback SSH service ssh.service."
         # Verify fallback service exists
         if ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]ssh.service[[:space:]]" >/dev/null 2>&1; then
