@@ -137,7 +137,7 @@ sudo -E ./du_setup.sh --quiet
 | **Swap File Setup** | Creates an optional swap file with tuned `swappiness` and `vfs_cache_pressure` settings. |
 | **Security Auditing** | Runs optional **Lynis** and **debsecan** vulnerability audits and logs the results for review. |
 | **Logging and Reporting** | Logs all actions and generates a detailed report of setup and cleanup in `/var/log` and backup directories. Saves timestamped backups of modified configuration files in `/root/setup_harden_backup_*`. |
-| **Cleanup & Maintenance** | 	Performs `autoremove` and `autoclean` of unused packages and services after setup or cleanup phases. |
+| **Cleanup & Maintenance** | Performs `autoremove` and `autoclean` of unused packages and services after setup or cleanup phases. |
 | **Final Summary** | Generates a detailed report of all changes and saves it to `/var/log/du_setup_report_*.txt`. |
 
 ## Provider Package Cleanup (Since v0.70)
@@ -157,7 +157,7 @@ Cleanup is optional but recommended for commercial VPS environments to reduce at
 
 ### What it detects
 
-* Common cloud provider monitoring agents (e.g., DigitalOcean, Hetzner, Vultr) 
+* Common cloud provider monitoring agents (e.g., DigitalOcean, Hetzner, Vultr)
 * Virtualization guest tools (qemu-guest-agent, cloud-init)
 * Default provisioning users (ubuntu, debian, admin, cloud-user)
 * Unexpected SSH keys in `/root/.ssh/authorized_keys`
