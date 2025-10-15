@@ -1772,6 +1772,7 @@ EOF
     fi
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
+    print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
     if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
         print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
