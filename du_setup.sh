@@ -1342,7 +1342,7 @@ collect_config() {
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
-    if ! confirm "\nContinue with this configuration?" "y"; then print_info "Exiting."; exit 0; fi
+    if ! confirm $'\nContinue with this configuration?' "y"; then print_info "Exiting."; exit 0; fi
     log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6"
 }
 
