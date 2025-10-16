@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-18
+# Version: 0.70 | 2025-10-20
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
@@ -218,10 +218,11 @@ log() {
 
 print_header() {
     [[ $VERBOSE == false ]] && return
+    printf '\n'
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-17                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-20                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
