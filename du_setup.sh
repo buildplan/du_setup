@@ -607,7 +607,7 @@ cleanup_provider_packages() {
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
         print_warning "=== PREVIEW MODE ENABLED ==="
         print_info "No changes will be made. This is a simulation only."
-        echo
+        printf '\n'
     fi
 
     if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
@@ -731,17 +731,17 @@ cleanup_provider_packages() {
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
         print_info "=== PREVIEW: Showing what would be done ==="
-        echo
+        printf '\n'
     fi
 
     # Audit and optionally clean up root SSH keys
     if [[ ${#ROOT_SSH_KEYS[@]} -gt 0 ]]; then
         print_section "Root SSH Key Audit"
         print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
-        echo
+        printf '\n'
         printf '%s\n' "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
         awk '{print NR". "$0}' /root/.ssh/authorized_keys 2>/dev/null | head -20
-        echo
+        printf '\n'
 
         if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
             print_info "[PREVIEW] Would offer to review and edit /root/.ssh/authorized_keys"
@@ -777,7 +777,7 @@ cleanup_provider_packages() {
                 print_info "Skipping root SSH key audit."
             fi
         fi
-        echo
+        printf '\n'
     fi
 
     # Special handling for cloud-init due to its complexity
@@ -841,7 +841,7 @@ cleanup_provider_packages() {
         else
             print_info "Keeping cloud-init enabled."
         fi
-        echo
+        printf '\n'
     fi
 
     # Remove identified provider packages
@@ -916,14 +916,14 @@ cleanup_provider_packages() {
                 print_info "Keeping $pkg."
             fi
         done
-        echo
+        printf '\n'
     fi
 
     # Check and remove default users
     if [[ ${#PROVIDER_USERS[@]} -gt 0 ]]; then
         print_section "Provider User Cleanup"
         print_warning "Default users created during provisioning can be security risks."
-        echo
+        printf '\n'
 
         for user in "${PROVIDER_USERS[@]}"; do
             printf '%s\n' "${YELLOW}Found user: $user${NC}"
@@ -946,7 +946,7 @@ cleanup_provider_packages() {
                 print_warning "User $user has sudo/admin privileges!"
             fi
 
-            echo
+            printf '\n'
 
             if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove user $user and their home directory?" "n"; then
                 if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
@@ -1006,7 +1006,7 @@ cleanup_provider_packages() {
                 print_info "Keeping user $user."
             fi
         done
-        echo
+        printf '\n'
     fi
 
     # Final cleanup step
@@ -1026,7 +1026,7 @@ cleanup_provider_packages() {
     log "Provider package cleanup completed."
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        echo
+        printf '\n'
         print_success "=== PREVIEW COMPLETED ==="
         print_info "No changes were made to the system."
         print_info "Run without --cleanup-preview flag to execute these actions."
@@ -1388,9 +1388,9 @@ setup_user() {
         print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
             read -rsp "$(printf '%s' "${CYAN}New password: ${NC}")" PASS1
-            echo
+            printf '\n'
             read -rsp "$(printf '%s' "${CYAN}Retype new password: ${NC}")" PASS2
-            echo
+            printf '\n'
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
                 log "Password setting skipped for '$USERNAME'."
@@ -3290,7 +3290,7 @@ generate_summary() {
     else
         printf "  %-20s ${YELLOW}⚠ Not Performed${NC}\n" "Security Audit"
     fi
-    echo
+    printf '\n'
 
     # --- Main Configuration Summary ---
     printf '%s\n' "${YELLOW}Configuration Summary:${NC}"
@@ -3378,7 +3378,7 @@ generate_summary() {
     else
         printf '%s\n' "  Security Audit:     ${RED}Not run${NC}"
     fi
-    echo
+    printf '\n'
 
     # --- Post-Reboot Verification Steps ---
     printf '%s\n' "${YELLOW}Post-Reboot Verification Steps:${NC}"
@@ -3410,7 +3410,7 @@ generate_summary() {
         printf '%s\n' "  ${YELLOW}Security Audit:${NC}"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
-    echo
+    printf '\n'
 
     # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
