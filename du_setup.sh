@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-14
+# Version: 0.70 | 2025-10-20
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
@@ -89,14 +89,14 @@ if command -v tput >/dev/null 2>&1 && tput setaf 1 >/dev/null 2>&1; then
     BOLD=$(tput bold)
     NC=$(tput sgr0)
 else
-    RED='\e[0;31m'
-    GREEN='\e[0;32m'
-    YELLOW='\e[1;33m'
-    BLUE='\e[0;34m'
-    PURPLE='\e[0;35m'
-    CYAN='\e[0;36m'
-    NC='\e[0m'
-    BOLD='\e[1m'
+    RED=$'\e[0;31m'
+    GREEN=$'\e[0;32m'
+    YELLOW=$'\e[1;33m'
+    BLUE=$'\e[0;34m'
+    PURPLE=$'\e[0;35m'
+    CYAN=$'\e[0;36m'
+    NC=$'\e[0m'
+    BOLD=$'\e[1m'
 fi
 
 
@@ -218,38 +218,49 @@ log() {
 
 print_header() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║                                                                 ║${NC}"
-    echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.70 | 2025-10-14                         ║${NC}"
-    echo -e "${CYAN}║                                                                 ║${NC}"
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
-    echo
+    printf '\n'
+    printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
+    printf '%s\n' "${CYAN}║                                                                 ║${NC}"
+    printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                                                                 ║${NC}"
+    printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
+    printf '\n'
 }
 
 print_section() {
     [[ $VERBOSE == false ]] && return
-    echo -e "\n${BLUE}▓▓▓ $1 ▓▓▓${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}$(printf '═%.0s' {1..65})${NC}"
+    printf '\n%s\n' "${BLUE}▓▓▓ $1 ▓▓▓${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${BLUE}$(printf '═%.0s' {1..65})${NC}"
 }
 
 print_success() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${GREEN}✓ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${GREEN}✓ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_error() {
-	    echo -e "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_warning() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${YELLOW}⚠ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${YELLOW}⚠ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_info() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
+}
+
+print_separator() {
+    local header_text="$1"
+    local color="${2:-$YELLOW}"
+    local separator_char="${3:-=}"
+    
+    printf '%s\n' "${color}${header_text}${NC}"
+    printf "${separator_char}%.0s" $(seq 1 ${#header_text})
+    printf '\n'
 }
 
 # --- CLEANUP HELPER FUNCTIONS ---
@@ -258,12 +269,11 @@ execute_check() {
     "$@"
 }
 
-
 execute_command() {
     local cmd_string="$*"
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        echo -e "${CYAN}[PREVIEW]${NC} Would execute: ${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
+        printf '%s Would execute: %s\n' "${CYAN}[PREVIEW]${NC}" "${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
         return 0
     else
         "$@"
@@ -489,18 +499,18 @@ cleanup_provider_packages() {
     detect_environment
 
     # Display environment information
-    echo -e "${CYAN}=== Environment Detection ===${NC}"
-    echo "Virtualization Type: ${DETECTED_VIRT_TYPE:-unknown}"
-    echo "System Manufacturer: ${DETECTED_MANUFACTURER:-unknown}"
-    echo "Product Name: ${DETECTED_PRODUCT:-unknown}"
-    echo "Environment Type: ${ENVIRONMENT_TYPE:-unknown}"
+    printf '%s\n' "${CYAN}=== Environment Detection ===${NC}"
+    printf 'Virtualization Type: %s\n' "${DETECTED_VIRT_TYPE:-unknown}"
+    printf 'System Manufacturer: %s\n' "${DETECTED_MANUFACTURER:-unknown}"
+    printf 'Product Name: %s\n' "${DETECTED_PRODUCT:-unknown}"
+    printf 'Environment Type: %s\n' "${ENVIRONMENT_TYPE:-unknown}"
     if [[ -n "${DETECTED_BIOS_VENDOR}" && "${DETECTED_BIOS_VENDOR}" != "unknown" ]]; then
-        echo "BIOS Vendor: ${DETECTED_BIOS_VENDOR}"
+        printf 'BIOS Vendor: %s\n' "${DETECTED_BIOS_VENDOR}"
     fi
     if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-        echo "Detected Provider: ${DETECTED_PROVIDER_NAME}"
+        printf 'Detected Provider: %s\n' "${DETECTED_PROVIDER_NAME}"
     fi
-    echo
+    printf '\n'
 
     # Determine recommendation based on three-way detection
     local CLEANUP_RECOMMENDED=false
@@ -512,50 +522,50 @@ cleanup_provider_packages() {
         commercial-cloud)
             CLEANUP_RECOMMENDED=true
             DEFAULT_ANSWER="y"
-            echo -e "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
+            printf '%s\n' "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
             if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                echo -e "Provider: ${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+                printf 'Provider: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
             fi
-            echo "This is a commercial VPS from an external provider."
+            printf 'This is a commercial VPS from an external provider.\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}RECOMMENDED${NC} for security."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "Providers may install monitoring agents, pre-configured users, and management tools."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Providers may install monitoring agents, pre-configured users, and management tools.\n'
             ;;
 
         uncertain-kvm)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
-            echo "This environment could be:"
-            echo "  ${CYAN}•${NC} A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)"
-            echo "  ${CYAN}•${NC} A personal VM on Proxmox, KVM, or QEMU"
-            echo "  ${CYAN}•${NC} A VPS from a regional/unlisted provider"
-            echo ""
+            printf '%s\n' "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
+            printf 'This environment could be:\n'
+            printf '  %s A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)\n' "${CYAN}•${NC}"
+            printf '  %s A personal VM on Proxmox, KVM, or QEMU\n' "${CYAN}•${NC}"
+            printf '  %s A VPS from a regional/unlisted provider\n' "${CYAN}•${NC}"
+            printf '\n'
             RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - review packages carefully before proceeding."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "If this is a commercial VPS, cleanup is recommended."
-            echo "If you control the hypervisor (Proxmox/KVM), cleanup is optional."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If this is a commercial VPS, cleanup is recommended.\n'
+            printf 'If you control the hypervisor (Proxmox/KVM), cleanup is optional.\n'
             ;;
 
         personal-vm)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
+            printf '%s\n' "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
             if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                echo -e "Platform: ${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+                printf 'Platform: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
             fi
-            echo "This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)"
+            printf 'This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT RECOMMENDED${NC} for trusted environments."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "If you control the hypervisor/host, you likely don't need cleanup."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If you control the hypervisor/host, you likely don'\''t need cleanup.\n'
             ;;
 
         bare-metal)
-            echo -e "${GREEN}✓ Bare Metal Server Detected${NC}"
-            echo "This appears to be a physical (bare metal) server."
+            printf '%s\n' "${GREEN}✓ Bare Metal Server Detected${NC}"
+            printf 'This appears to be a physical (bare metal) server.\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT NEEDED${NC} for bare metal."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "No virtualization layer detected - skipping cleanup."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'No virtualization layer detected - skipping cleanup.\n'
             log "Provider package cleanup skipped: bare metal server detected."
             return 0
             ;;
@@ -563,14 +573,14 @@ cleanup_provider_packages() {
         uncertain-xen|unknown|*)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
-            echo "Could not definitively identify the hosting provider or environment."
+            printf '%s\n' "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
+            printf 'Could not definitively identify the hosting provider or environment.\n'
             RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - proceed with caution."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "Review packages carefully before removing anything."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Review packages carefully before removing anything.\n'
             ;;
     esac
-    echo
+    printf '\n'
 
     # Decision point based on environment and flags
     if [[ "$CLEANUP_PREVIEW" == "false" ]] && [[ "$CLEANUP_ONLY" == "false" ]]; then
@@ -607,7 +617,7 @@ cleanup_provider_packages() {
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
         print_warning "=== PREVIEW MODE ENABLED ==="
         print_info "No changes will be made. This is a simulation only."
-        echo
+        printf '\n'
     fi
 
     if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
@@ -731,17 +741,17 @@ cleanup_provider_packages() {
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
         print_info "=== PREVIEW: Showing what would be done ==="
-        echo
+        printf '\n'
     fi
 
     # Audit and optionally clean up root SSH keys
     if [[ ${#ROOT_SSH_KEYS[@]} -gt 0 ]]; then
         print_section "Root SSH Key Audit"
         print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
-        echo
-        echo -e "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
+        printf '\n'
+        printf '%s\n' "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
         awk '{print NR". "$0}' /root/.ssh/authorized_keys 2>/dev/null | head -20
-        echo
+        printf '\n'
 
         if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
             print_info "[PREVIEW] Would offer to review and edit /root/.ssh/authorized_keys"
@@ -777,20 +787,20 @@ cleanup_provider_packages() {
                 print_info "Skipping root SSH key audit."
             fi
         fi
-        echo
+        printf '\n'
     fi
 
     # Special handling for cloud-init due to its complexity
     if [[ " ${PROVIDER_PACKAGES[*]} " =~ " cloud-init " ]]; then
         print_section "Cloud-Init Management"
-        echo -e "${CYAN}ℹ cloud-init${NC}"
-        echo "   Purpose: Initial VM provisioning (SSH keys, hostname, network)"
-        echo "   ${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
-        echo "   Benefits of disabling vs removing:"
-        echo "     - Can be re-enabled if needed for reprovisioning"
-        echo "     - Safer than package removal"
-        echo "     - No dependency issues"
-        echo
+        printf '%s\n' "${CYAN}ℹ cloud-init${NC}"
+        printf '   Purpose: Initial VM provisioning (SSH keys, hostname, network)\n'
+        printf '   %s\n' "${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
+        printf '   Benefits of disabling vs removing:\n'
+        printf '     - Can be re-enabled if needed for reprovisioning\n'
+        printf '     - Safer than package removal\n'
+        printf '     - No dependency issues\n'
+        printf '\n'
 
         if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Disable cloud-init (recommended over removal)?" "y"; then
             print_info "Disabling cloud-init..."
@@ -841,7 +851,7 @@ cleanup_provider_packages() {
         else
             print_info "Keeping cloud-init enabled."
         fi
-        echo
+        printf '\n'
     fi
 
     # Remove identified provider packages
@@ -853,30 +863,30 @@ cleanup_provider_packages() {
 
             case "$pkg" in
                 qemu-guest-agent)
-                    echo -e "${RED}⚠ $pkg${NC}"
-                    echo "   Purpose: VM-host communication for snapshots and graceful shutdowns"
-                    echo -e "   ${RED}CRITICAL RISKS if removed:${NC}"
-                    echo "     - Snapshot backups will FAIL or be inconsistent"
-                    echo "     - Console access may break"
-                    echo "     - Graceful shutdowns replaced with forced stops"
-                    echo "     - Provider backup systems will malfunction"
-                    echo -e "   ${RED}STRONGLY RECOMMENDED to keep${NC}"
+                    printf '%s\n' "${RED}⚠ $pkg${NC}"
+                    printf '   Purpose: VM-host communication for snapshots and graceful shutdowns\n'
+                    printf '   %s\n' "${RED}CRITICAL RISKS if removed:${NC}"
+                    printf '     - Snapshot backups will FAIL or be inconsistent\n'
+                    printf '     - Console access may break\n'
+                    printf '     - Graceful shutdowns replaced with forced stops\n'
+                    printf '     - Provider backup systems will malfunction\n'
+                    printf '   %s\n' "${RED}STRONGLY RECOMMENDED to keep${NC}"
                     ;;
                 *-agent|*-monitoring)
-                    echo -e "${YELLOW}⚠ $pkg${NC}"
-                    echo "   Purpose: Provider monitoring/management"
-                    echo "   Risks if removed:"
-                    echo "     - Provider dashboard metrics will disappear"
-                    echo "     - May affect support troubleshooting"
-                    echo -e "   ${YELLOW}Remove only if you don't need provider monitoring${NC}"
+                    printf '%s\n' "${YELLOW}⚠ $pkg${NC}"
+                    printf '   Purpose: Provider monitoring/management\n'
+                    printf '   Risks if removed:\n'
+                    printf '     - Provider dashboard metrics will disappear\n'
+                    printf '     - May affect support troubleshooting\n'
+                    printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
                     ;;
                 *)
-                    echo -e "${CYAN}ℹ $pkg${NC}"
-                    echo "   Purpose: Provider-specific tooling"
-                    echo -e "  ${YELLOW}Review before removing${NC}"
+                    printf '%s\n' "${CYAN}ℹ $pkg${NC}"
+                    printf '   Purpose: Provider-specific tooling\n'
+                    printf '  %s\n' "${YELLOW}Review before removing${NC}"
                     ;;
             esac
-            echo
+            printf '\n'
 
             if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove $pkg?" "n"; then
                 if [[ "$pkg" == "qemu-guest-agent" && "$CLEANUP_PREVIEW" == "false" ]]; then
@@ -916,17 +926,17 @@ cleanup_provider_packages() {
                 print_info "Keeping $pkg."
             fi
         done
-        echo
+        printf '\n'
     fi
 
     # Check and remove default users
     if [[ ${#PROVIDER_USERS[@]} -gt 0 ]]; then
         print_section "Provider User Cleanup"
         print_warning "Default users created during provisioning can be security risks."
-        echo
+        printf '\n'
 
         for user in "${PROVIDER_USERS[@]}"; do
-            echo -e "${YELLOW}Found user: $user${NC}"
+            printf '%s\n' "${YELLOW}Found user: $user${NC}"
 
             local proc_count
             proc_count=$( (ps -u "$user" --no-headers 2>/dev/null || true) | wc -l)
@@ -946,7 +956,7 @@ cleanup_provider_packages() {
                 print_warning "User $user has sudo/admin privileges!"
             fi
 
-            echo
+            printf '\n'
 
             if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove user $user and their home directory?" "n"; then
                 if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
@@ -1006,7 +1016,7 @@ cleanup_provider_packages() {
                 print_info "Keeping user $user."
             fi
         done
-        echo
+        printf '\n'
     fi
 
     # Final cleanup step
@@ -1026,7 +1036,7 @@ cleanup_provider_packages() {
     log "Provider package cleanup completed."
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        echo
+        printf '\n'
         print_success "=== PREVIEW COMPLETED ==="
         print_info "No changes were made to the system."
         print_info "Run without --cleanup-preview flag to execute these actions."
@@ -1051,7 +1061,7 @@ confirm() {
     fi
 
     while true; do
-        read -rp "$(echo -e "${CYAN}$prompt${NC}")" response
+        read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
         response=${response,,}
 
         if [[ -z $response ]]; then
@@ -1061,7 +1071,7 @@ confirm() {
         case $response in
             y|yes) return 0 ;;
             n|no) return 1 ;;
-            *) echo -e "${RED}Please answer yes or no.${NC}" ;;
+            *) printf '%s\n' "${RED}Please answer yes or no.${NC}" ;;
         esac
     done
 }
@@ -1301,7 +1311,7 @@ check_system() {
 collect_config() {
     print_section "Configuration Setup"
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
+        read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
         if validate_username "$USERNAME"; then
             if id "$USERNAME" &>/dev/null; then
                 print_warning "User '$USERNAME' already exists."
@@ -1314,13 +1324,13 @@ collect_config() {
         fi
     done
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
+        read -rp "$(printf '%s' "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
-    read -rp "$(echo -e "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+    read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
+        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-2222}
         if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
     done
@@ -1332,7 +1342,7 @@ collect_config() {
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         print_info "Detected server IPv6: $SERVER_IP_V6"
     fi
-    echo -e "\n${YELLOW}Configuration Summary:${NC}"
+    printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
@@ -1342,7 +1352,7 @@ collect_config() {
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
-    if ! confirm "\nContinue with this configuration?" "y"; then print_info "Exiting."; exit 0; fi
+    if ! confirm $'\nContinue with this configuration?' "y"; then print_info "Exiting."; exit 0; fi
     log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6"
 }
 
@@ -1387,10 +1397,10 @@ setup_user() {
         fi
         print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
-            read -rsp "$(echo -e "${CYAN}New password: ${NC}")" PASS1
-            echo
-            read -rsp "$(echo -e "${CYAN}Retype new password: ${NC}")" PASS2
-            echo
+            read -rsp "$(printf '%s' "${CYAN}New password: ${NC}")" PASS1
+            printf '\n'
+            read -rsp "$(printf '%s' "${CYAN}Retype new password: ${NC}")" PASS2
+            printf '\n'
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
                 log "Password setting skipped for '$USERNAME'."
@@ -1400,7 +1410,10 @@ setup_user() {
                     print_success "Password for '$USERNAME' updated."
                     break
                 else
-                    print_error "Failed to set password. This could be a permissions issue."
+                    print_error "Failed to set password. Possible causes:"
+                    print_info "  • permissions issue or password policy restrictions."
+                    print_info "  • VPS provider password requirements (min. 8-12 chars, complexity rules)"
+                    printf '\n'
                     print_info "Try again or press Enter twice to skip."
                     log "Failed to set password for '$USERNAME'."
                 fi
@@ -1429,7 +1442,7 @@ setup_user() {
         if confirm "Add SSH public key(s) from your local machine now?"; then
             while true; do
                 local SSH_PUBLIC_KEY
-                read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+                read -rp "$(printf '%s' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
 
                 if validate_ssh_key "$SSH_PUBLIC_KEY"; then
                     mkdir -p "$SSH_DIR"
@@ -1492,35 +1505,37 @@ setup_user() {
             chmod 600 "$TEMP_KEY_FILE"
             chown root:root "$TEMP_KEY_FILE"
 
-            echo
-            echo -e "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
-            echo -e "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
-            echo
-            echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
-            echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
-            echo -e "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
+            printf '\n'
+            printf '%s\n' "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
+            printf '%s\n' "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
+            printf '\n'
+            printf '%s\n' "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
+            printf '%s\n' "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
+            printf '%s\n' "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
             cat "$TEMP_KEY_FILE"
-            echo -e "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
-            echo
-            echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
-            echo    "====SSH PUBLIC KEY BELOW THIS LINE===="
+            printf '%s\n' "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
+            printf '\n'
+            printf '%s\n' "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
+            printf '====SSH PUBLIC KEY BELOW THIS LINE====\n'
             cat "$SSH_DIR/id_ed25519_user.pub"
-            echo    "====SSH PUBLIC KEY END===="
-            echo
-            echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
-            echo -e "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
-            echo -e "${CYAN}4. Connect to the server using:${NC}"
+            printf '====SSH PUBLIC KEY END====\n'
+            printf '\n'
+            printf '%s\n' "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
+            printf '%s\n' "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
+            printf '%s\n' "${CYAN}4. Connect to the server using:${NC}"
             if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
             fi
             if [[ "$SERVER_IP_V6" != "not available" ]]; then
-                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
             fi
-            echo
-            echo -e "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
-            read -rp "$(echo -e "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+            printf '\n'
+            printf '%s\n' "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
+            read -rp "$(printf '%s' "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+            rm -f "$TEMP_KEY_FILE" 2>/dev/null
             print_info "Temporary key file deleted."
             LOCAL_KEY_ADDED=true
+            trap - EXIT
         fi
         print_success "User '$USERNAME' created."
         echo "$USERNAME" > /root/.du_setup_managed_user
@@ -1570,13 +1585,15 @@ configure_system() {
     print_info "Large temporary files may consume system memory"
 
     mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+    log "Backing up script itself for audit trail"
+    cp "${SCRIPT_DIR}/$(basename "$0")" "$BACKUP_DIR/du_setup_v${CURRENT_VERSION}.sh"
     cp /etc/hosts "$BACKUP_DIR/hosts.backup"
     cp /etc/fstab "$BACKUP_DIR/fstab.backup"
     cp /etc/sysctl.conf "$BACKUP_DIR/sysctl.conf.backup" 2>/dev/null || true
 
     print_info "Configuring timezone..."
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
+        read -rp "$(printf '%s' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
         TIMEZONE=${TIMEZONE:-Etc/UTC}
         if validate_timezone "$TIMEZONE"; then
             if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
@@ -1688,16 +1705,16 @@ configure_ssh() {
         fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
-        echo -e "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
+        printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
 
     print_warning "SSH Key Authentication Required for Next Steps!"
-    echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
+    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
     if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
-        echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+        printf '%s\n' "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
     if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+        printf '%s\n' "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
@@ -1712,11 +1729,11 @@ configure_ssh() {
     elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
-        echo -e "[Socket]\nListenStream=\nListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
     else
         print_info "Configuring SSH service to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-        echo -e "[Service]\nExecStart=\nExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+        printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
     # Apply additional hardening
@@ -2027,7 +2044,7 @@ configure_firewall() {
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
-            read -rp "$(echo -e "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
+            read -rp "$(printf '%s' "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
             if [[ -z "$CUSTOM_PORTS" ]]; then
                 print_info "No custom ports entered. Skipping."
                 break
@@ -2046,7 +2063,7 @@ configure_firewall() {
                         print_info "Rule for $port already exists."
                     else
                         local CUSTOM_COMMENT
-                        read -rp "$(echo -e "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
+                        read -rp "$(printf '%s' "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
                         if [[ -z "$CUSTOM_COMMENT" ]]; then
                             CUSTOM_COMMENT="Custom port $port"
                         fi
@@ -2401,21 +2418,21 @@ install_tailscale() {
     fi
 
     print_info "Configuring Tailscale connection..."
-    echo -e "${CYAN}Choose Tailscale connection method:${NC}"
-    echo -e "  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)"
-    echo -e "  2) Custom Tailscale server (requires server URL and pre-auth key)"
-    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
+    printf '%s\n' "${CYAN}Choose Tailscale connection method:${NC}"
+    printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)\n'
+    printf '  2) Custom Tailscale server (requires server URL and pre-auth key)\n'
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
     TS_CONNECTION=${TS_CONNECTION:-1}
     local AUTH_KEY LOGIN_SERVER=""
     if [[ "$TS_CONNECTION" == "2" ]]; then
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
+            read -rp "$(printf '%s' "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
             if [[ "$LOGIN_SERVER" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Must start with https://. Try again."; fi
         done
     fi
     while true; do
-        read -rsp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
-        echo
+        read -rsp "$(printf '%s' "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        printf '\n'
         if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
         elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
             print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
@@ -2434,7 +2451,7 @@ install_tailscale() {
     if ! $TS_COMMAND; then
         print_warning "Failed to connect to Tailscale. Possible issues: invalid pre-auth key, network restrictions, or server unavailability."
         print_info "Please run the following command manually after resolving the issue:"
-        echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+        printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
         log "Tailscale connection failed: $TS_COMMAND_SAFE"
     else
         # Verify connection status with retries
@@ -2464,7 +2481,7 @@ install_tailscale() {
         else
             print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
             print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-            echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+            printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
             log "Tailscale connection not verified: $TS_COMMAND_SAFE"
             tailscale status > /tmp/tailscale_status.txt 2>&1
             log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
@@ -2473,11 +2490,11 @@ install_tailscale() {
 
     # --- Configure Additional Flags ---
     print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
-    echo -e "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
-    echo -e "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
-    echo -e "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
-    echo -e "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
-    echo -e "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
+    printf '%s\n' "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
+    printf '%s\n' "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
+    printf '%s\n' "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
+    printf '%s\n' "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
+    printf '%s\n' "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
     read -rp "  " TS_FLAG_CHOICES
     local TS_FLAGS=""
     if [[ -n "$TS_FLAG_CHOICES" ]]; then
@@ -2504,7 +2521,7 @@ install_tailscale() {
             if ! $TS_COMMAND; then
                 print_warning "Failed to reconfigure Tailscale with additional options."
                 print_info "Please run the following command manually after resolving the issue:"
-                echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
                 log "Tailscale reconfiguration failed: $TS_COMMAND_SAFE"
             else
                 # Verify reconfiguration status with retries
@@ -2533,7 +2550,7 @@ install_tailscale() {
                 else
                     print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
                     print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-                    echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                    printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
                     tailscale status > /tmp/tailscale_status.txt 2>&1
                     log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
@@ -2590,18 +2607,18 @@ setup_backup() {
     local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH SSH_COPY_ID_FLAGS=""
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
+        read -rp "$(printf '%s' "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
         if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$ ]]; then break; else print_error "Invalid format. Expected user@host. Please try again."; fi
     done
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
+        read -rp "$(printf '%s' "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
         BACKUP_PORT=${BACKUP_PORT:-22}
         if [[ "$BACKUP_PORT" =~ ^[0-9]+$ && "$BACKUP_PORT" -ge 1 && "$BACKUP_PORT" -le 65535 ]]; then break; else print_error "Invalid port. Must be between 1 and 65535. Please try again."; fi
     done
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
+        read -rp "$(printf '%s' "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
         if [[ "$REMOTE_BACKUP_PATH" =~ ^/[^[:space:]]*/$ ]]; then break; else print_error "Invalid path. Must start and end with '/' and contain no spaces. Please try again."; fi
     done
 
@@ -2614,10 +2631,10 @@ setup_backup() {
     fi
 
     # --- Handle SSH Key Copy ---
-    echo -e "${CYAN}Choose how to copy the root SSH key:${NC}"
-    echo -e "  1) Automate with password (requires sshpass, password stored briefly in memory)"
-    echo -e "  2) Manual copy (recommended)"
-    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [2]: ${NC}")" KEY_COPY_CHOICE
+    printf '%s\n' "${CYAN}Choose how to copy the root SSH key:${NC}"
+    printf '  1) Automate with password (requires sshpass, password stored briefly in memory)\n'
+    printf '  2) Manual copy (recommended)\n'
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [2]: ${NC}")" KEY_COPY_CHOICE
     KEY_COPY_CHOICE=${KEY_COPY_CHOICE:-2}
     if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
         if ! command -v sshpass >/dev/null 2>&1; then
@@ -2628,7 +2645,7 @@ setup_backup() {
             fi
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
-            read -rsp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
+            read -rsp "$(printf '%s' "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; printf '\n'
             # Ensure ~/.ssh/ exists on remote for Hetzner
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
@@ -2644,10 +2661,10 @@ setup_backup() {
     fi
     if [[ "$KEY_COPY_CHOICE" == "2" ]]; then
         print_warning "ACTION REQUIRED: Copy the root SSH key to the backup destination."
-        echo -e "This will allow the root user to connect without a password for automated backups."
-        echo -e "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; echo
-        echo -e "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
-        echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; echo
+        printf 'This will allow the root user to connect without a password for automated backups.\n'
+        printf '%s' "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; printf '\n'
+        printf '%s\n' "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
+        printf '%s\n' "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; printf '\n'
         if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
             print_info "For Hetzner, ensure ~/.ssh/ exists on the remote server: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
         fi
@@ -2680,7 +2697,7 @@ setup_backup() {
     local BACKUP_DIRS_ARRAY=()
     while true; do
         print_info "Enter the full paths of directories to back up, separated by spaces."
-        read -rp "$(echo -e "${CYAN}Default is '/home/${USERNAME}/'. Press Enter for default or provide your own: ${NC}")" -a user_input_dirs
+        read -rp "$(printf '%s' "${CYAN}Default is '/home/${USERNAME}/'. Press Enter for default or provide your own: ${NC}")" -a user_input_dirs
 
         if [ ${#user_input_dirs[@]} -eq 0 ]; then
             BACKUP_DIRS_ARRAY=("/home/${USERNAME}/")
@@ -2726,7 +2743,7 @@ node_modules/
 .wget-hsts
 EOF
     if confirm "Add more directories/files to the exclude list?"; then
-        read -rp "$(echo -e "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
+        read -rp "$(printf '%s' "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
         for item in "${extra_excludes[@]}"; do echo "$item" >> "$EXCLUDE_FILE_PATH"; done
     fi
     chmod 600 "$EXCLUDE_FILE_PATH"
@@ -2735,7 +2752,7 @@ EOF
     # --- Collect Cron Schedule ---
     local CRON_SCHEDULE="5 3 * * *"
     print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
-    read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
+    read -rp "$(printf '%s' "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
     CRON_SCHEDULE="${input:-$CRON_SCHEDULE}"
     if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*\/)?[0-9,-]+|\*)\s+(((\*\/)?[0-9,-]+|\*)\s+){3}((\*\/)?[0-9,-]+|\*|[0-6])$'; then
         print_error "Invalid cron expression. Using default: ${CRON_SCHEDULE}"
@@ -2744,10 +2761,10 @@ EOF
     # --- Collect Notification Details ---
     local NOTIFICATION_SETUP="none" NTFY_URL="" NTFY_TOKEN="" DISCORD_WEBHOOK=""
     if confirm "Enable backup status notifications?"; then
-        echo -e "${CYAN}Select notification method: 1) ntfy.sh  2) Discord  [1]: ${NC}"; read -r n_choice
+        printf '%s' "${CYAN}Select notification method: 1) ntfy.sh  2) Discord  [1]: ${NC}"; read -r n_choice
         if [[ "$n_choice" == "2" ]]; then
             NOTIFICATION_SETUP="discord"
-            read -rp "$(echo -e "${CYAN}Enter Discord Webhook URL: ${NC}")" DISCORD_WEBHOOK
+            read -rp "$(printf '%s' "${CYAN}Enter Discord Webhook URL: ${NC}")" DISCORD_WEBHOOK
             if [[ ! "$DISCORD_WEBHOOK" =~ ^https://discord.com/api/webhooks/ ]]; then
                 print_error "Invalid Discord webhook URL."
                 log "Invalid Discord webhook URL provided."
@@ -2755,8 +2772,8 @@ EOF
             fi
         else
             NOTIFICATION_SETUP="ntfy"
-            read -rp "$(echo -e "${CYAN}Enter ntfy URL/topic (e.g., https://ntfy.sh/my-backups): ${NC}")" NTFY_URL
-            read -rp "$(echo -e "${CYAN}Enter ntfy Access Token (optional): ${NC}")" NTFY_TOKEN
+            read -rp "$(printf '%s' "${CYAN}Enter ntfy URL/topic (e.g., https://ntfy.sh/my-backups): ${NC}")" NTFY_URL
+            read -rp "$(printf '%s' "${CYAN}Enter ntfy Access Token (optional): ${NC}")" NTFY_TOKEN
             if [[ ! "$NTFY_URL" =~ ^https?:// ]]; then
                 print_error "Invalid ntfy URL."
                 log "Invalid ntfy URL provided."
@@ -2986,7 +3003,7 @@ configure_swap() {
         if confirm "Modify existing swap file size?"; then
             local SWAP_SIZE
             while true; do
-                read -rp "$(echo -e "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
+                read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
                 SWAP_SIZE=${SWAP_SIZE:-$current_size}
                 if validate_swap_size "$SWAP_SIZE"; then
                     break
@@ -3021,7 +3038,7 @@ configure_swap() {
         fi
         local SWAP_SIZE
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
+            read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
             if validate_swap_size "$SWAP_SIZE"; then
                 break
@@ -3057,7 +3074,7 @@ configure_swap() {
     local CACHE_PRESSURE=50
     if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
+            read -rp "$(printf '%s' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
             INPUT_SWAPPINESS=${INPUT_SWAPPINESS:-$SWAPPINESS}
             if [[ "$INPUT_SWAPPINESS" =~ ^[0-9]+$ && "$INPUT_SWAPPINESS" -ge 0 && "$INPUT_SWAPPINESS" -le 100 ]]; then
                 SWAPPINESS=$INPUT_SWAPPINESS
@@ -3067,7 +3084,7 @@ configure_swap() {
             fi
         done
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
+            read -rp "$(printf '%s' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
             INPUT_CACHE_PRESSURE=${INPUT_CACHE_PRESSURE:-$CACHE_PRESSURE}
             if [[ "$INPUT_CACHE_PRESSURE" =~ ^[0-9]+$ && "$INPUT_CACHE_PRESSURE" -ge 1 && "$INPUT_CACHE_PRESSURE" -le 1000 ]]; then
                 CACHE_PRESSURE=$INPUT_CACHE_PRESSURE
@@ -3228,26 +3245,12 @@ generate_summary() {
     (
     print_section "Setup Complete!"
 
-    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
-    echo -e "${CYAN}📋 A detailed report has been saved to:${NC} ${BOLD}$REPORT_FILE${NC}"
-    echo -e "${CYAN}📜 The full execution log is available at:${NC}    ${BOLD}$LOG_FILE${NC}"
-    echo
+    printf '\n%s\n\n' "${GREEN}Server setup and hardening script has finished successfully.${NC}"
+    printf '%s %s\n' "${CYAN}📋 A detailed report has been saved to:${NC}" "${BOLD}$REPORT_FILE${NC}"
+    printf '%s    %s\n' "${CYAN}📜 The full execution log is available at:${NC}" "${BOLD}$LOG_FILE${NC}"
+    printf '\n'
 
-    echo -e "${YELLOW}Environment Information${NC}"
-    echo "====================================="
-    printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
-    printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
-    printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
-    if [[ "$IS_CLOUD_PROVIDER" == "true" ]]; then
-        printf "%-20s %s\n" "Environment:" "${YELLOW}Cloud VPS${NC}"
-    elif [[ "$DETECTED_VIRT_TYPE" == "none" ]]; then
-        printf "%-20s %s\n" "Environment:" "${GREEN}Bare Metal${NC}"
-    else
-        printf "%-20s %s\n" "Environment:" "${CYAN}Personal VM${NC}"
-    fi
-    echo
-
-    echo -e "${YELLOW}Final Service Status Check:${NC}"
+    print_separator "Final Service Status Check:"
     for service in "$SSH_SERVICE" fail2ban chrony; do
         if systemctl is-active --quiet "$service"; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
@@ -3291,10 +3294,10 @@ generate_summary() {
     else
         printf "  %-20s ${YELLOW}⚠ Not Performed${NC}\n" "Security Audit"
     fi
-    echo
+    printf '\n'
 
     # --- Main Configuration Summary ---
-    echo -e "${YELLOW}Configuration Summary:${NC}"
+    print_separator "Configuration Summary:"
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
@@ -3325,7 +3328,7 @@ generate_summary() {
         elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
             NOTIFICATION_STATUS="Discord"
         fi
-        echo -e "  Remote Backup:      ${GREEN}Enabled${NC}"
+        printf '%s\n' "  Remote Backup:      ${GREEN}Enabled${NC}"
         printf "    %-17s%s\n" "- Backup Script:" "/root/run_backup.sh"
         printf "    %-17s%s\n" "- Destination:" "$BACKUP_DEST"
         printf "    %-17s%s\n" "- SSH Port:" "$BACKUP_PORT"
@@ -3340,7 +3343,7 @@ generate_summary() {
             printf "    %-17s%s\n" "- Test Status:" "Not run"
         fi
     else
-        echo -e "  Remote Backup:      ${RED}Not configured${NC}"
+        printf '%s\n' "  Remote Backup:      ${RED}Not configured${NC}"
     fi
 
     # --- Tailscale Summary ---
@@ -3355,35 +3358,48 @@ generate_summary() {
             TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
             TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
             TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
-            echo -e "  Tailscale:          ${GREEN}Configured and connected${NC}"
+            printf '%s\n' "  Tailscale:          ${GREEN}Configured and connected${NC}"
             printf "    %-17s%s\n" "- Server:" "${TS_SERVER:-Not set}"
             printf "    %-17s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
             printf "    %-17s%s\n" "- Flags:" "${TS_FLAGS:-None}"
         else
-            echo -e "  Tailscale:          ${YELLOW}Installed but not configured${NC}"
+            printf '%s\n' "  Tailscale:          ${YELLOW}Installed but not configured${NC}"
         fi
     else
-        echo -e "  Tailscale:          ${RED}Not installed${NC}"
+        printf '%s\n' "  Tailscale:          ${RED}Not installed${NC}"
     fi
 
     # --- Security Audit Summary ---
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
-        echo -e "  Security Audit:     ${GREEN}Performed${NC}"
+        printf '%s\n' "  Security Audit:     ${GREEN}Performed${NC}"
         printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
         printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
         printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
         if [[ -s /tmp/lynis_suggestions.txt ]]; then
-            echo -e "    ${YELLOW}- Top Lynis Suggestions:${NC}"
+            printf '%s\n' "    ${YELLOW}- Top Lynis Suggestions:${NC}"
             sed 's/^/      /' /tmp/lynis_suggestions.txt
         fi
     else
-        echo -e "  Security Audit:     ${RED}Not run${NC}"
+        printf '%s\n' "  Security Audit:     ${RED}Not run${NC}"
     fi
-    echo
+    printf '\n'
+
+    print_separator "Environment Information"
+    printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
+    printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
+    printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
+    if [[ "$IS_CLOUD_PROVIDER" == "true" ]]; then
+        printf "%-20s %s\n" "Environment:" "${YELLOW}Cloud VPS${NC}"
+    elif [[ "$DETECTED_VIRT_TYPE" == "none" ]]; then
+        printf "%-20s %s\n" "Environment:" "${GREEN}Bare Metal${NC}"
+    else
+        printf "%-20s %s\n" "Environment:" "${CYAN}Personal VM${NC}"
+    fi
+    printf '\n'
 
     # --- Post-Reboot Verification Steps ---
-    echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:"
+    print_separator "Post-Reboot Verification Steps:"
+    printf '  - SSH access:\n'
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
@@ -3403,15 +3419,15 @@ generate_summary() {
         printf "  %-28s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
-        echo -e "  Remote Backup:"
+        printf '  Remote Backup:\n'
         printf "    %-23s ${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
-        echo -e "  ${YELLOW}Security Audit:${NC}"
+        printf '%s\n' "  ${YELLOW}Security Audit:${NC}"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
-    echo
+    printf '\n'
 
     # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
@@ -3419,7 +3435,7 @@ generate_summary() {
     fi
     if [[ -n "${TS_COMMAND:-}" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
-        echo -e "${CYAN}  $TS_COMMAND${NC}"
+        printf '%s\n' "${CYAN}  $TS_COMMAND${NC}"
     fi
     if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
         print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
@@ -3457,10 +3473,10 @@ main() {
     trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
 
     if [[ $(id -u) -ne 0 ]]; then
-        echo -e "\n${RED}✗ Error: This script must be run with root privileges.${NC}"
-        echo "You are running as user '$(whoami)', but root is required for system changes."
-        echo -e "Please re-run the script using 'sudo -E':"
-        echo -e "  ${CYAN}sudo -E ./du_setup.sh${NC}\n"
+        printf '\n%s\n' "${RED}✗ Error: This script must be run with root privileges.${NC}"
+        printf 'You are running as user '\''%s'\'', but root is required for system changes.\n' "$(whoami)"
+        printf 'Please re-run the script using '\''sudo -E'\'':\n'
+        printf '  %s\n\n' "${CYAN}sudo -E ./du_setup.sh${NC}"
         exit 1
     fi
 
