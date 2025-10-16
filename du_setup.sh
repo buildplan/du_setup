@@ -6,6 +6,7 @@
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
+#          Implemented idempotent SSH port configuration.
 #          Enhanced SSH port detection to reliably find the current port.
 #          Overhauled the SSH rollback function for improved reliability.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
@@ -1863,15 +1864,15 @@ EOF
 rollback_ssh_changes() {
     print_info "Rolling back SSH configuration changes to port $PREVIOUS_SSH_PORT..."
 
-    # Idempotently remove all potential override files
+    # Idempotently remove all potential override files from the failed attempt
     rm -f /etc/systemd/system/ssh.service.d/override.conf
     rm -f /etc/systemd/system/sshd.service.d/override.conf
     rm -f /etc/systemd/system/ssh.socket.d/override.conf
     rm -f /etc/ssh/sshd_config.d/99-hardening.conf
     rm -f /etc/issue.net
-    log "Removed SSH override and hardening files."
+    log "Removed potentially failed SSH override and hardening files."
 
-    # Restore the original main config file
+    # Restore the original main config file to have a clean slate
     if [[ -f "$SSHD_BACKUP_FILE" ]]; then
         if ! cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config; then
             print_error "FATAL: Failed to restore sshd_config from backup. Manual intervention required."
@@ -1885,9 +1886,26 @@ rollback_ssh_changes() {
         return 1
     fi
 
+    # Re-apply the PREVIOUS port configuration**
+    if [[ "$PREVIOUS_SSH_PORT" != "22" ]]; then
+        print_info "Re-applying previous custom port configuration for port $PREVIOUS_SSH_PORT..."
+        if [[ "$SSH_SERVICE" == "ssh.socket" ]];
+        then
+            mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+            log "Rollback: Re-created systemd override for ssh.socket on port $PREVIOUS_SSH_PORT"
+        else
+            mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
+            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+            log "Rollback: Re-created systemd override for $SSH_SERVICE on port $PREVIOUS_SSH_PORT"
+        fi
+    else
+        log "Rollback: Previous port was default 22, no override needed."
+    fi
+
     # Validate the restored config before restarting
     if ! sshd -t; then
-        print_error "FATAL: Restored sshd_config is invalid. Manual intervention required."
+        print_error "FATAL: Restored sshd_config is invalid after attempting rollback. Manual intervention required."
         log "Rollback failed: Restored sshd_config is invalid."
         return 1
     fi
@@ -1895,35 +1913,19 @@ rollback_ssh_changes() {
     print_info "Reloading systemd and restarting original SSH service..."
     systemctl daemon-reload
 
-    # Determine which service/socket to restart based on what was originally detected
-    # This handles the Ubuntu socket-based activation vs. Debian's direct service
+    # Use the same OS-aware restart logic
     if [[ -f /usr/lib/systemd/system/ssh.socket ]] && [[ "$ID" == "ubuntu" ]]; then
         print_info "Ubuntu system detected, restarting ssh.socket and ssh.service."
-        # Stop everything first to be safe
-        systemctl stop ssh.service ssh.socket sshd.service &>/dev/null || true
-        # Restart the standard Ubuntu services
-        if ! systemctl restart ssh.socket ssh.service; then
-             print_error "Failed to restart ssh.socket and ssh.service."
-             log "Rollback failed to restart ssh.socket/ssh.service"
-             return 1
-        fi
+        systemctl restart ssh.socket ssh.service
     else
         print_info "Debian or non-socket system detected, restarting $SSH_SERVICE."
-         # Stop everything first to be safe
-        systemctl stop ssh.service ssh.socket sshd.service &>/dev/null || true
-        # Restart the specific service we were managing
-        if ! systemctl restart "$SSH_SERVICE"; then
-             print_error "Failed to restart $SSH_SERVICE."
-             log "Rollback failed to restart $SSH_SERVICE"
-             return 1
-        fi
+        systemctl restart "$SSH_SERVICE"
     fi
 
     # Final verification loop
     local rollback_verified=false
     print_info "Verifying SSH rollback to port $PREVIOUS_SSH_PORT..."
     for ((i=1; i<=5; i++)); do
-        # Use the more reliable detection method here as well
         local current_port
         current_port=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
         if [[ "$current_port" == "$PREVIOUS_SSH_PORT" ]]; then
