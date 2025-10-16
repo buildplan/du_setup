@@ -1532,8 +1532,10 @@ setup_user() {
             printf '\n'
             printf '%s\n' "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
             read -rp "$(printf '%s' "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+            rm -f "$TEMP_KEY_FILE" 2>/dev/null
             print_info "Temporary key file deleted."
             LOCAL_KEY_ADDED=true
+            trap - EXIT
         fi
         print_success "User '$USERNAME' created."
         echo "$USERNAME" > /root/.du_setup_managed_user
