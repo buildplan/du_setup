@@ -6,6 +6,7 @@
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
+#          Enhanced SSH port detection to reliably find the current port.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
@@ -878,7 +879,7 @@ cleanup_provider_packages() {
                     printf '   Risks if removed:\n'
                     printf '     - Provider dashboard metrics will disappear\n'
                     printf '     - May affect support troubleshooting\n'
-                    printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
+                    printf '   %s\n' "${YELLOW}Remove only if you don'\''t need provider monitoring${NC}"
                     ;;
                 *)
                     printf '%s\n' "${CYAN}ℹ $pkg${NC}"
@@ -1659,7 +1660,7 @@ configure_ssh() {
     trap cleanup_and_exit ERR
 
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG PREVIOUS_SSH_PORT
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS NEW_SSH_CONFIG PREVIOUS_SSH_PORT
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -1682,34 +1683,30 @@ configure_ssh() {
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
 
-    print_info "Backing up original SSH config..."
-    SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
-    cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
-
-    # Store the current active port as the previous port
-    PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
+    # Enhanced port detection
+    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || grep -i '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2; exit}' || ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || echo "22")
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
+    log "Detected current SSH port: $CURRENT_SSH_PORT"
+
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     SSH_DIR="$USER_HOME/.ssh"
     AUTH_KEYS="$SSH_DIR/authorized_keys"
 
+    # Fallback key generation, main logic is in setup_user()
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
         mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
-        # Verify the key was added
-        if [[ ! -s "$AUTH_KEYS" ]]; then
-            print_error "Failed to create authorized_keys file."
-            return 1
-        fi
+        if [[ ! -s "$AUTH_KEYS" ]]; then print_error "Failed to create authorized_keys file."; return 1; fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
         printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
 
+    # Ensure the user has key-based access before disabling password auth.
     print_warning "SSH Key Authentication Required for Next Steps!"
-    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
+    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now (using port $CURRENT_SSH_PORT):${NC}"
     if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
         printf '%s\n' "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
@@ -1717,28 +1714,18 @@ configure_ssh() {
         printf '%s\n' "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
-    if ! confirm "Can you successfully log in using your SSH key?"; then
-        print_error "SSH key authentication is mandatory to proceed."
+    if ! confirm "Can you successfully log in using your SSH key on port $CURRENT_SSH_PORT?"; then
+        print_error "SSH key authentication is mandatory to proceed. Fix access before re-running."
         return 1
     fi
 
-    # Apply port override
-    if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
-        print_info "Updating SSH port in /etc/ssh/sshd_config for Ubuntu 24.04+..."
-        if ! grep -q "^Port" /etc/ssh/sshd_config; then echo "Port $SSH_PORT" >> /etc/ssh/sshd_config; else sed -i "s/^Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config; fi
-    elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
-        print_info "Configuring SSH socket to listen on port $SSH_PORT..."
-        mkdir -p /etc/systemd/system/ssh.socket.d
-        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
-    else
-        print_info "Configuring SSH service to listen on port $SSH_PORT..."
-        mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-        printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
-    fi
-
-    # Apply additional hardening
-    mkdir -p /etc/ssh/sshd_config.d
-    tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
+    # Idempotency Check and Reconfiguration
+    if [[ "$CURRENT_SSH_PORT" == "$SSH_PORT" ]]; then
+        print_success "SSH is already configured on the desired port $SSH_PORT. Verifying hardening rules..."
+        log "SSH port matches desired ($SSH_PORT). Skipping port change, verifying hardening."
+        # Even if the port is correct, we still apply hardening rules to ensure they are set.
+        mkdir -p /etc/ssh/sshd_config.d
+        tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -1748,80 +1735,124 @@ X11Forwarding no
 PrintMotd no
 Banner /etc/issue.net
 EOF
-    tee /etc/issue.net > /dev/null <<'EOF'
+        tee /etc/issue.net > /dev/null <<'EOF'
 ******************************************************************************
                        🔒AUTHORIZED ACCESS ONLY
             ════ all attempts are logged and reviewed ════
 ******************************************************************************
 EOF
-    print_info "Testing SSH configuration syntax..."
-	if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
-        print_warning "SSH configuration test detected potential issues (see above)."
-        print_info "This may be due to existing configuration files on the system."
-        if ! confirm "Continue despite configuration warnings?"; then
-            print_error "Aborting SSH configuration."
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
-            rm -f /etc/issue.net
-            rm -f /etc/systemd/system/ssh.socket.d/override.conf
-            rm -f /etc/systemd/system/ssh.service.d/override.conf
-            rm -f /etc/systemd/system/sshd.service.d/override.conf
-            systemctl daemon-reload
-            return 1
-        fi
-    fi
-    print_info "Reloading systemd and restarting SSH service..."
-    systemctl daemon-reload
-    systemctl restart "$SSH_SERVICE"
-    sleep 5
-    if ! ss -tuln | grep -q ":$SSH_PORT"; then
-        print_error "SSH not listening on port $SSH_PORT after restart!"
-        return 1
-    fi
-    print_success "SSH service restarted on port $SSH_PORT."
-
-    # Verify root SSH is disabled
-    print_info "Verifying root SSH login is disabled..."
-    sleep 2
-    if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
-        print_error "Root SSH login is still possible! Check configuration."
-        return 1
-    else
-        print_success "Confirmed: Root SSH login is disabled."
-    fi
-
-    print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
-    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
-        print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
-    fi
-    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
-        print_info "Use IPv6: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
-    fi
-
-    # Retry loop for SSH connection test
-    local retry_count=0
-    local max_retries=3
-    while (( retry_count < max_retries )); do
-        if confirm "Was the new SSH connection successful?"; then
-            print_success "SSH hardening confirmed and finalized."
-            break
-        else
-            (( retry_count++ ))
-            if (( retry_count < max_retries )); then
-                print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
-                sleep 5
-            else
-                print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
-                rollback_ssh_changes
-                if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
-                    print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
-                else
-                    print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
-                fi
+        print_info "Testing SSH configuration syntax..."
+        if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
+            print_warning "SSH configuration test detected potential issues."
+            if ! confirm "Continue despite configuration warnings?"; then
+                print_error "Aborting SSH hardening."
                 return 1
             fi
         fi
-    done
+        print_info "Reloading SSH service to apply hardening rules..."
+        systemctl reload "$SSH_SERVICE"
+        print_success "SSH hardening rules applied."
+
+    else
+        print_info "Current SSH port is $CURRENT_SSH_PORT. Changing to desired port $SSH_PORT..."
+        
+        print_info "Backing up original SSH config..."
+        SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
+        cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
+
+        # Apply port override
+        if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
+            print_info "Updating SSH port in /etc/ssh/sshd_config for Ubuntu 24.04+..."
+            if ! grep -q "^Port" /etc/ssh/sshd_config; then echo "Port $SSH_PORT" >> /etc/ssh/sshd_config; else sed -i "s/^Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config; fi
+        elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
+            print_info "Configuring SSH socket to listen on port $SSH_PORT..."
+            mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        else
+            print_info "Configuring SSH service to listen on port $SSH_PORT..."
+            mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
+            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+        fi
+
+        # Apply additional hardening
+        mkdir -p /etc/ssh/sshd_config.d
+        tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+MaxAuthTries 3
+ClientAliveInterval 300
+X11Forwarding no
+PrintMotd no
+Banner /etc/issue.net
+EOF
+        tee /etc/issue.net > /dev/null <<'EOF'
+******************************************************************************
+                       🔒AUTHORIZED ACCESS ONLY
+            ════ all attempts are logged and reviewed ════
+******************************************************************************
+EOF
+        print_info "Testing SSH configuration syntax..."
+        if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
+            print_warning "SSH configuration test detected potential issues."
+            if ! confirm "Continue despite configuration warnings?"; then
+                print_error "Aborting SSH configuration."
+                rollback_ssh_changes
+                return 1
+            fi
+        fi
+
+        print_info "Reloading systemd and restarting SSH service..."
+        systemctl daemon-reload
+        systemctl restart "$SSH_SERVICE"
+        sleep 5
+        if ! ss -tuln | grep -q ":$SSH_PORT"; then
+            print_error "SSH not listening on port $SSH_PORT after restart! Rolling back."
+            rollback_ssh_changes
+            return 1
+        fi
+        print_success "SSH service restarted on port $SSH_PORT."
+
+        # Verify root SSH is disabled
+        print_info "Verifying root SSH login is disabled..."
+        sleep 2
+        if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
+            print_error "Root SSH login is still possible! Rolling back."
+            rollback_ssh_changes
+            return 1
+        else
+            print_success "Confirmed: Root SSH login is disabled."
+        fi
+
+        print_warning "CRITICAL: Test new SSH connection on port $SSH_PORT in a SEPARATE terminal NOW!"
+        print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
+        if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
+            print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+        fi
+        if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
+            print_info "Use IPv6: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+        fi
+
+        # Retry loop for the new SSH connection test
+        local retry_count=0
+        local max_retries=3
+        while (( retry_count < max_retries )); do
+            if confirm "Was the new SSH connection on port $SSH_PORT successful?"; then
+                print_success "SSH reconfigured to port $SSH_PORT and verified."
+                break
+            else
+                (( retry_count++ ))
+                if (( retry_count < max_retries )); then
+                    print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
+                    sleep 5
+                else
+                    print_error "New port test failed. Rolling back to $CURRENT_SSH_PORT."
+                    rollback_ssh_changes
+                    return 1
+                fi
+            fi
+        done
+    fi
 
     trap - ERR
     log "SSH hardening completed."
