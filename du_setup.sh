@@ -1400,7 +1400,10 @@ setup_user() {
                     print_success "Password for '$USERNAME' updated."
                     break
                 else
-                    print_error "Failed to set password. This could be a permissions issue."
+                    print_error "Failed to set password. Possible causes:"
+                    print_info "  • permissions issue or password policy restrictions."
+                    print_info "  • VPS provider password requirements (min. 8-12 chars, complexity rules)"
+                    printf '\n'
                     print_info "Try again or press Enter twice to skip."
                     log "Failed to set password for '$USERNAME'."
                 fi
