@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-14
+# Version: 0.70 | 2025-10-18
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
@@ -218,38 +218,38 @@ log() {
 
 print_header() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║                                                                 ║${NC}"
-    echo -e "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    echo -e "${CYAN}║                      v0.70 | 2025-10-14                         ║${NC}"
-    echo -e "${CYAN}║                                                                 ║${NC}"
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
-    echo
+    printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
+    printf '%s\n' "${CYAN}║                                                                 ║${NC}"
+    printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-17                         ║${NC}"
+    printf '%s\n' "${CYAN}║                                                                 ║${NC}"
+    printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
+    printf '\n'
 }
 
 print_section() {
     [[ $VERBOSE == false ]] && return
-    echo -e "\n${BLUE}▓▓▓ $1 ▓▓▓${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}$(printf '═%.0s' {1..65})${NC}"
+    printf '\n%s\n' "${BLUE}▓▓▓ $1 ▓▓▓${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${BLUE}$(printf '═%.0s' {1..65})${NC}"
 }
 
 print_success() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${GREEN}✓ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${GREEN}✓ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_error() {
-	    echo -e "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${RED}✗ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_warning() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${YELLOW}⚠ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${YELLOW}⚠ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 print_info() {
     [[ $VERBOSE == false ]] && return
-    echo -e "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
+    printf '%s\n' "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
 }
 
 # --- CLEANUP HELPER FUNCTIONS ---
@@ -258,12 +258,11 @@ execute_check() {
     "$@"
 }
 
-
 execute_command() {
     local cmd_string="$*"
 
     if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        echo -e "${CYAN}[PREVIEW]${NC} Would execute: ${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
+        printf '%s Would execute: %s\n' "${CYAN}[PREVIEW]${NC}" "${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
         return 0
     else
         "$@"
@@ -489,18 +488,18 @@ cleanup_provider_packages() {
     detect_environment
 
     # Display environment information
-    echo -e "${CYAN}=== Environment Detection ===${NC}"
-    echo "Virtualization Type: ${DETECTED_VIRT_TYPE:-unknown}"
-    echo "System Manufacturer: ${DETECTED_MANUFACTURER:-unknown}"
-    echo "Product Name: ${DETECTED_PRODUCT:-unknown}"
-    echo "Environment Type: ${ENVIRONMENT_TYPE:-unknown}"
+    printf '%s\n' "${CYAN}=== Environment Detection ===${NC}"
+    printf 'Virtualization Type: %s\n' "${DETECTED_VIRT_TYPE:-unknown}"
+    printf 'System Manufacturer: %s\n' "${DETECTED_MANUFACTURER:-unknown}"
+    printf 'Product Name: %s\n' "${DETECTED_PRODUCT:-unknown}"
+    printf 'Environment Type: %s\n' "${ENVIRONMENT_TYPE:-unknown}"
     if [[ -n "${DETECTED_BIOS_VENDOR}" && "${DETECTED_BIOS_VENDOR}" != "unknown" ]]; then
-        echo "BIOS Vendor: ${DETECTED_BIOS_VENDOR}"
+        printf 'BIOS Vendor: %s\n' "${DETECTED_BIOS_VENDOR}"
     fi
     if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-        echo "Detected Provider: ${DETECTED_PROVIDER_NAME}"
+        printf 'Detected Provider: %s\n' "${DETECTED_PROVIDER_NAME}"
     fi
-    echo
+    printf '\n'
 
     # Determine recommendation based on three-way detection
     local CLEANUP_RECOMMENDED=false
@@ -512,50 +511,50 @@ cleanup_provider_packages() {
         commercial-cloud)
             CLEANUP_RECOMMENDED=true
             DEFAULT_ANSWER="y"
-            echo -e "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
+            printf '%s\n' "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
             if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                echo -e "Provider: ${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+                printf 'Provider: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
             fi
-            echo "This is a commercial VPS from an external provider."
+            printf 'This is a commercial VPS from an external provider.\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}RECOMMENDED${NC} for security."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "Providers may install monitoring agents, pre-configured users, and management tools."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Providers may install monitoring agents, pre-configured users, and management tools.\n'
             ;;
 
         uncertain-kvm)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
-            echo "This environment could be:"
-            echo "  ${CYAN}•${NC} A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)"
-            echo "  ${CYAN}•${NC} A personal VM on Proxmox, KVM, or QEMU"
-            echo "  ${CYAN}•${NC} A VPS from a regional/unlisted provider"
-            echo ""
+            printf '%s\n' "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
+            printf 'This environment could be:\n'
+            printf '  %s A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)\n' "${CYAN}•${NC}"
+            printf '  %s A personal VM on Proxmox, KVM, or QEMU\n' "${CYAN}•${NC}"
+            printf '  %s A VPS from a regional/unlisted provider\n' "${CYAN}•${NC}"
+            printf '\n'
             RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - review packages carefully before proceeding."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "If this is a commercial VPS, cleanup is recommended."
-            echo "If you control the hypervisor (Proxmox/KVM), cleanup is optional."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If this is a commercial VPS, cleanup is recommended.\n'
+            printf 'If you control the hypervisor (Proxmox/KVM), cleanup is optional.\n'
             ;;
 
         personal-vm)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
+            printf '%s\n' "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
             if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                echo -e "Platform: ${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+                printf 'Platform: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
             fi
-            echo "This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)"
+            printf 'This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT RECOMMENDED${NC} for trusted environments."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "If you control the hypervisor/host, you likely don't need cleanup."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If you control the hypervisor/host, you likely don'\''t need cleanup.\n'
             ;;
 
         bare-metal)
-            echo -e "${GREEN}✓ Bare Metal Server Detected${NC}"
-            echo "This appears to be a physical (bare metal) server."
+            printf '%s\n' "${GREEN}✓ Bare Metal Server Detected${NC}"
+            printf 'This appears to be a physical (bare metal) server.\n'
             RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT NEEDED${NC} for bare metal."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "No virtualization layer detected - skipping cleanup."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'No virtualization layer detected - skipping cleanup.\n'
             log "Provider package cleanup skipped: bare metal server detected."
             return 0
             ;;
@@ -563,14 +562,14 @@ cleanup_provider_packages() {
         uncertain-xen|unknown|*)
             CLEANUP_RECOMMENDED=false
             DEFAULT_ANSWER="n"
-            echo -e "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
-            echo "Could not definitively identify the hosting provider or environment."
+            printf '%s\n' "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
+            printf 'Could not definitively identify the hosting provider or environment.\n'
             RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - proceed with caution."
-            echo -e "$RECOMMENDATION_TEXT"
-            echo "Review packages carefully before removing anything."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Review packages carefully before removing anything.\n'
             ;;
     esac
-    echo
+    printf '\n'
 
     # Decision point based on environment and flags
     if [[ "$CLEANUP_PREVIEW" == "false" ]] && [[ "$CLEANUP_ONLY" == "false" ]]; then
@@ -1492,33 +1491,33 @@ setup_user() {
             chmod 600 "$TEMP_KEY_FILE"
             chown root:root "$TEMP_KEY_FILE"
 
-            echo
-            echo -e "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
-            echo -e "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
-            echo
-            echo -e "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
-            echo -e "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
-            echo -e "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
+            printf '\n'
+            printf '%s\n' "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
+            printf '%s\n' "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
+            printf '\n'
+            printf '%s\n' "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
+            printf '%s\n' "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
+            printf '%s\n' "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
             cat "$TEMP_KEY_FILE"
-            echo -e "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
-            echo
-            echo -e "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
-            echo    "====SSH PUBLIC KEY BELOW THIS LINE===="
+            printf '%s\n' "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
+            printf '\n'
+            printf '%s\n' "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
+            printf '====SSH PUBLIC KEY BELOW THIS LINE====\n'
             cat "$SSH_DIR/id_ed25519_user.pub"
-            echo    "====SSH PUBLIC KEY END===="
-            echo
-            echo -e "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
-            echo -e "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
-            echo -e "${CYAN}4. Connect to the server using:${NC}"
+            printf '====SSH PUBLIC KEY END====\n'
+            printf '\n'
+            printf '%s\n' "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
+            printf '%s\n' "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
+            printf '%s\n' "${CYAN}4. Connect to the server using:${NC}"
             if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
             fi
             if [[ "$SERVER_IP_V6" != "not available" ]]; then
-                echo -e "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
             fi
-            echo
-            echo -e "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
-            read -rp "$(echo -e "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+            printf '\n'
+            printf '%s\n' "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
+            read -rp "$(printf '%s' "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
             print_info "Temporary key file deleted."
             LOCAL_KEY_ADDED=true
         fi
