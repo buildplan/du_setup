@@ -2681,6 +2681,7 @@ setup_backup() {
     while true; do
         print_info "Enter the full paths of directories to back up, separated by spaces."
         read -rp "$(printf '%s' "${CYAN}Default is '/home/${USERNAME}/'. Press Enter for default or provide your own: ${NC}")" -a user_input_dirs
+
         if [ ${#user_input_dirs[@]} -eq 0 ]; then
             BACKUP_DIRS_ARRAY=("/home/${USERNAME}/")
             break
