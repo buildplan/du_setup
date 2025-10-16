@@ -1331,7 +1331,7 @@ collect_config() {
     if [[ "$SERVER_IP_V6" != "not available" ]]; then
         print_info "Detected server IPv6: $SERVER_IP_V6"
     fi
-    echo -e "\n${YELLOW}Configuration Summary:${NC}"
+    printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
@@ -1386,9 +1386,9 @@ setup_user() {
         fi
         print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
-            read -rsp "$(echo -e "${CYAN}New password: ${NC}")" PASS1
+            read -rsp "$(printf '%s\n' "${CYAN}New password: ${NC}")" PASS1
             echo
-            read -rsp "$(echo -e "${CYAN}Retype new password: ${NC}")" PASS2
+            read -rsp "$(printf '%s\n' "${CYAN}Retype new password: ${NC}")" PASS2
             echo
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
@@ -1428,7 +1428,7 @@ setup_user() {
         if confirm "Add SSH public key(s) from your local machine now?"; then
             while true; do
                 local SSH_PUBLIC_KEY
-                read -rp "$(echo -e "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+                read -rp "$(printf '%s\n' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
 
                 if validate_ssh_key "$SSH_PUBLIC_KEY"; then
                     mkdir -p "$SSH_DIR"
@@ -1575,7 +1575,7 @@ configure_system() {
 
     print_info "Configuring timezone..."
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
+        read -rp "$(printf '%s\n' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
         TIMEZONE=${TIMEZONE:-Etc/UTC}
         if validate_timezone "$TIMEZONE"; then
             if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
@@ -1687,16 +1687,16 @@ configure_ssh() {
         fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
-        echo -e "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
+        printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
 
     print_warning "SSH Key Authentication Required for Next Steps!"
-    echo -e "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
+    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
     if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
-        echo -e "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+        printf '%s\n' "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
     fi
     if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
-        echo -e "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+        printf '%s\n' "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
     fi
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
@@ -1711,11 +1711,11 @@ configure_ssh() {
     elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
-        echo -e "[Socket]\nListenStream=\nListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        printf '%s\n' "[Socket]\nListenStream=\nListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
     else
         print_info "Configuring SSH service to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-        echo -e "[Service]\nExecStart=\nExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+        printf '%s\n' "[Service]\nExecStart=\nExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
     # Apply additional hardening
@@ -2026,7 +2026,7 @@ configure_firewall() {
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
-            read -rp "$(echo -e "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
+            read -rp "$(printf '%s\n' "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
             if [[ -z "$CUSTOM_PORTS" ]]; then
                 print_info "No custom ports entered. Skipping."
                 break
@@ -2045,7 +2045,7 @@ configure_firewall() {
                         print_info "Rule for $port already exists."
                     else
                         local CUSTOM_COMMENT
-                        read -rp "$(echo -e "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
+                        read -rp "$(printf '%s\n' "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
                         if [[ -z "$CUSTOM_COMMENT" ]]; then
                             CUSTOM_COMMENT="Custom port $port"
                         fi
@@ -2984,7 +2984,7 @@ configure_swap() {
         if confirm "Modify existing swap file size?"; then
             local SWAP_SIZE
             while true; do
-                read -rp "$(echo -e "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
+                read -rp "$(printf '%s\n' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
                 SWAP_SIZE=${SWAP_SIZE:-$current_size}
                 if validate_swap_size "$SWAP_SIZE"; then
                     break
@@ -3019,7 +3019,7 @@ configure_swap() {
         fi
         local SWAP_SIZE
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
+            read -rp "$(printf '%s\n' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
             if validate_swap_size "$SWAP_SIZE"; then
                 break
@@ -3055,7 +3055,7 @@ configure_swap() {
     local CACHE_PRESSURE=50
     if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
+            read -rp "$(printf '%s\n' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
             INPUT_SWAPPINESS=${INPUT_SWAPPINESS:-$SWAPPINESS}
             if [[ "$INPUT_SWAPPINESS" =~ ^[0-9]+$ && "$INPUT_SWAPPINESS" -ge 0 && "$INPUT_SWAPPINESS" -le 100 ]]; then
                 SWAPPINESS=$INPUT_SWAPPINESS
@@ -3065,7 +3065,7 @@ configure_swap() {
             fi
         done
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
+            read -rp "$(printf '%s\n' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
             INPUT_CACHE_PRESSURE=${INPUT_CACHE_PRESSURE:-$CACHE_PRESSURE}
             if [[ "$INPUT_CACHE_PRESSURE" =~ ^[0-9]+$ && "$INPUT_CACHE_PRESSURE" -ge 1 && "$INPUT_CACHE_PRESSURE" -le 1000 ]]; then
                 CACHE_PRESSURE=$INPUT_CACHE_PRESSURE
@@ -3323,7 +3323,7 @@ generate_summary() {
         elif grep -q "DISCORD_WEBHOOK=" /root/run_backup.sh && ! grep -q 'DISCORD_WEBHOOK=""' /root/run_backup.sh; then
             NOTIFICATION_STATUS="Discord"
         fi
-        echo -e "  Remote Backup:      ${GREEN}Enabled${NC}"
+        printf '%s\n' "  Remote Backup:      ${GREEN}Enabled${NC}"
         printf "    %-17s%s\n" "- Backup Script:" "/root/run_backup.sh"
         printf "    %-17s%s\n" "- Destination:" "$BACKUP_DEST"
         printf "    %-17s%s\n" "- SSH Port:" "$BACKUP_PORT"
@@ -3338,7 +3338,7 @@ generate_summary() {
             printf "    %-17s%s\n" "- Test Status:" "Not run"
         fi
     else
-        echo -e "  Remote Backup:      ${RED}Not configured${NC}"
+        printf '%s\n' "  Remote Backup:      ${RED}Not configured${NC}"
     fi
 
     # --- Tailscale Summary ---
@@ -3353,35 +3353,35 @@ generate_summary() {
             TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
             TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
             TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
-            echo -e "  Tailscale:          ${GREEN}Configured and connected${NC}"
+            printf '%s\n' "  Tailscale:          ${GREEN}Configured and connected${NC}"
             printf "    %-17s%s\n" "- Server:" "${TS_SERVER:-Not set}"
             printf "    %-17s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
             printf "    %-17s%s\n" "- Flags:" "${TS_FLAGS:-None}"
         else
-            echo -e "  Tailscale:          ${YELLOW}Installed but not configured${NC}"
+            printf '%s\n' "  Tailscale:          ${YELLOW}Installed but not configured${NC}"
         fi
     else
-        echo -e "  Tailscale:          ${RED}Not installed${NC}"
+        printf '%s\n' "  Tailscale:          ${RED}Not installed${NC}"
     fi
 
     # --- Security Audit Summary ---
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
-        echo -e "  Security Audit:     ${GREEN}Performed${NC}"
+        printf '%s\n' "  Security Audit:     ${GREEN}Performed${NC}"
         printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
         printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
         printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
         if [[ -s /tmp/lynis_suggestions.txt ]]; then
-            echo -e "    ${YELLOW}- Top Lynis Suggestions:${NC}"
+            printf '%s\n' "    ${YELLOW}- Top Lynis Suggestions:${NC}"
             sed 's/^/      /' /tmp/lynis_suggestions.txt
         fi
     else
-        echo -e "  Security Audit:     ${RED}Not run${NC}"
+        printf '%s\n' "  Security Audit:     ${RED}Not run${NC}"
     fi
     echo
 
     # --- Post-Reboot Verification Steps ---
-    echo -e "${YELLOW}Post-Reboot Verification Steps:${NC}"
-    echo -e "  - SSH access:"
+    printf '%s\n' "${YELLOW}Post-Reboot Verification Steps:${NC}"
+    printf '  - SSH access:\n'
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
@@ -3401,12 +3401,12 @@ generate_summary() {
         printf "  %-28s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
-        echo -e "  Remote Backup:"
+        printf '  Remote Backup:\n'
         printf "    %-23s ${CYAN}%s${NC}\n" "- Test backup:" "sudo /root/run_backup.sh"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check logs:" "sudo less $BACKUP_LOG"
     fi
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
-        echo -e "  ${YELLOW}Security Audit:${NC}"
+        printf '%s\n' "  ${YELLOW}Security Audit:${NC}"
         printf "    %-23s ${CYAN}%s${NC}\n" "- Check results:" "sudo less ${AUDIT_LOG:-/var/log/syslog}"
     fi
     echo
@@ -3417,7 +3417,7 @@ generate_summary() {
     fi
     if [[ -n "${TS_COMMAND:-}" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
-        echo -e "${CYAN}  $TS_COMMAND${NC}"
+        printf '%s\n' "${CYAN}  $TS_COMMAND${NC}"
     fi
     if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
         print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
@@ -3455,10 +3455,10 @@ main() {
     trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
 
     if [[ $(id -u) -ne 0 ]]; then
-        echo -e "\n${RED}✗ Error: This script must be run with root privileges.${NC}"
-        echo "You are running as user '$(whoami)', but root is required for system changes."
-        echo -e "Please re-run the script using 'sudo -E':"
-        echo -e "  ${CYAN}sudo -E ./du_setup.sh${NC}\n"
+        printf '\n%s\n' "${RED}✗ Error: This script must be run with root privileges.${NC}"
+        printf 'You are running as user '\''%s'\'', but root is required for system changes.\n' "$(whoami)"
+        printf 'Please re-run the script using '\''sudo -E'\'':\n'
+        printf '  %s\n\n' "${CYAN}sudo -E ./du_setup.sh${NC}"
         exit 1
     fi
 
