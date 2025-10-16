@@ -7,6 +7,7 @@
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
 #          Enhanced SSH port detection to reliably find the current port.
+#          Overhauled the SSH rollback function for improved reliability.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
@@ -125,6 +126,7 @@ LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
+PREVIOUS_SSH_PORT=""
 
 # --- --help ---
 show_usage() {
@@ -1660,7 +1662,7 @@ configure_ssh() {
     trap cleanup_and_exit ERR
 
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS NEW_SSH_CONFIG PREVIOUS_SSH_PORT
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS NEW_SSH_CONFIG
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -1684,7 +1686,7 @@ configure_ssh() {
     log "Detected SSH service: $SSH_SERVICE"
 
     # Enhanced port detection
-    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || grep -i '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2; exit}' || ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || echo "22")
+    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || grep -i '^[[:space:]]*Port' /etc/ssh/sshd_config 2>/dev/null | grep -v '^[[:space:]]*#' | awk '{print $2; exit}' || ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || echo "22")
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
     log "Detected current SSH port: $CURRENT_SSH_PORT"
 
@@ -1861,176 +1863,89 @@ EOF
 rollback_ssh_changes() {
     print_info "Rolling back SSH configuration changes to port $PREVIOUS_SSH_PORT..."
 
-    # Ensure SSH_SERVICE is set and valid
-    local SSH_SERVICE=${SSH_SERVICE:-"sshd.service"}
-    local USE_SOCKET=false
-    # Check if socket activation is used
-    if systemctl list-units --full -all --no-pager | grep -E "[[:space:]]ssh.socket[[:space:]]" >/dev/null 2>&1; then
-        USE_SOCKET=true
-        SSH_SERVICE="ssh.socket"
-        print_info "Detected SSH socket activation: using ssh.socket."
-        log "Rollback: Using ssh.socket for SSH service."
-    elif ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]${SSH_SERVICE}[[:space:]]" >/dev/null 2>&1; then
-        local initial_service_check="$SSH_SERVICE"
-        SSH_SERVICE="ssh.service" # Fallback for Ubuntu
-        print_warning "SSH service '$initial_service_check' not found, falling back to '$SSH_SERVICE'."
-        log "Rollback warning: Using fallback SSH service ssh.service."
-        # Verify fallback service exists
-        if ! systemctl list-units --full -all --no-pager | grep -E "[[:space:]]ssh.service[[:space:]]" >/dev/null 2>&1; then
-            print_error "No valid SSH service (sshd.service or ssh.service) found."
-            log "Rollback failed: No valid SSH service detected."
-            print_info "Action: Verify SSH service with 'systemctl list-units --full -all | grep ssh' and manually configure /etc/ssh/sshd_config."
-            return 0
-        fi
-    fi
+    # Idempotently remove all potential override files
+    rm -f /etc/systemd/system/ssh.service.d/override.conf
+    rm -f /etc/systemd/system/sshd.service.d/override.conf
+    rm -f /etc/systemd/system/ssh.socket.d/override.conf
+    rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+    rm -f /etc/issue.net
+    log "Removed SSH override and hardening files."
 
-    # Remove systemd overrides for both service and socket
-    if ! rm -rf /etc/systemd/system/ssh.service.d /etc/systemd/system/sshd.service.d /etc/systemd/system/ssh.socket.d 2>/dev/null; then
-        print_warning "Could not remove one or more systemd override directories."
-        log "Rollback warning: Failed to remove systemd overrides."
-    else
-        log "Removed all potential systemd override directories for SSH."
-    fi
-
-    # Remove custom SSH configuration
-    if ! rm -f /etc/ssh/sshd_config.d/99-hardening.conf 2>/dev/null; then
-        print_warning "Failed to remove /etc/ssh/sshd_config.d/99-hardening.conf."
-        log "Rollback warning: Failed to remove /etc/ssh/sshd_config.d/99-hardening.conf."
-    else
-        log "Removed /etc/ssh/sshd_config.d/99-hardening.conf"
-    fi
-
-    # Restore original sshd_config
+    # Restore the original main config file
     if [[ -f "$SSHD_BACKUP_FILE" ]]; then
-        if ! cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config 2>/dev/null; then
-            print_error "Failed to restore sshd_config from $SSHD_BACKUP_FILE."
-            log "Rollback failed: Cannot copy $SSHD_BACKUP_FILE to /etc/ssh/sshd_config."
-            print_info "Action: Manually restore with 'cp $SSHD_BACKUP_FILE /etc/ssh/sshd_config' and verify with 'sshd -t'."
-            return 0
+        if ! cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config; then
+            print_error "FATAL: Failed to restore sshd_config from backup. Manual intervention required."
+            log "Rollback failed: Could not copy $SSHD_BACKUP_FILE to /etc/ssh/sshd_config"
+            return 1 # Return an error code
         fi
-        print_info "Restored original sshd_config from $SSHD_BACKUP_FILE."
-        log "Restored sshd_config from $SSHD_BACKUP_FILE."
+        log "Restored /etc/ssh/sshd_config from $SSHD_BACKUP_FILE"
     else
-        print_error "Backup file not found at $SSHD_BACKUP_FILE."
-        log "Rollback failed: $SSHD_BACKUP_FILE not found."
-        print_info "Action: Manually configure /etc/ssh/sshd_config to use port $PREVIOUS_SSH_PORT and verify with 'sshd -t'."
-        return 0
+        print_error "FATAL: SSHD backup file not found. Cannot restore. Manual intervention required."
+        log "Rollback failed: Backup file $SSHD_BACKUP_FILE not found."
+        return 1
     fi
 
-    # Validate restored sshd_config
-    if ! /usr/sbin/sshd -t >/tmp/sshd_config_test.log 2>&1; then
-        print_error "Restored sshd_config is invalid. Check /tmp/sshd_config_test.log for details."
-        log "Rollback failed: Invalid sshd_config after restoration. See /tmp/sshd_config_test.log."
-        print_info "Action: Fix /etc/ssh/sshd_config manually and test with 'sshd -t', then restart with 'systemctl restart ssh.service'."
-        return 0
+    # Validate the restored config before restarting
+    if ! sshd -t; then
+        print_error "FATAL: Restored sshd_config is invalid. Manual intervention required."
+        log "Rollback failed: Restored sshd_config is invalid."
+        return 1
     fi
 
-    # Reload systemd
-    print_info "Reloading systemd..."
-    if ! systemctl daemon-reload 2>/dev/null; then
-        print_warning "Failed to reload systemd. Continuing with restart attempt..."
-        log "Rollback warning: Failed to reload systemd."
-    fi
+    print_info "Reloading systemd and restarting original SSH service..."
+    systemctl daemon-reload
 
-    # Handle socket activation or direct service restart
-    if [[ "$USE_SOCKET" == true ]]; then
-        # Stop ssh.socket to avoid conflicts
-        if systemctl is-active --quiet ssh.socket; then
-            if ! systemctl stop ssh.socket 2>/tmp/ssh_socket_stop.log; then
-                print_warning "Failed to stop ssh.socket. May affect port binding."
-                log "Rollback warning: Failed to stop ssh.socket. See /tmp/ssh_socket_stop.log."
-            else
-                log "Stopped ssh.socket to ensure correct port binding."
-            fi
-        fi
-        # Restart ssh.service to ensure sshd starts
-        print_info "Restarting ssh.service..."
-        if ! systemctl restart ssh.service 2>/tmp/sshd_restart.log; then
-            print_warning "Failed to restart ssh.service. Attempting manual start..."
-            log "Rollback warning: Failed to restart ssh.service. See /tmp/sshd_restart.log."
-            # Ensure no other sshd processes are running
-            pkill -f "sshd:.*" 2>/dev/null || true
-            # Manual start in foreground to verify
-            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >/tmp/sshd_manual_start.log 2>&1
-            local TIMEOUT_EXIT=$?
-            if [[ $TIMEOUT_EXIT -eq 0 || $TIMEOUT_EXIT -eq 124 ]]; then
-                log "Manual SSH start succeeded (exit code $TIMEOUT_EXIT)."
-                # Restart ssh.service to ensure systemd management
-                if ! systemctl restart ssh.service 2>/tmp/sshd_restart_manual.log; then
-                    print_error "Failed to restart ssh.service after manual start."
-                    log "Rollback failed: Failed to restart ssh.service after manual start. See /tmp/sshd_restart_manual.log."
-                    print_info "Action: Check service status with 'systemctl status ssh.service' and logs with 'journalctl -u ssh.service'."
-                    return 0
-                fi
-            else
-                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check /tmp/sshd_manual_start.log."
-                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See /tmp/sshd_manual_start.log."
-                print_info "Action: Check service status with 'systemctl status ssh.service' and logs with 'journalctl -u ssh.service'."
-                return 0
-            fi
-        fi
-        # Restart ssh.socket to re-enable socket activation
-        print_info "Restarting ssh.socket..."
-        if ! systemctl restart ssh.socket 2>/tmp/ssh_socket_restart.log; then
-            print_warning "Failed to restart ssh.socket. SSH service may still be running."
-            log "Rollback warning: Failed to restart ssh.socket. See /tmp/ssh_socket_restart.log."
-        else
-            log "Restarted ssh.socket for socket activation."
+    # Determine which service/socket to restart based on what was originally detected
+    # This handles the Ubuntu socket-based activation vs. Debian's direct service
+    if [[ -f /usr/lib/systemd/system/ssh.socket ]] && [[ "$ID" == "ubuntu" ]]; then
+        print_info "Ubuntu system detected, restarting ssh.socket and ssh.service."
+        # Stop everything first to be safe
+        systemctl stop ssh.service ssh.socket sshd.service &>/dev/null || true
+        # Restart the standard Ubuntu services
+        if ! systemctl restart ssh.socket ssh.service; then
+             print_error "Failed to restart ssh.socket and ssh.service."
+             log "Rollback failed to restart ssh.socket/ssh.service"
+             return 1
         fi
     else
-        # Direct service restart for non-socket systems
-        print_info "Restarting $SSH_SERVICE..."
-        if ! systemctl restart "$SSH_SERVICE" 2>/tmp/sshd_restart.log; then
-            print_warning "Failed to restart $SSH_SERVICE. Attempting manual start..."
-            log "Rollback warning: Failed to restart $SSH_SERVICE. See /tmp/sshd_restart.log."
-            # Ensure no other sshd processes are running
-            pkill -f "sshd:.*" 2>/dev/null || true
-            # Manual start in foreground to verify
-            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >/tmp/sshd_manual_start.log 2>&1
-            local TIMEOUT_EXIT=$?
-            if [[ $TIMEOUT_EXIT -eq 0 || $TIMEOUT_EXIT -eq 124 ]]; then
-                log "Manual SSH start succeeded (exit code $TIMEOUT_EXIT)."
-                # Restart service to ensure systemd management
-                if ! systemctl restart "$SSH_SERVICE" 2>/tmp/sshd_restart_manual.log; then
-                    print_error "Failed to restart $SSH_SERVICE after manual start."
-                    log "Rollback failed: Failed to restart $SSH_SERVICE after manual start. See /tmp/sshd_restart_manual.log."
-                    print_info "Action: Check service status with 'systemctl status $SSH_SERVICE' and logs with 'journalctl -u $SSH_SERVICE'."
-                    return 0
-                fi
-            else
-                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check /tmp/sshd_manual_start.log."
-                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See /tmp/sshd_manual_start.log."
-                print_info "Action: Check service status with 'systemctl status $SSH_SERVICE' and logs with 'journalctl -u $SSH_SERVICE'."
-                return 0
-            fi
+        print_info "Debian or non-socket system detected, restarting $SSH_SERVICE."
+         # Stop everything first to be safe
+        systemctl stop ssh.service ssh.socket sshd.service &>/dev/null || true
+        # Restart the specific service we were managing
+        if ! systemctl restart "$SSH_SERVICE"; then
+             print_error "Failed to restart $SSH_SERVICE."
+             log "Rollback failed to restart $SSH_SERVICE"
+             return 1
         fi
     fi
 
-    # Verify rollback with retries
+    # Final verification loop
     local rollback_verified=false
     print_info "Verifying SSH rollback to port $PREVIOUS_SSH_PORT..."
-    for ((i=1; i<=10; i++)); do
-        if ss -tuln | grep -q ":$PREVIOUS_SSH_PORT "; then
+    for ((i=1; i<=5; i++)); do
+        # Use the more reliable detection method here as well
+        local current_port
+        current_port=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+        if [[ "$current_port" == "$PREVIOUS_SSH_PORT" ]]; then
             rollback_verified=true
             break
         fi
-        log "Rollback verification attempt $i/10: SSH not listening on port $PREVIOUS_SSH_PORT."
-        sleep 3
+        log "Rollback verification attempt $i/5: Port not yet active."
+        sleep 2
     done
 
     if [[ $rollback_verified == true ]]; then
         print_success "Rollback successful. SSH is now listening on port $PREVIOUS_SSH_PORT."
         log "Rollback successful: SSH listening on port $PREVIOUS_SSH_PORT."
+        return 0
     else
-        print_error "Rollback failed. SSH service is not listening on port $PREVIOUS_SSH_PORT."
-        log "Rollback failed: SSH not listening on port $PREVIOUS_SSH_PORT. See /tmp/sshd_config_test.log, /tmp/sshd_restart.log, /tmp/sshd_manual_start.log, /tmp/ssh_socket_restart.log."
-        print_info "Action: Check service status with 'systemctl status ssh.service' or 'systemctl status ssh.socket', logs with 'journalctl -u ssh.service' or 'journalctl -u ssh.socket', and test config with 'sshd -t'."
-        print_info "Manually verify port with 'ss -tuln | grep :$PREVIOUS_SSH_PORT'."
-        print_info "Try starting SSH with 'sudo systemctl start ssh.service'."
+        print_error "Rollback verification failed. SSH is not listening on port $PREVIOUS_SSH_PORT."
+        log "Rollback verification failed. Final port check did not confirm port $PREVIOUS_SSH_PORT."
+        print_info "Run 'sudo systemctl status ssh*' and 'sudo ss -tlnp | grep sshd' to debug."
+        return 1
     fi
-
-    return 0
 }
+
 
 configure_firewall() {
     print_section "Firewall Configuration (UFW)"
