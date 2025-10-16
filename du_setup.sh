@@ -1387,9 +1387,9 @@ setup_user() {
         fi
         print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
         while true; do
-            read -rsp "$(printf '%s\n' "${CYAN}New password: ${NC}")" PASS1
+            read -rsp "$(printf '%s' "${CYAN}New password: ${NC}")" PASS1
             echo
-            read -rsp "$(printf '%s\n' "${CYAN}Retype new password: ${NC}")" PASS2
+            read -rsp "$(printf '%s' "${CYAN}Retype new password: ${NC}")" PASS2
             echo
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
@@ -1429,7 +1429,7 @@ setup_user() {
         if confirm "Add SSH public key(s) from your local machine now?"; then
             while true; do
                 local SSH_PUBLIC_KEY
-                read -rp "$(printf '%s\n' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+                read -rp "$(printf '%s' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
 
                 if validate_ssh_key "$SSH_PUBLIC_KEY"; then
                     mkdir -p "$SSH_DIR"
@@ -1576,7 +1576,7 @@ configure_system() {
 
     print_info "Configuring timezone..."
     while true; do
-        read -rp "$(printf '%s\n' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
+        read -rp "$(printf '%s' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
         TIMEZONE=${TIMEZONE:-Etc/UTC}
         if validate_timezone "$TIMEZONE"; then
             if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
@@ -2027,7 +2027,7 @@ configure_firewall() {
     if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
-            read -rp "$(printf '%s\n' "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
+            read -rp "$(printf '%s' "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
             if [[ -z "$CUSTOM_PORTS" ]]; then
                 print_info "No custom ports entered. Skipping."
                 break
@@ -2046,7 +2046,7 @@ configure_firewall() {
                         print_info "Rule for $port already exists."
                     else
                         local CUSTOM_COMMENT
-                        read -rp "$(printf '%s\n' "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
+                        read -rp "$(printf '%s' "${CYAN}Enter comment for $port (e.g., 'My App Port'): ${NC}")" CUSTOM_COMMENT
                         if [[ -z "$CUSTOM_COMMENT" ]]; then
                             CUSTOM_COMMENT="Custom port $port"
                         fi
@@ -2733,7 +2733,7 @@ EOF
 
     # --- Collect Cron Schedule ---
     local CRON_SCHEDULE="5 3 * * *"
-    print_info "Enter a cron schedule for the backup. Use [https://crontab.guru](https://crontab.guru) for help."
+    print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
     read -rp "$(printf '%s' "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
     CRON_SCHEDULE="${input:-$CRON_SCHEDULE}"
     if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*\/)?[0-9,-]+|\*)\s+(((\*\/)?[0-9,-]+|\*)\s+){3}((\*\/)?[0-9,-]+|\*|[0-6])$'; then
@@ -2985,7 +2985,7 @@ configure_swap() {
         if confirm "Modify existing swap file size?"; then
             local SWAP_SIZE
             while true; do
-                read -rp "$(printf '%s\n' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
+                read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
                 SWAP_SIZE=${SWAP_SIZE:-$current_size}
                 if validate_swap_size "$SWAP_SIZE"; then
                     break
@@ -3020,7 +3020,7 @@ configure_swap() {
         fi
         local SWAP_SIZE
         while true; do
-            read -rp "$(printf '%s\n' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
+            read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
             if validate_swap_size "$SWAP_SIZE"; then
                 break
@@ -3056,7 +3056,7 @@ configure_swap() {
     local CACHE_PRESSURE=50
     if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
         while true; do
-            read -rp "$(printf '%s\n' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
+            read -rp "$(printf '%s' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
             INPUT_SWAPPINESS=${INPUT_SWAPPINESS:-$SWAPPINESS}
             if [[ "$INPUT_SWAPPINESS" =~ ^[0-9]+$ && "$INPUT_SWAPPINESS" -ge 0 && "$INPUT_SWAPPINESS" -le 100 ]]; then
                 SWAPPINESS=$INPUT_SWAPPINESS
@@ -3066,7 +3066,7 @@ configure_swap() {
             fi
         done
         while true; do
-            read -rp "$(printf '%s\n' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
+            read -rp "$(printf '%s' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
             INPUT_CACHE_PRESSURE=${INPUT_CACHE_PRESSURE:-$CACHE_PRESSURE}
             if [[ "$INPUT_CACHE_PRESSURE" =~ ^[0-9]+$ && "$INPUT_CACHE_PRESSURE" -ge 1 && "$INPUT_CACHE_PRESSURE" -le 1000 ]]; then
                 CACHE_PRESSURE=$INPUT_CACHE_PRESSURE
