@@ -666,6 +666,7 @@ cleanup_provider_packages() {
         "admin"
         "cloud-user"
         "ec2-user"
+		"linuxuser"
     )
 
     print_info "Scanning for provider-installed packages..."
