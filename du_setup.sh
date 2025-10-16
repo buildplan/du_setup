@@ -1712,11 +1712,11 @@ configure_ssh() {
     elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
-        printf '%s\n' "[Socket]\nListenStream=\nListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
     else
         print_info "Configuring SSH service to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-        printf '%s\n' "[Service]\nExecStart=\nExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+        printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
     # Apply additional hardening
@@ -2628,7 +2628,7 @@ setup_backup() {
             fi
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
-            read -rsp "$(printf '%s' "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
+            read -rsp "$(printf '%s' "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; printf '\n'
             # Ensure ~/.ssh/ exists on remote for Hetzner
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
