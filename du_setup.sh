@@ -1585,6 +1585,8 @@ configure_system() {
     print_info "Large temporary files may consume system memory"
 
     mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+    log "Backing up script itself for audit trail"
+    cp "${SCRIPT_DIR}/$(basename "$0")" "$BACKUP_DIR/du_setup_v${CURRENT_VERSION}.sh"
     cp /etc/hosts "$BACKUP_DIR/hosts.backup"
     cp /etc/fstab "$BACKUP_DIR/fstab.backup"
     cp /etc/sysctl.conf "$BACKUP_DIR/sysctl.conf.backup" 2>/dev/null || true
