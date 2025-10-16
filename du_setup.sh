@@ -738,7 +738,7 @@ cleanup_provider_packages() {
         print_section "Root SSH Key Audit"
         print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
         echo
-        echo -e "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
+        printf '%s\n' "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
         awk '{print NR". "$0}' /root/.ssh/authorized_keys 2>/dev/null | head -20
         echo
 
@@ -782,14 +782,14 @@ cleanup_provider_packages() {
     # Special handling for cloud-init due to its complexity
     if [[ " ${PROVIDER_PACKAGES[*]} " =~ " cloud-init " ]]; then
         print_section "Cloud-Init Management"
-        echo -e "${CYAN}ℹ cloud-init${NC}"
-        echo "   Purpose: Initial VM provisioning (SSH keys, hostname, network)"
-        echo "   ${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
-        echo "   Benefits of disabling vs removing:"
-        echo "     - Can be re-enabled if needed for reprovisioning"
-        echo "     - Safer than package removal"
-        echo "     - No dependency issues"
-        echo
+        printf '%s\n' "${CYAN}ℹ cloud-init${NC}"
+        printf '   Purpose: Initial VM provisioning (SSH keys, hostname, network)\n'
+        printf '   %s\n' "${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
+        printf '   Benefits of disabling vs removing:\n'
+        printf '     - Can be re-enabled if needed for reprovisioning\n'
+        printf '     - Safer than package removal\n'
+        printf '     - No dependency issues\n'
+        printf '\n'
 
         if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Disable cloud-init (recommended over removal)?" "y"; then
             print_info "Disabling cloud-init..."
@@ -852,30 +852,30 @@ cleanup_provider_packages() {
 
             case "$pkg" in
                 qemu-guest-agent)
-                    echo -e "${RED}⚠ $pkg${NC}"
-                    echo "   Purpose: VM-host communication for snapshots and graceful shutdowns"
-                    echo -e "   ${RED}CRITICAL RISKS if removed:${NC}"
-                    echo "     - Snapshot backups will FAIL or be inconsistent"
-                    echo "     - Console access may break"
-                    echo "     - Graceful shutdowns replaced with forced stops"
-                    echo "     - Provider backup systems will malfunction"
-                    echo -e "   ${RED}STRONGLY RECOMMENDED to keep${NC}"
+                    printf '%s\n' "${RED}⚠ $pkg${NC}"
+                    printf '   Purpose: VM-host communication for snapshots and graceful shutdowns\n'
+                    printf '   %s\n' "${RED}CRITICAL RISKS if removed:${NC}"
+                    printf '     - Snapshot backups will FAIL or be inconsistent\n'
+                    printf '     - Console access may break\n'
+                    printf '     - Graceful shutdowns replaced with forced stops\n'
+                    printf '     - Provider backup systems will malfunction\n'
+                    printf '   %s\n' "${RED}STRONGLY RECOMMENDED to keep${NC}"
                     ;;
                 *-agent|*-monitoring)
-                    echo -e "${YELLOW}⚠ $pkg${NC}"
-                    echo "   Purpose: Provider monitoring/management"
-                    echo "   Risks if removed:"
-                    echo "     - Provider dashboard metrics will disappear"
-                    echo "     - May affect support troubleshooting"
-                    echo -e "   ${YELLOW}Remove only if you don't need provider monitoring${NC}"
+                    printf '%s\n' "${YELLOW}⚠ $pkg${NC}"
+                    printf '   Purpose: Provider monitoring/management\n'
+                    printf '   Risks if removed:\n'
+                    printf '     - Provider dashboard metrics will disappear\n'
+                    printf '     - May affect support troubleshooting\n'
+                    printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
                     ;;
                 *)
-                    echo -e "${CYAN}ℹ $pkg${NC}"
-                    echo "   Purpose: Provider-specific tooling"
-                    echo -e "  ${YELLOW}Review before removing${NC}"
+                    printf '%s\n' "${CYAN}ℹ $pkg${NC}"
+                    printf '   Purpose: Provider-specific tooling\n'
+                    printf '  %s\n' "${YELLOW}Review before removing${NC}"
                     ;;
             esac
-            echo
+            printf '\n'
 
             if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove $pkg?" "n"; then
                 if [[ "$pkg" == "qemu-guest-agent" && "$CLEANUP_PREVIEW" == "false" ]]; then
@@ -925,7 +925,7 @@ cleanup_provider_packages() {
         echo
 
         for user in "${PROVIDER_USERS[@]}"; do
-            echo -e "${YELLOW}Found user: $user${NC}"
+            printf '%s\n' "${YELLOW}Found user: $user${NC}"
 
             local proc_count
             proc_count=$( (ps -u "$user" --no-headers 2>/dev/null || true) | wc -l)
@@ -1050,7 +1050,7 @@ confirm() {
     fi
 
     while true; do
-        read -rp "$(echo -e "${CYAN}$prompt${NC}")" response
+        read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
         response=${response,,}
 
         if [[ -z $response ]]; then
@@ -1060,7 +1060,7 @@ confirm() {
         case $response in
             y|yes) return 0 ;;
             n|no) return 1 ;;
-            *) echo -e "${RED}Please answer yes or no.${NC}" ;;
+            *) printf '%s\n' "${RED}Please answer yes or no.${NC}" ;;
         esac
     done
 }
@@ -1300,7 +1300,7 @@ check_system() {
 collect_config() {
     print_section "Configuration Setup"
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
+        read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
         if validate_username "$USERNAME"; then
             if id "$USERNAME" &>/dev/null; then
                 print_warning "User '$USERNAME' already exists."
@@ -1313,13 +1313,13 @@ collect_config() {
         fi
     done
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
+        read -rp "$(printf '%s' "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
-    read -rp "$(echo -e "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+    read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
+        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-2222}
         if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
     done
@@ -2400,21 +2400,21 @@ install_tailscale() {
     fi
 
     print_info "Configuring Tailscale connection..."
-    echo -e "${CYAN}Choose Tailscale connection method:${NC}"
-    echo -e "  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)"
-    echo -e "  2) Custom Tailscale server (requires server URL and pre-auth key)"
-    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
+    printf '%s\n' "${CYAN}Choose Tailscale connection method:${NC}"
+    printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)\n'
+    printf '  2) Custom Tailscale server (requires server URL and pre-auth key)\n'
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
     TS_CONNECTION=${TS_CONNECTION:-1}
     local AUTH_KEY LOGIN_SERVER=""
     if [[ "$TS_CONNECTION" == "2" ]]; then
         while true; do
-            read -rp "$(echo -e "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
+            read -rp "$(printf '%s' "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
             if [[ "$LOGIN_SERVER" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Must start with https://. Try again."; fi
         done
     fi
     while true; do
-        read -rsp "$(echo -e "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
-        echo
+        read -rsp "$(printf '%s' "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+        printf '\n'
         if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
         elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
             print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
@@ -2433,7 +2433,7 @@ install_tailscale() {
     if ! $TS_COMMAND; then
         print_warning "Failed to connect to Tailscale. Possible issues: invalid pre-auth key, network restrictions, or server unavailability."
         print_info "Please run the following command manually after resolving the issue:"
-        echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+        printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
         log "Tailscale connection failed: $TS_COMMAND_SAFE"
     else
         # Verify connection status with retries
@@ -2463,7 +2463,7 @@ install_tailscale() {
         else
             print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
             print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-            echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+            printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
             log "Tailscale connection not verified: $TS_COMMAND_SAFE"
             tailscale status > /tmp/tailscale_status.txt 2>&1
             log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
@@ -2472,11 +2472,11 @@ install_tailscale() {
 
     # --- Configure Additional Flags ---
     print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
-    echo -e "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
-    echo -e "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
-    echo -e "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
-    echo -e "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
-    echo -e "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
+    printf '%s\n' "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
+    printf '%s\n' "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
+    printf '%s\n' "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
+    printf '%s\n' "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
+    printf '%s\n' "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
     read -rp "  " TS_FLAG_CHOICES
     local TS_FLAGS=""
     if [[ -n "$TS_FLAG_CHOICES" ]]; then
@@ -2503,7 +2503,7 @@ install_tailscale() {
             if ! $TS_COMMAND; then
                 print_warning "Failed to reconfigure Tailscale with additional options."
                 print_info "Please run the following command manually after resolving the issue:"
-                echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
                 log "Tailscale reconfiguration failed: $TS_COMMAND_SAFE"
             else
                 # Verify reconfiguration status with retries
@@ -2532,7 +2532,7 @@ install_tailscale() {
                 else
                     print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
                     print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-                    echo -e "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                    printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
                     log "Tailscale reconfiguration not verified: $TS_COMMAND"
                     tailscale status > /tmp/tailscale_status.txt 2>&1
                     log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
@@ -2589,18 +2589,18 @@ setup_backup() {
     local BACKUP_DEST BACKUP_PORT REMOTE_BACKUP_PATH SSH_COPY_ID_FLAGS=""
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
+        read -rp "$(printf '%s' "${CYAN}Enter backup destination (e.g., u12345@u12345.your-storagebox.de): ${NC}")" BACKUP_DEST
         if [[ "$BACKUP_DEST" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$ ]]; then break; else print_error "Invalid format. Expected user@host. Please try again."; fi
     done
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
+        read -rp "$(printf '%s' "${CYAN}Enter destination SSH port (Hetzner uses 23) [22]: ${NC}")" BACKUP_PORT
         BACKUP_PORT=${BACKUP_PORT:-22}
         if [[ "$BACKUP_PORT" =~ ^[0-9]+$ && "$BACKUP_PORT" -ge 1 && "$BACKUP_PORT" -le 65535 ]]; then break; else print_error "Invalid port. Must be between 1 and 65535. Please try again."; fi
     done
 
     while true; do
-        read -rp "$(echo -e "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
+        read -rp "$(printf '%s' "${CYAN}Enter remote backup path (e.g., /home/my_backups/): ${NC}")" REMOTE_BACKUP_PATH
         if [[ "$REMOTE_BACKUP_PATH" =~ ^/[^[:space:]]*/$ ]]; then break; else print_error "Invalid path. Must start and end with '/' and contain no spaces. Please try again."; fi
     done
 
@@ -2613,10 +2613,10 @@ setup_backup() {
     fi
 
     # --- Handle SSH Key Copy ---
-    echo -e "${CYAN}Choose how to copy the root SSH key:${NC}"
-    echo -e "  1) Automate with password (requires sshpass, password stored briefly in memory)"
-    echo -e "  2) Manual copy (recommended)"
-    read -rp "$(echo -e "${CYAN}Enter choice (1-2) [2]: ${NC}")" KEY_COPY_CHOICE
+    printf '%s\n' "${CYAN}Choose how to copy the root SSH key:${NC}"
+    printf '  1) Automate with password (requires sshpass, password stored briefly in memory)\n'
+    printf '  2) Manual copy (recommended)\n'
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [2]: ${NC}")" KEY_COPY_CHOICE
     KEY_COPY_CHOICE=${KEY_COPY_CHOICE:-2}
     if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
         if ! command -v sshpass >/dev/null 2>&1; then
@@ -2627,7 +2627,7 @@ setup_backup() {
             fi
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
-            read -rsp "$(echo -e "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
+            read -rsp "$(printf '%s' "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; echo
             # Ensure ~/.ssh/ exists on remote for Hetzner
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
@@ -2643,10 +2643,10 @@ setup_backup() {
     fi
     if [[ "$KEY_COPY_CHOICE" == "2" ]]; then
         print_warning "ACTION REQUIRED: Copy the root SSH key to the backup destination."
-        echo -e "This will allow the root user to connect without a password for automated backups."
-        echo -e "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; echo
-        echo -e "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
-        echo -e "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; echo
+        printf 'This will allow the root user to connect without a password for automated backups.\n'
+        printf '%s' "${YELLOW}The root user's public key is:${NC}"; cat "${ROOT_SSH_KEY}.pub"; printf '\n'
+        printf '%s\n' "${YELLOW}Run the following command from this server's terminal to copy the key:${NC}"
+        printf '%s\n' "${CYAN}ssh-copy-id -p \"${BACKUP_PORT}\" -i \"${ROOT_SSH_KEY}.pub\" ${SSH_COPY_ID_FLAGS} \"${BACKUP_DEST}\"${NC}"; printf '\n'
         if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
             print_info "For Hetzner, ensure ~/.ssh/ exists on the remote server: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
         fi
@@ -2679,8 +2679,7 @@ setup_backup() {
     local BACKUP_DIRS_ARRAY=()
     while true; do
         print_info "Enter the full paths of directories to back up, separated by spaces."
-        read -rp "$(echo -e "${CYAN}Default is '/home/${USERNAME}/'. Press Enter for default or provide your own: ${NC}")" -a user_input_dirs
-
+        read -rp "$(printf '%s' "${CYAN}Default is '/home/${USERNAME}/'. Press Enter for default or provide your own: ${NC}")" -a user_input_dirs
         if [ ${#user_input_dirs[@]} -eq 0 ]; then
             BACKUP_DIRS_ARRAY=("/home/${USERNAME}/")
             break
@@ -2725,7 +2724,7 @@ node_modules/
 .wget-hsts
 EOF
     if confirm "Add more directories/files to the exclude list?"; then
-        read -rp "$(echo -e "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
+        read -rp "$(printf '%s' "${CYAN}Enter items separated by spaces (e.g., Videos/ 'My Documents/'): ${NC}")" -a extra_excludes
         for item in "${extra_excludes[@]}"; do echo "$item" >> "$EXCLUDE_FILE_PATH"; done
     fi
     chmod 600 "$EXCLUDE_FILE_PATH"
@@ -2733,8 +2732,8 @@ EOF
 
     # --- Collect Cron Schedule ---
     local CRON_SCHEDULE="5 3 * * *"
-    print_info "Enter a cron schedule for the backup. Use https://crontab.guru for help."
-    read -rp "$(echo -e "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
+    print_info "Enter a cron schedule for the backup. Use [https://crontab.guru](https://crontab.guru) for help."
+    read -rp "$(printf '%s' "${CYAN}Enter schedule (default: daily at 3:05 AM) [${CRON_SCHEDULE}]: ${NC}")" input
     CRON_SCHEDULE="${input:-$CRON_SCHEDULE}"
     if ! echo "$CRON_SCHEDULE" | grep -qE '^((\*\/)?[0-9,-]+|\*)\s+(((\*\/)?[0-9,-]+|\*)\s+){3}((\*\/)?[0-9,-]+|\*|[0-6])$'; then
         print_error "Invalid cron expression. Using default: ${CRON_SCHEDULE}"
@@ -2743,10 +2742,10 @@ EOF
     # --- Collect Notification Details ---
     local NOTIFICATION_SETUP="none" NTFY_URL="" NTFY_TOKEN="" DISCORD_WEBHOOK=""
     if confirm "Enable backup status notifications?"; then
-        echo -e "${CYAN}Select notification method: 1) ntfy.sh  2) Discord  [1]: ${NC}"; read -r n_choice
+        printf '%s' "${CYAN}Select notification method: 1) ntfy.sh  2) Discord  [1]: ${NC}"; read -r n_choice
         if [[ "$n_choice" == "2" ]]; then
             NOTIFICATION_SETUP="discord"
-            read -rp "$(echo -e "${CYAN}Enter Discord Webhook URL: ${NC}")" DISCORD_WEBHOOK
+            read -rp "$(printf '%s' "${CYAN}Enter Discord Webhook URL: ${NC}")" DISCORD_WEBHOOK
             if [[ ! "$DISCORD_WEBHOOK" =~ ^https://discord.com/api/webhooks/ ]]; then
                 print_error "Invalid Discord webhook URL."
                 log "Invalid Discord webhook URL provided."
@@ -2754,8 +2753,8 @@ EOF
             fi
         else
             NOTIFICATION_SETUP="ntfy"
-            read -rp "$(echo -e "${CYAN}Enter ntfy URL/topic (e.g., https://ntfy.sh/my-backups): ${NC}")" NTFY_URL
-            read -rp "$(echo -e "${CYAN}Enter ntfy Access Token (optional): ${NC}")" NTFY_TOKEN
+            read -rp "$(printf '%s' "${CYAN}Enter ntfy URL/topic (e.g., https://ntfy.sh/my-backups): ${NC}")" NTFY_URL
+            read -rp "$(printf '%s' "${CYAN}Enter ntfy Access Token (optional): ${NC}")" NTFY_TOKEN
             if [[ ! "$NTFY_URL" =~ ^https?:// ]]; then
                 print_error "Invalid ntfy URL."
                 log "Invalid ntfy URL provided."
@@ -3227,13 +3226,13 @@ generate_summary() {
     (
     print_section "Setup Complete!"
 
-    echo -e "\n${GREEN}Server setup and hardening script has finished successfully.${NC}\n"
-    echo -e "${CYAN}📋 A detailed report has been saved to:${NC} ${BOLD}$REPORT_FILE${NC}"
-    echo -e "${CYAN}📜 The full execution log is available at:${NC}    ${BOLD}$LOG_FILE${NC}"
-    echo
+    printf '\n%s\n\n' "${GREEN}Server setup and hardening script has finished successfully.${NC}"
+    printf '%s %s\n' "${CYAN}📋 A detailed report has been saved to:${NC}" "${BOLD}$REPORT_FILE${NC}"
+    printf '%s    %s\n' "${CYAN}📜 The full execution log is available at:${NC}" "${BOLD}$LOG_FILE${NC}"
+    printf '\n'
 
-    echo -e "${YELLOW}Environment Information${NC}"
-    echo "====================================="
+    printf '%s\n' "${YELLOW}Environment Information${NC}"
+    printf '=====================================\n'
     printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
     printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
     printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
@@ -3244,9 +3243,9 @@ generate_summary() {
     else
         printf "%-20s %s\n" "Environment:" "${CYAN}Personal VM${NC}"
     fi
-    echo
+    printf '\n'
 
-    echo -e "${YELLOW}Final Service Status Check:${NC}"
+    printf '%s\n' "${YELLOW}Final Service Status Check:${NC}"
     for service in "$SSH_SERVICE" fail2ban chrony; do
         if systemctl is-active --quiet "$service"; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
@@ -3293,7 +3292,7 @@ generate_summary() {
     echo
 
     # --- Main Configuration Summary ---
-    echo -e "${YELLOW}Configuration Summary:${NC}"
+    printf '%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
