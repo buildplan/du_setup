@@ -253,6 +253,16 @@ print_info() {
     printf '%s\n' "${PURPLE}ℹ $1${NC}" | tee -a "$LOG_FILE"
 }
 
+print_separator() {
+    local header_text="$1"
+    local color="${2:-$YELLOW}"
+    local separator_char="${3:-=}"
+    
+    printf '%s\n' "${color}${header_text}${NC}"
+    printf "${separator_char}%.0s" $(seq 1 ${#header_text})
+    printf '\n'
+}
+
 # --- CLEANUP HELPER FUNCTIONS ---
 
 execute_check() {
@@ -3236,8 +3246,7 @@ generate_summary() {
     printf '%s    %s\n' "${CYAN}📜 The full execution log is available at:${NC}" "${BOLD}$LOG_FILE${NC}"
     printf '\n'
 
-    printf '%s\n' "${YELLOW}Final Service Status Check:${NC}"
-    printf '=====================================\n'
+    print_separator "Final Service Status Check:"
     for service in "$SSH_SERVICE" fail2ban chrony; do
         if systemctl is-active --quiet "$service"; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
@@ -3284,8 +3293,7 @@ generate_summary() {
     printf '\n'
 
     # --- Main Configuration Summary ---
-    printf '%s\n' "${YELLOW}Configuration Summary:${NC}"
-    printf '==========================================\n'
+    print_separator "Configuration Summary:"
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
@@ -3372,8 +3380,7 @@ generate_summary() {
     fi
     printf '\n'
 
-    printf '%s\n' "${YELLOW}Environment Information${NC}"
-    printf '==========================================\n'
+    print_separator "Environment Information"
     printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
     printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
     printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
@@ -3387,8 +3394,7 @@ generate_summary() {
     printf '\n'
 
     # --- Post-Reboot Verification Steps ---
-    printf '%s\n' "${YELLOW}Post-Reboot Verification Steps:${NC}"
-    printf '==========================================\n'
+    print_separator "Post-Reboot Verification Steps:"
     printf '  - SSH access:\n'
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
