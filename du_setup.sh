@@ -1351,7 +1351,7 @@ collect_config() {
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
 
     if [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" != "$INITIAL_DETECTED_PORT" ]]; then
-        printf "  %-15s %s (changed from current: %s)\n" "SSH Port:" "$SSH_PORT" "$INITIAL_DETECTED_PORT"
+        printf "  %-15s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$INITIAL_DETECTED_PORT"
     else
         printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
     fi
