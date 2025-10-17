@@ -1887,9 +1887,9 @@ rollback_ssh_changes() {
     # Re-apply the PREVIOUS port configuration
     if [[ "$PREVIOUS_SSH_PORT" != "22" ]]; then
         print_info "Re-applying previous custom port configuration for port $PREVIOUS_SSH_PORT..."
-        if [[ "$SSH_SERVICE" == "ssh.socket" ]];
-        then
+        if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
             mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
             printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
             log "Rollback: Re-created systemd override for ssh.socket on port $PREVIOUS_SSH_PORT"
         else
