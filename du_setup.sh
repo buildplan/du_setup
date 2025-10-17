@@ -258,7 +258,7 @@ print_separator() {
     local header_text="$1"
     local color="${2:-$YELLOW}"
     local separator_char="${3:-=}"
-    
+
     printf '%s\n' "${color}${header_text}${NC}"
     printf "${separator_char}%.0s" $(seq 1 ${#header_text})
     printf '\n'
