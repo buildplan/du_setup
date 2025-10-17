@@ -1674,7 +1674,12 @@ configure_ssh() {
     # Port detection logic
     PREVIOUS_SSH_PORT=""
     # 1. Try to detect port from actively listening sshd process
-    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+    if [[ $EUID -eq 0 ]]; then
+        PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+    else
+        # Fallback: look for any listening port on ssh (default 22 or custom)
+        PREVIOUS_SSH_PORT=$(ss -tln 2>/dev/null | awk '/:22 / {n=split($4,a,":"); print a[n]; exit}')
+    fi
     # 2. If not found, try to parse from sshd_config
     if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
         PREVIOUS_SSH_PORT=$(grep -i '^[[:space:]]*Port' /etc/ssh/sshd_config 2>/dev/null | grep -v '^[[:space:]]*#' | awk '{print $2; exit}')
