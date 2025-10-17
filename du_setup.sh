@@ -263,794 +263,10 @@ print_separator() {
     printf '\n'
 }
 
-# --- CLEANUP HELPER FUNCTIONS ---
-
-execute_check() {
-    "$@"
-}
-
-execute_command() {
-    local cmd_string="$*"
-
-    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        printf '%s Would execute: %s\n' "${CYAN}[PREVIEW]${NC}" "${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
-        return 0
-    else
-        "$@"
-        return $?
-    fi
-}
-
-# --- ENVIRONMENT DETECTION (Cloud VPS or Trusted VM) ---
-
-detect_environment() {
-    local VIRT_TYPE=""
-    local MANUFACTURER=""
-    local PRODUCT=""
-    local IS_CLOUD_VPS=false
-
-    # systemd-detect-virt
-    if command -v systemd-detect-virt &>/dev/null; then
-        VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "none")
-    fi
-
-    # dmidecode for hardware info
-    if command -v dmidecode &>/dev/null && [[ $(id -u) -eq 0 ]]; then
-        MANUFACTURER=$(dmidecode -s system-manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
-        PRODUCT=$(dmidecode -s system-product-name 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
-    fi
-
-    # Check /sys/class/dmi/id/ (fallback, doesn't require dmidecode)
-    if [[ -z "$MANUFACTURER" || "$MANUFACTURER" == "unknown" ]]; then
-        if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
-            MANUFACTURER=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "unknown")
-        fi
-    fi
-
-    if [[ -z "$PRODUCT" || "$PRODUCT" == "unknown" ]]; then
-        if [[ -r /sys/class/dmi/id/product_name ]]; then
-            PRODUCT=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/product_name 2>/dev/null || echo "unknown")
-        fi
-    fi
-
-    if command -v dmidecode &>/dev/null && [[ $(id -u) -eq 0 ]]; then
-        DETECTED_BIOS_VENDOR=$(dmidecode -s bios-vendor 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
-    elif [[ -r /sys/class/dmi/id/bios_vendor ]]; then
-        DETECTED_BIOS_VENDOR=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/bios_vendor 2>/dev/null || echo "unknown")
-    fi
-
-    # Cloud provider detection patterns
-    local CLOUD_PATTERNS=(
-        # VPS/Cloud Providers
-        "digitalocean"
-        "linode"
-        "vultr"
-        "hetzner"
-        "ovh"
-        "scaleway"
-        "contabo"
-        "netcup"
-        "ionos"
-        "hostinger"
-        "racknerd"
-        "upcloud"
-        "dreamhost"
-        "kimsufi"
-        "online.net"
-        "equinix metal"
-        "lightsail"
-        "scaleway"
-        # Major Cloud Platforms
-        "amazon"
-        "amazon ec2"
-        "aws"
-        "google"
-        "gce"
-        "google compute engine"
-        "microsoft"
-        "azure"
-        "oracle cloud"
-        "alibaba"
-        "tencent"
-        "rackspace"
-        # Virtualization indicating cloud VPS
-        "droplet"
-        "linodekvm"
-        "kvm"
-        "openstack"
-    )
-
-    # Check if manufacturer or product matches cloud patterns
-    for pattern in "${CLOUD_PATTERNS[@]}"; do
-        if [[ "$MANUFACTURER" == *"$pattern"* ]] || [[ "$PRODUCT" == *"$pattern"* ]]; then
-            IS_CLOUD_VPS=true
-            break
-        fi
-    done
-
-    # Additional checks based on virtualization type
-    case "$VIRT_TYPE" in
-        kvm|qemu)
-            if [[ -z "$IS_CLOUD_VPS" ]] || [[ "$IS_CLOUD_VPS" == "false" ]]; then
-                if [[ -d /etc/cloud/cloud.cfg.d ]] && grep -qE "(Hetzner|DigitalOcean|Vultr|OVH)" /etc/cloud/cloud.cfg.d/* 2>/dev/null; then
-                    IS_CLOUD_VPS=true
-                fi
-            fi
-            ;;
-        vmware)
-            IS_CLOUD_VPS=false
-            ;;
-        oracle|virtualbox)
-            IS_CLOUD_VPS=false
-            ;;
-        xen)
-            IS_CLOUD_VPS=true
-            ;;
-        hyperv|microsoft)
-            if [[ "$MANUFACTURER" == *"microsoft"* ]] && [[ "$PRODUCT" == *"virtual machine"* ]]; then
-                IS_CLOUD_VPS=false
-            fi
-            ;;
-        none)
-            IS_CLOUD_VPS=false
-            ;;
-    esac
-
-    # Determine environment type based on detection
-    if [[ "$VIRT_TYPE" == "none" ]]; then
-        ENVIRONMENT_TYPE="bare-metal"
-    elif [[ "$IS_CLOUD_VPS" == "true" ]]; then
-        ENVIRONMENT_TYPE="commercial-cloud"
-    elif [[ "$VIRT_TYPE" =~ ^(kvm|qemu)$ ]]; then
-        if [[ "$MANUFACTURER" == "qemu" && "$PRODUCT" =~ ^(standard pc|pc-|pc ) ]]; then
-            ENVIRONMENT_TYPE="uncertain-kvm"
-        else
-            ENVIRONMENT_TYPE="commercial-cloud"
-        fi
-    elif [[ "$VIRT_TYPE" =~ ^(vmware|virtualbox|oracle)$ ]]; then
-        ENVIRONMENT_TYPE="personal-vm"
-    elif [[ "$VIRT_TYPE" == "xen" ]]; then
-        ENVIRONMENT_TYPE="uncertain-xen"
-    else
-        ENVIRONMENT_TYPE="unknown"
-    fi
-
-    DETECTED_PROVIDER_NAME=""
-    case "$ENVIRONMENT_TYPE" in
-        commercial-cloud)
-            if [[ "$MANUFACTURER" =~ digitalocean ]]; then
-                DETECTED_PROVIDER_NAME="DigitalOcean"
-            elif [[ "$MANUFACTURER" =~ hetzner ]]; then
-                DETECTED_PROVIDER_NAME="Hetzner Cloud"
-            elif [[ "$MANUFACTURER" =~ vultr ]]; then
-                DETECTED_PROVIDER_NAME="Vultr"
-            elif [[ "$MANUFACTURER" =~ linode || "$PRODUCT" =~ akamai ]]; then
-                DETECTED_PROVIDER_NAME="Linode/Akamai"
-            elif [[ "$MANUFACTURER" =~ ovh ]]; then
-                DETECTED_PROVIDER_NAME="OVH"
-            elif [[ "$MANUFACTURER" =~ amazon || "$PRODUCT" =~ "ec2" ]]; then
-                DETECTED_PROVIDER_NAME="Amazon Web Services (AWS)"
-            elif [[ "$MANUFACTURER" =~ google ]]; then
-                DETECTED_PROVIDER_NAME="Google Cloud Platform"
-            elif [[ "$MANUFACTURER" =~ microsoft ]]; then
-                DETECTED_PROVIDER_NAME="Microsoft Azure"
-            else
-                DETECTED_PROVIDER_NAME="Cloud VPS Provider"
-            fi
-            ;;
-        personal-vm)
-            if [[ "$VIRT_TYPE" == "virtualbox" || "$MANUFACTURER" =~ innotek ]]; then
-                DETECTED_PROVIDER_NAME="VirtualBox"
-            elif [[ "$VIRT_TYPE" == "vmware" ]]; then
-                DETECTED_PROVIDER_NAME="VMware"
-            else
-                DETECTED_PROVIDER_NAME="Personal VM"
-            fi
-            ;;
-        uncertain-kvm)
-            DETECTED_PROVIDER_NAME="KVM/QEMU Hypervisor"
-            ;;
-    esac
-
-    # Export results as global variables
-    export ENVIRONMENT_TYPE
-    DETECTED_VIRT_TYPE="$VIRT_TYPE"
-    DETECTED_MANUFACTURER="$MANUFACTURER"
-    DETECTED_PRODUCT="$PRODUCT"
-    DETECTED_BIOS_VENDOR="${DETECTED_BIOS_VENDOR:-unknown}"
-    IS_CLOUD_PROVIDER="$IS_CLOUD_VPS"
-
-    log "Environment detection: VIRT=$VIRT_TYPE, MANUFACTURER=$MANUFACTURER, PRODUCT=$PRODUCT, IS_CLOUD=$IS_CLOUD_VPS, TYPE=$ENVIRONMENT_TYPE"
-}
-
-cleanup_provider_packages() {
-    print_section "Provider Package Cleanup (Optional)"
-
-    # --quiet mode check
-    if [[ "$VERBOSE" == "false" ]]; then
-        print_warning "Provider cleanup cannot be run in --quiet mode due to its interactive nature. Skipping."
-        log "Provider cleanup skipped due to --quiet mode."
-        return 0
-    fi
-
-    # Validate required variables
-    if [[ -z "${LOG_FILE:-}" ]]; then
-        LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
-        echo "Warning: LOG_FILE not set, using: $LOG_FILE"
-    fi
-
-    if [[ -z "${USERNAME:-}" ]]; then
-        USERNAME="${SUDO_USER:-root}"
-        log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
-    fi
-
-    if [[ -z "${BACKUP_DIR:-}" ]]; then
-        BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "$BACKUP_DIR"
-        log "Created backup directory: $BACKUP_DIR"
-    fi
-
-    # Ensure cleanup mode variables are set
-    CLEANUP_PREVIEW="${CLEANUP_PREVIEW:-false}"
-    CLEANUP_ONLY="${CLEANUP_ONLY:-false}"
-    VERBOSE="${VERBOSE:-true}"
-
-    # Detect environment first
-    detect_environment
-
-    # Display environment information
-    printf '%s\n' "${CYAN}=== Environment Detection ===${NC}"
-    printf 'Virtualization Type: %s\n' "${DETECTED_VIRT_TYPE:-unknown}"
-    printf 'System Manufacturer: %s\n' "${DETECTED_MANUFACTURER:-unknown}"
-    printf 'Product Name: %s\n' "${DETECTED_PRODUCT:-unknown}"
-    printf 'Environment Type: %s\n' "${ENVIRONMENT_TYPE:-unknown}"
-    if [[ -n "${DETECTED_BIOS_VENDOR}" && "${DETECTED_BIOS_VENDOR}" != "unknown" ]]; then
-        printf 'BIOS Vendor: %s\n' "${DETECTED_BIOS_VENDOR}"
-    fi
-    if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-        printf 'Detected Provider: %s\n' "${DETECTED_PROVIDER_NAME}"
-    fi
-    printf '\n'
-
-    # Determine recommendation based on three-way detection
-    local CLEANUP_RECOMMENDED=false
-    local DEFAULT_ANSWER="n"
-    local RECOMMENDATION_TEXT=""
-    local ENVIRONMENT_CONFIDENCE="${ENVIRONMENT_CONFIDENCE:-low}"
-
-    case "$ENVIRONMENT_TYPE" in
-        commercial-cloud)
-            CLEANUP_RECOMMENDED=true
-            DEFAULT_ANSWER="y"
-            printf '%s\n' "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
-            if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                printf 'Provider: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
-            fi
-            printf 'This is a commercial VPS from an external provider.\n'
-            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}RECOMMENDED${NC} for security."
-            printf '%s\n' "$RECOMMENDATION_TEXT"
-            printf 'Providers may install monitoring agents, pre-configured users, and management tools.\n'
-            ;;
-
-        uncertain-kvm)
-            CLEANUP_RECOMMENDED=false
-            DEFAULT_ANSWER="n"
-            printf '%s\n' "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
-            printf 'This environment could be:\n'
-            printf '  %s A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)\n' "${CYAN}•${NC}"
-            printf '  %s A personal VM on Proxmox, KVM, or QEMU\n' "${CYAN}•${NC}"
-            printf '  %s A VPS from a regional/unlisted provider\n' "${CYAN}•${NC}"
-            printf '\n'
-            RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - review packages carefully before proceeding."
-            printf '%s\n' "$RECOMMENDATION_TEXT"
-            printf 'If this is a commercial VPS, cleanup is recommended.\n'
-            printf 'If you control the hypervisor (Proxmox/KVM), cleanup is optional.\n'
-            ;;
-
-        personal-vm)
-            CLEANUP_RECOMMENDED=false
-            DEFAULT_ANSWER="n"
-            printf '%s\n' "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
-            if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
-                printf 'Platform: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
-            fi
-            printf 'This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)\n'
-            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT RECOMMENDED${NC} for trusted environments."
-            printf '%s\n' "$RECOMMENDATION_TEXT"
-            printf 'If you control the hypervisor/host, you likely don'\''t need cleanup.\n'
-            ;;
-
-        bare-metal)
-            printf '%s\n' "${GREEN}✓ Bare Metal Server Detected${NC}"
-            printf 'This appears to be a physical (bare metal) server.\n'
-            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT NEEDED${NC} for bare metal."
-            printf '%s\n' "$RECOMMENDATION_TEXT"
-            printf 'No virtualization layer detected - skipping cleanup.\n'
-            log "Provider package cleanup skipped: bare metal server detected."
-            return 0
-            ;;
-
-        uncertain-xen|unknown|*)
-            CLEANUP_RECOMMENDED=false
-            DEFAULT_ANSWER="n"
-            printf '%s\n' "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
-            printf 'Could not definitively identify the hosting provider or environment.\n'
-            RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - proceed with caution."
-            printf '%s\n' "$RECOMMENDATION_TEXT"
-            printf 'Review packages carefully before removing anything.\n'
-            ;;
-    esac
-    printf '\n'
-
-    # Decision point based on environment and flags
-    if [[ "$CLEANUP_PREVIEW" == "false" ]] && [[ "$CLEANUP_ONLY" == "false" ]]; then
-        local PROMPT_TEXT=""
-
-        if [[ "$ENVIRONMENT_TYPE" == "commercial-cloud" ]]; then
-            PROMPT_TEXT="Run provider package cleanup? (Recommended for cloud VPS)"
-        elif [[ "$ENVIRONMENT_TYPE" == "uncertain-kvm" ]]; then
-            PROMPT_TEXT="Run provider package cleanup? (Verify your environment first)"
-        else
-            PROMPT_TEXT="Run provider package cleanup? (Not recommended for trusted environments)"
-        fi
-
-        if ! confirm "$PROMPT_TEXT" "$DEFAULT_ANSWER"; then
-            print_info "Skipping provider package cleanup."
-            log "Provider package cleanup skipped by user (environment: $ENVIRONMENT_TYPE)."
-            return 0
-        fi
-
-        # Extra warning for non-cloud environments
-        if [[ "$CLEANUP_RECOMMENDED" == "false" ]] && [[ "$ENVIRONMENT_TYPE" != "uncertain-kvm" ]]; then
-            echo
-            print_warning "⚠  You chose to run cleanup on a trusted/personal environment."
-            print_warning "This may remove useful tools or break functionality."
-            echo
-            if ! confirm "Are you sure you want to continue?" "n"; then
-                print_info "Cleanup cancelled."
-                log "User cancelled cleanup after warning."
-                return 0
-            fi
-        fi
-    fi
-
-    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        print_warning "=== PREVIEW MODE ENABLED ==="
-        print_info "No changes will be made. This is a simulation only."
-        printf '\n'
-    fi
-
-    if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
-        print_warning "RECOMMENDED: Create a snapshot/backup via provider dashboard before cleanup."
-        if ! confirm "Have you created a backup snapshot?" "n"; then
-            print_info "Please create a backup first. Exiting cleanup."
-            log "User declined to proceed without backup snapshot."
-            return 0
-        fi
-    fi
-
-    print_warning "This will identify packages and configurations installed by your VPS provider."
-    if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
-        print_warning "Removing critical packages can break system functionality."
-    fi
-
-    local PROVIDER_PACKAGES=()
-    local PROVIDER_SERVICES=()
-    local PROVIDER_USERS=()
-    local ROOT_SSH_KEYS=()
-
-    # List of common provider and virtualization packages
-    local COMMON_PROVIDER_PKGS=(
-        "qemu-guest-agent"
-        "virtio-utils"
-        "virt-what"
-        "cloud-init"
-        "cloud-guest-utils"
-        "cloud-initramfs-growroot"
-        "cloud-utils"
-        "open-vm-tools"
-        "xe-guest-utilities"
-        "xen-tools"
-        "hyperv-daemons"
-        "oracle-cloud-agent"
-        "aws-systems-manager-agent"
-        "amazon-ssm-agent"
-        "google-compute-engine"
-        "google-osconfig-agent"
-        "walinuxagent"
-        "hetzner-needrestart"
-        "digitalocean-agent"
-        "do-agent"
-        "linode-agent"
-        "vultr-monitoring"
-        "scaleway-ecosystem"
-        "ovh-rtm"
-        "openstack-guest-utils"
-        "openstack-nova-agent"
-    )
-
-    # Common provider-created default users
-    local COMMON_PROVIDER_USERS=(
-        "ubuntu"
-        "debian"
-        "admin"
-        "cloud-user"
-        "ec2-user"
-		"linuxuser"
-    )
-
-    print_info "Scanning for provider-installed packages..."
-
-    for pkg in "${COMMON_PROVIDER_PKGS[@]}"; do
-        if execute_check dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
-            PROVIDER_PACKAGES+=("$pkg")
-        fi
-    done
-
-    # Detect associated services
-    print_info "Scanning for provider-related services..."
-    for pkg in "${PROVIDER_PACKAGES[@]}"; do
-        local service_name="${pkg}.service"
-        if execute_check systemctl list-unit-files "$service_name" 2>/dev/null | grep -q "$service_name"; then
-            if execute_check systemctl is-enabled "$service_name" 2>/dev/null | grep -qE 'enabled|static'; then
-                PROVIDER_SERVICES+=("$service_name")
-            fi
-        fi
-    done
-
-    # Check for provider-created users (excluding current admin user and script-managed user)
-    print_info "Scanning for default provisioning users..."
-    local MANAGED_USER=""
-    if [[ -f /root/.du_setup_managed_user ]]; then
-        MANAGED_USER=$(tr -d '[:space:]' < /root/.du_setup_managed_user 2>/dev/null)
-        log "Script-managed user detected: $MANAGED_USER (will be excluded from cleanup)"
-    fi
-
-    for user in "${COMMON_PROVIDER_USERS[@]}"; do
-        if execute_check id "$user" &>/dev/null && \
-           [[ "$user" != "$USERNAME" ]] && \
-           [[ "$user" != "$MANAGED_USER" ]]; then
-            PROVIDER_USERS+=("$user")
-        fi
-    done
-
-    # Audit root SSH keys
-    print_info "Auditing /root/.ssh/authorized_keys for unexpected keys..."
-    if [[ -f /root/.ssh/authorized_keys ]]; then
-        local key_count
-        key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0) | tr -dc '0-9' )
-        if [ "$key_count" -gt 0 ]; then
-            print_warning "Found $key_count SSH key(s) in /root/.ssh/authorized_keys"
-            ROOT_SSH_KEYS=("present")
-        fi
-    fi
-
-    # Summary of findings
-    echo
-    print_info "=== Scan Results ==="
-    echo "Packages found: ${#PROVIDER_PACKAGES[@]}"
-    echo "Services found: ${#PROVIDER_SERVICES[@]}"
-    echo "Default users found: ${#PROVIDER_USERS[@]}"
-    echo "Root SSH keys: ${#ROOT_SSH_KEYS[@]}"
-    echo
-
-    if [[ ${#PROVIDER_PACKAGES[@]} -eq 0 && ${#PROVIDER_USERS[@]} -eq 0 && ${#ROOT_SSH_KEYS[@]} -eq 0 ]]; then
-        print_success "No common provider packages or users detected."
-        return 0
-    fi
-
-    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        print_info "=== PREVIEW: Showing what would be done ==="
-        printf '\n'
-    fi
-
-    # Audit and optionally clean up root SSH keys
-    if [[ ${#ROOT_SSH_KEYS[@]} -gt 0 ]]; then
-        print_section "Root SSH Key Audit"
-        print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
-        printf '\n'
-        printf '%s\n' "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
-        awk '{print NR". "$0}' /root/.ssh/authorized_keys 2>/dev/null | head -20
-        printf '\n'
-
-        if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-            print_info "[PREVIEW] Would offer to review and edit /root/.ssh/authorized_keys"
-            print_info "[PREVIEW] Would backup to $BACKUP_DIR/root_authorized_keys.backup.<timestamp>"
-
-        else
-            if confirm "Review and potentially remove root SSH keys?" "n"; then
-                local backup_file
-                backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
-                cp /root/.ssh/authorized_keys "$backup_file"
-                log "Backed up /root/.ssh/authorized_keys to $backup_file"
-
-                print_warning "IMPORTANT: Do NOT delete ALL keys or you'll be locked out!"
-                print_info "Opening /root/.ssh/authorized_keys for manual review..."
-                read -rp "Press Enter to continue..."
-
-                "${EDITOR:-nano}" /root/.ssh/authorized_keys
-
-                if [[ ! -s /root/.ssh/authorized_keys ]]; then
-                    print_error "WARNING: authorized_keys is empty! This could lock you out."
-                    if [[ -f "$backup_file" ]] && confirm "Restore from backup?" "y"; then
-                        cp "$backup_file" /root/.ssh/authorized_keys
-                        print_info "Restored backup."
-                        log "Restored /root/.ssh/authorized_keys from backup due to empty file."
-                    fi
-                fi
-
-                local new_key_count
-                new_key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
-                print_info "Keys remaining: $new_key_count"
-                log "Root SSH keys audit completed. Keys remaining: $new_key_count"
-            else
-                print_info "Skipping root SSH key audit."
-            fi
-        fi
-        printf '\n'
-    fi
-
-    # Special handling for cloud-init due to its complexity
-    if [[ " ${PROVIDER_PACKAGES[*]} " =~ " cloud-init " ]]; then
-        print_section "Cloud-Init Management"
-        printf '%s\n' "${CYAN}ℹ cloud-init${NC}"
-        printf '   Purpose: Initial VM provisioning (SSH keys, hostname, network)\n'
-        printf '   %s\n' "${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
-        printf '   Benefits of disabling vs removing:\n'
-        printf '     - Can be re-enabled if needed for reprovisioning\n'
-        printf '     - Safer than package removal\n'
-        printf '     - No dependency issues\n'
-        printf '\n'
-
-        if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Disable cloud-init (recommended over removal)?" "y"; then
-            print_info "Disabling cloud-init..."
-
-            if ! [[ -f /etc/cloud/cloud-init.disabled ]]; then
-                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-                    print_info "[PREVIEW] Would create /etc/cloud/cloud-init.disabled"
-                else
-                    execute_command touch /etc/cloud/cloud-init.disabled
-                    print_success "Created /etc/cloud/cloud-init.disabled"
-                    log "Created /etc/cloud/cloud-init.disabled"
-                fi
-            else
-                print_info "/etc/cloud/cloud-init.disabled already exists."
-            fi
-
-            local cloud_services=(
-                "cloud-init.service"
-                "cloud-init-local.service"
-                "cloud-config.service"
-                "cloud-final.service"
-            )
-
-            for service in "${cloud_services[@]}"; do
-                if execute_check systemctl is-enabled "$service" &>/dev/null; then
-                    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-                        print_info "[PREVIEW] Would stop and disable $service"
-                    else
-                        execute_command systemctl stop "$service" 2>/dev/null || true
-                        execute_command systemctl disable "$service" 2>/dev/null || true
-                        print_success "Disabled $service"
-                        log "Disabled $service"
-                    fi
-                fi
-            done
-
-            if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
-                print_success "cloud-init disabled successfully."
-                print_info "To re-enable: sudo rm /etc/cloud/cloud-init.disabled && systemctl enable cloud-init.service"
-            fi
-            local filtered_packages=()
-            for pkg in "${PROVIDER_PACKAGES[@]}"; do
-                if [[ "$pkg" != "cloud-init" && -n "$pkg" ]]; then
-                    filtered_packages+=("$pkg")
-                fi
-            done
-            PROVIDER_PACKAGES=("${filtered_packages[@]}")
-        else
-            print_info "Keeping cloud-init enabled."
-        fi
-        printf '\n'
-    fi
-
-    # Remove identified provider packages
-    if [[ ${#PROVIDER_PACKAGES[@]} -gt 0 ]]; then
-        print_section "Provider Package Removal"
-
-        for pkg in "${PROVIDER_PACKAGES[@]}"; do
-            [[ -z "$pkg" ]] && continue
-
-            case "$pkg" in
-                qemu-guest-agent)
-                    printf '%s\n' "${RED}⚠ $pkg${NC}"
-                    printf '   Purpose: VM-host communication for snapshots and graceful shutdowns\n'
-                    printf '   %s\n' "${RED}CRITICAL RISKS if removed:${NC}"
-                    printf '     - Snapshot backups will FAIL or be inconsistent\n'
-                    printf '     - Console access may break\n'
-                    printf '     - Graceful shutdowns replaced with forced stops\n'
-                    printf '     - Provider backup systems will malfunction\n'
-                    printf '   %s\n' "${RED}STRONGLY RECOMMENDED to keep${NC}"
-                    ;;
-                *-agent|*-monitoring)
-                    printf '%s\n' "${YELLOW}⚠ $pkg${NC}"
-                    printf '   Purpose: Provider monitoring/management\n'
-                    printf '   Risks if removed:\n'
-                    printf '     - Provider dashboard metrics will disappear\n'
-                    printf '     - May affect support troubleshooting\n'
-                    printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
-                    ;;
-                *)
-                    printf '%s\n' "${CYAN}ℹ $pkg${NC}"
-                    printf '   Purpose: Provider-specific tooling\n'
-                    printf '  %s\n' "${YELLOW}Review before removing${NC}"
-                    ;;
-            esac
-            printf '\n'
-
-            if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove $pkg?" "n"; then
-                if [[ "$pkg" == "qemu-guest-agent" && "$CLEANUP_PREVIEW" == "false" ]]; then
-                    print_error "FINAL WARNING: Removing qemu-guest-agent will break backups and console access!"
-                    if ! confirm "Are you ABSOLUTELY SURE?" "n"; then
-                        print_info "Keeping $pkg (wise choice)."
-                        continue
-                    fi
-                fi
-
-                local service_name="${pkg}.service"
-                if execute_check systemctl is-active "$service_name" &>/dev/null; then
-                    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-                        print_info "[PREVIEW] Would stop and disable $service_name"
-                    else
-                        print_info "Stopping $service_name..."
-                        execute_command systemctl stop "$service_name" 2>/dev/null || true
-                        execute_command systemctl disable "$service_name" 2>/dev/null || true
-                        log "Stopped and disabled $service_name"
-                    fi
-                fi
-
-                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-                    print_info "[PREVIEW] Would remove package: $pkg (with --purge flag)"
-                    log "[PREVIEW] Would remove provider package: $pkg"
-                else
-                    print_info "Removing $pkg..."
-                    if execute_command apt-get remove --purge -y "$pkg" 2>&1 | tee -a "$LOG_FILE"; then
-                        print_success "$pkg removed."
-                        log "Removed provider package: $pkg"
-                    else
-                        print_error "Failed to remove $pkg. Check logs."
-                        log "Failed to remove: $pkg"
-                    fi
-                fi
-            else
-                print_info "Keeping $pkg."
-            fi
-        done
-        printf '\n'
-    fi
-
-    # Check and remove default users
-    if [[ ${#PROVIDER_USERS[@]} -gt 0 ]]; then
-        print_section "Provider User Cleanup"
-        print_warning "Default users created during provisioning can be security risks."
-        printf '\n'
-
-        for user in "${PROVIDER_USERS[@]}"; do
-            printf '%s\n' "${YELLOW}Found user: $user${NC}"
-
-            local proc_count
-            proc_count=$( (ps -u "$user" --no-headers 2>/dev/null || true) | wc -l)
-            if [[ $proc_count -gt 0 ]]; then
-                print_warning "User $user has $proc_count running process(es)."
-            fi
-
-            if [[ -d "/home/$user" ]] && [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
-                local key_count=0
-                key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0) | tr -dc '0-9' )
-                if [ "$key_count" -gt 0 ]; then
-                    print_warning "User $user has $key_count SSH key(s) configured."
-                fi
-            fi
-
-            if id -nG "$user" 2>/dev/null | grep -qwE '(sudo|admin)'; then
-                print_warning "User $user has sudo/admin privileges!"
-            fi
-
-            printf '\n'
-
-            if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove user $user and their home directory?" "n"; then
-                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-                    print_info "[PREVIEW] Would terminate processes owned by $user"
-                    print_info "[PREVIEW] Would remove user $user with home directory"
-                    if [[ -f "/etc/sudoers.d/$user" ]]; then
-                        print_info "[PREVIEW] Would remove /etc/sudoers.d/$user"
-                    fi
-                    log "[PREVIEW] Would remove provider user: $user"
-                else
-                    if [[ $proc_count -gt 1 ]]; then
-                        print_info "Terminating processes owned by $user..."
-
-                        execute_command pkill -u "$user" 2>/dev/null || true
-                        sleep 2
-
-                        if ps -u "$user" &>/dev/null; then
-                            print_warning "Some processes didn't terminate gracefully. Force killing..."
-                            execute_command pkill -9 -u "$user" 2>/dev/null || true
-                            sleep 1
-                        fi
-
-                        if ps -u "$user" &>/dev/null; then
-                            print_error "Unable to kill all processes for $user. Manual intervention needed."
-                            log "Failed to terminate all processes for user: $user"
-                            continue
-                        fi
-                    fi
-
-                    print_info "Removing user $user..."
-
-                    local user_removed=false
-                    if command -v deluser &>/dev/null; then
-                        if execute_command deluser --remove-home "$user" 2>&1 | tee -a "$LOG_FILE"; then
-                            user_removed=true
-                        fi
-                    else
-                        if execute_command userdel -r "$user" 2>&1 | tee -a "$LOG_FILE"; then
-                            user_removed=true
-                        fi
-                    fi
-
-                    if [[ "$user_removed" == "true" ]]; then
-                        print_success "User $user removed."
-                        log "Removed provider user: $user"
-
-                        if [[ -f "/etc/sudoers.d/$user" ]]; then
-                            execute_command rm -f "/etc/sudoers.d/$user"
-                            print_info "Removed sudo configuration for $user."
-                        fi
-                    else
-                        print_error "Failed to remove user $user. Check logs."
-                        log "Failed to remove user: $user"
-                    fi
-                fi
-            else
-                print_info "Keeping user $user."
-            fi
-        done
-        printf '\n'
-    fi
-
-    # Final cleanup step
-    if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove residual configuration files and unused dependencies?" "y"; then
-        if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-            print_info "[PREVIEW] Would run: apt-get autoremove --purge -y"
-            print_info "[PREVIEW] Would run: apt-get autoclean -y"
-        else
-            print_info "Cleaning up..."
-            execute_command apt-get autoremove --purge -y 2>&1 | tee -a "$LOG_FILE" || true
-            execute_command apt-get autoclean -y 2>&1 | tee -a "$LOG_FILE" || true
-            print_success "Cleanup complete."
-            log "Ran apt autoremove and autoclean."
-        fi
-    fi
-
-    log "Provider package cleanup completed."
-
-    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
-        printf '\n'
-        print_success "=== PREVIEW COMPLETED ==="
-        print_info "No changes were made to the system."
-        print_info "Run without --cleanup-preview flag to execute these actions."
-    else
-        print_success "Cleanup function completed successfully."
-    fi
-}
-
 # --- USER INTERACTION ---
 
 confirm() {
-    local prompt="$1"
-    local default="${2:-n}"
-    local response
+    local prompt="$1" default="${2:-n}" response
 
     [[ $VERBOSE == false ]] && return 0
 
@@ -2293,6 +1509,716 @@ EOF
     else
         print_error "Failed to apply kernel settings. Check for kernel compatibility."
         log "sysctl -p failed for kernel hardening config."
+    fi
+}
+
+# --- Privider clean-up ---
+
+# cleanup helpers
+execute_check() {
+    "$@"
+}
+execute_command() {
+    local cmd_string="$*"
+
+    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+        printf '%s Would execute: %s\n' "${CYAN}[PREVIEW]${NC}" "${BOLD}$cmd_string${NC}" | tee -a "$LOG_FILE"
+        return 0
+    else
+        "$@"
+        return $?
+    fi
+}
+
+# Env Detection (Cloud VPS or Trusted VM)
+detect_environment() {
+    local VIRT_TYPE="" MANUFACTURER="" PRODUCT="" IS_CLOUD_VPS=false
+
+    # systemd-detect-virt
+    if command -v systemd-detect-virt &>/dev/null; then
+        VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "none")
+    fi
+
+    # dmidecode for hardware info
+    if command -v dmidecode &>/dev/null && [[ $(id -u) -eq 0 ]]; then
+        MANUFACTURER=$(dmidecode -s system-manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+        PRODUCT=$(dmidecode -s system-product-name 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+    fi
+
+    # Check /sys/class/dmi/id/ (fallback, doesn't require dmidecode)
+    if [[ -z "$MANUFACTURER" || "$MANUFACTURER" == "unknown" ]]; then
+        if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
+            MANUFACTURER=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "unknown")
+        fi
+    fi
+
+    if [[ -z "$PRODUCT" || "$PRODUCT" == "unknown" ]]; then
+        if [[ -r /sys/class/dmi/id/product_name ]]; then
+            PRODUCT=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/product_name 2>/dev/null || echo "unknown")
+        fi
+    fi
+
+    if command -v dmidecode &>/dev/null && [[ $(id -u) -eq 0 ]]; then
+        DETECTED_BIOS_VENDOR=$(dmidecode -s bios-vendor 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+    elif [[ -r /sys/class/dmi/id/bios_vendor ]]; then
+        DETECTED_BIOS_VENDOR=$(tr '[:upper:]' '[:lower:]' < /sys/class/dmi/id/bios_vendor 2>/dev/null || echo "unknown")
+    fi
+
+    # Cloud provider detection patterns
+    local CLOUD_PATTERNS=(
+        # VPS/Cloud Providers
+        "digitalocean" "linode" "vultr" "hetzner" "ovh" "scaleway"
+        "contabo" "netcup" "ionos" "hostinger" "racknerd" "upcloud"
+        "dreamhost" "kimsufi" "online.net" "equinix metal" "lightsail"
+        # Major Cloud Platforms
+        "amazon" "amazon ec2" "aws" "google" "gce" "google compute engine"
+        "microsoft" "azure" "oracle cloud" "alibaba" "tencent" "rackspace"
+        # Virtualization indicating cloud VPS
+        "droplet" "linodekvm" "kvm" "openstack"
+    )
+
+    # Check if manufacturer or product matches cloud patterns
+    for pattern in "${CLOUD_PATTERNS[@]}"; do
+        if [[ "$MANUFACTURER" == *"$pattern"* ]] || [[ "$PRODUCT" == *"$pattern"* ]]; then
+            IS_CLOUD_VPS=true
+            break
+        fi
+    done
+
+    # Additional checks based on virtualization type
+    case "$VIRT_TYPE" in
+        kvm|qemu)
+            if [[ -z "$IS_CLOUD_VPS" ]] || [[ "$IS_CLOUD_VPS" == "false" ]]; then
+                if [[ -d /etc/cloud/cloud.cfg.d ]] && grep -qE "(Hetzner|DigitalOcean|Vultr|OVH)" /etc/cloud/cloud.cfg.d/* 2>/dev/null; then
+                    IS_CLOUD_VPS=true; fi
+            fi
+			;;
+        vmware) IS_CLOUD_VPS=false
+		    ;;
+        oracle|virtualbox) IS_CLOUD_VPS=false ;;
+        xen) IS_CLOUD_VPS=true ;;
+        hyperv|microsoft)
+            if [[ "$MANUFACTURER" == *"microsoft"* ]] && [[ "$PRODUCT" == *"virtual machine"* ]]; then
+                IS_CLOUD_VPS=false
+            fi
+			;;
+        none) IS_CLOUD_VPS=false
+		    ;;
+    esac
+
+    # Determine environment type based on detection
+    if [[ "$VIRT_TYPE" == "none" ]]; then
+        ENVIRONMENT_TYPE="bare-metal"
+    elif [[ "$IS_CLOUD_VPS" == "true" ]]; then
+        ENVIRONMENT_TYPE="commercial-cloud"
+    elif [[ "$VIRT_TYPE" =~ ^(kvm|qemu)$ ]]; then
+        if [[ "$MANUFACTURER" == "qemu" && "$PRODUCT" =~ ^(standard pc|pc-|pc ) ]]; then
+            ENVIRONMENT_TYPE="uncertain-kvm"
+        else
+            ENVIRONMENT_TYPE="commercial-cloud"
+        fi
+    elif [[ "$VIRT_TYPE" =~ ^(vmware|virtualbox|oracle)$ ]]; then
+        ENVIRONMENT_TYPE="personal-vm"
+    elif [[ "$VIRT_TYPE" == "xen" ]]; then
+        ENVIRONMENT_TYPE="uncertain-xen"
+    else
+        ENVIRONMENT_TYPE="unknown"
+    fi
+
+    DETECTED_PROVIDER_NAME=""
+    case "$ENVIRONMENT_TYPE" in
+        commercial-cloud)
+            if [[ "$MANUFACTURER" =~ digitalocean ]]; then
+                DETECTED_PROVIDER_NAME="DigitalOcean"
+            elif [[ "$MANUFACTURER" =~ hetzner ]]; then
+                DETECTED_PROVIDER_NAME="Hetzner Cloud"
+            elif [[ "$MANUFACTURER" =~ vultr ]]; then
+                DETECTED_PROVIDER_NAME="Vultr"
+            elif [[ "$MANUFACTURER" =~ linode || "$PRODUCT" =~ akamai ]]; then
+                DETECTED_PROVIDER_NAME="Linode/Akamai"
+            elif [[ "$MANUFACTURER" =~ ovh ]]; then
+                DETECTED_PROVIDER_NAME="OVH"
+            elif [[ "$MANUFACTURER" =~ amazon || "$PRODUCT" =~ "ec2" ]]; then
+                DETECTED_PROVIDER_NAME="Amazon Web Services (AWS)"
+            elif [[ "$MANUFACTURER" =~ google ]]; then
+                DETECTED_PROVIDER_NAME="Google Cloud Platform"
+            elif [[ "$MANUFACTURER" =~ microsoft ]]; then
+                DETECTED_PROVIDER_NAME="Microsoft Azure"
+            else
+                DETECTED_PROVIDER_NAME="Cloud VPS Provider"
+            fi
+            ;;
+        personal-vm)
+            if [[ "$VIRT_TYPE" == "virtualbox" || "$MANUFACTURER" =~ innotek ]]; then
+                DETECTED_PROVIDER_NAME="VirtualBox"
+            elif [[ "$VIRT_TYPE" == "vmware" ]]; then
+                DETECTED_PROVIDER_NAME="VMware"
+            else
+                DETECTED_PROVIDER_NAME="Personal VM"
+            fi
+            ;;
+        uncertain-kvm)
+            DETECTED_PROVIDER_NAME="KVM/QEMU Hypervisor"
+            ;;
+    esac
+
+    # Export results as global variables
+    export ENVIRONMENT_TYPE
+    DETECTED_VIRT_TYPE="$VIRT_TYPE"
+    DETECTED_MANUFACTURER="$MANUFACTURER"
+    DETECTED_PRODUCT="$PRODUCT"
+    DETECTED_BIOS_VENDOR="${DETECTED_BIOS_VENDOR:-unknown}"
+    IS_CLOUD_PROVIDER="$IS_CLOUD_VPS"
+
+    log "Environment detection: VIRT=$VIRT_TYPE, MANUFACTURER=$MANUFACTURER, PRODUCT=$PRODUCT, IS_CLOUD=$IS_CLOUD_VPS, TYPE=$ENVIRONMENT_TYPE"
+}
+
+cleanup_provider_packages() {
+    print_section "Provider Package Cleanup (Optional)"
+
+    # --quiet mode check
+    if [[ "$VERBOSE" == "false" ]]; then
+        print_warning "Provider cleanup cannot be run in --quiet mode due to its interactive nature. Skipping."
+        log "Provider cleanup skipped due to --quiet mode."
+        return 0
+    fi
+
+    # Validate required variables
+    if [[ -z "${LOG_FILE:-}" ]]; then
+        LOG_FILE="/var/log/du_setup_$(date +%Y%m%d_%H%M%S).log"
+        echo "Warning: LOG_FILE not set, using: $LOG_FILE"
+    fi
+
+    if [[ -z "${USERNAME:-}" ]]; then
+        USERNAME="${SUDO_USER:-root}"
+        log "USERNAME defaulted to '$USERNAME' for cleanup-only mode"
+    fi
+
+    if [[ -z "${BACKUP_DIR:-}" ]]; then
+        BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$BACKUP_DIR"
+        log "Created backup directory: $BACKUP_DIR"
+    fi
+
+    # Ensure cleanup mode variables are set
+    CLEANUP_PREVIEW="${CLEANUP_PREVIEW:-false}"
+    CLEANUP_ONLY="${CLEANUP_ONLY:-false}"
+    VERBOSE="${VERBOSE:-true}"
+
+    # Detect environment first
+    detect_environment
+
+    # Display environment information
+    printf '%s\n' "${CYAN}=== Environment Detection ===${NC}"
+    printf 'Virtualization Type: %s\n' "${DETECTED_VIRT_TYPE:-unknown}"
+    printf 'System Manufacturer: %s\n' "${DETECTED_MANUFACTURER:-unknown}"
+    printf 'Product Name: %s\n' "${DETECTED_PRODUCT:-unknown}"
+    printf 'Environment Type: %s\n' "${ENVIRONMENT_TYPE:-unknown}"
+    if [[ -n "${DETECTED_BIOS_VENDOR}" && "${DETECTED_BIOS_VENDOR}" != "unknown" ]]; then
+        printf 'BIOS Vendor: %s\n' "${DETECTED_BIOS_VENDOR}"
+    fi
+    if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
+        printf 'Detected Provider: %s\n' "${DETECTED_PROVIDER_NAME}"
+    fi
+    printf '\n'
+
+    # Determine recommendation based on three-way detection
+    local CLEANUP_RECOMMENDED=false
+    local DEFAULT_ANSWER="n"
+    local RECOMMENDATION_TEXT=""
+    local ENVIRONMENT_CONFIDENCE="${ENVIRONMENT_CONFIDENCE:-low}"
+
+    case "$ENVIRONMENT_TYPE" in
+        commercial-cloud)
+            CLEANUP_RECOMMENDED=true
+            DEFAULT_ANSWER="y"
+            printf '%s\n' "${YELLOW}☁  Commercial Cloud VPS Detected${NC}"
+            if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
+                printf 'Provider: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+            fi
+            printf 'This is a commercial VPS from an external provider.\n'
+            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}RECOMMENDED${NC} for security."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Providers may install monitoring agents, pre-configured users, and management tools.\n'
+            ;;
+
+        uncertain-kvm)
+            CLEANUP_RECOMMENDED=false
+            DEFAULT_ANSWER="n"
+            printf '%s\n' "${YELLOW}⚠  KVM/QEMU Virtualization Detected (Uncertain)${NC}"
+            printf 'This environment could be:\n'
+            printf '  %s A commercial cloud provider VPS (Hetzner, Vultr, OVH, smaller providers)\n' "${CYAN}•${NC}"
+            printf '  %s A personal VM on Proxmox, KVM, or QEMU\n' "${CYAN}•${NC}"
+            printf '  %s A VPS from a regional/unlisted provider\n' "${CYAN}•${NC}"
+            printf '\n'
+            RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - review packages carefully before proceeding."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If this is a commercial VPS, cleanup is recommended.\n'
+            printf 'If you control the hypervisor (Proxmox/KVM), cleanup is optional.\n'
+            ;;
+
+        personal-vm)
+            CLEANUP_RECOMMENDED=false
+            DEFAULT_ANSWER="n"
+            printf '%s\n' "${CYAN}ℹ  Personal/Private Virtualization Detected${NC}"
+            if [[ -n "${DETECTED_PROVIDER_NAME}" ]]; then
+                printf 'Platform: %s\n' "${CYAN}${DETECTED_PROVIDER_NAME}${NC}"
+            fi
+            printf 'This appears to be a personal VM (VirtualBox, VMware Workstation, etc.)\n'
+            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT RECOMMENDED${NC} for trusted environments."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'If you control the hypervisor/host, you likely don'\''t need cleanup.\n'
+            ;;
+
+        bare-metal)
+            printf '%s\n' "${GREEN}✓ Bare Metal Server Detected${NC}"
+            printf 'This appears to be a physical (bare metal) server.\n'
+            RECOMMENDATION_TEXT="Provider cleanup is ${BOLD}NOT NEEDED${NC} for bare metal."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'No virtualization layer detected - skipping cleanup.\n'
+            log "Provider package cleanup skipped: bare metal server detected."
+            return 0
+            ;;
+
+        uncertain-xen|unknown|*)
+            CLEANUP_RECOMMENDED=false
+            DEFAULT_ANSWER="n"
+            printf '%s\n' "${YELLOW}⚠  Virtualization Environment: Uncertain${NC}"
+            printf 'Could not definitively identify the hosting provider or environment.\n'
+            RECOMMENDATION_TEXT="Cleanup is ${BOLD}OPTIONAL${NC} - proceed with caution."
+            printf '%s\n' "$RECOMMENDATION_TEXT"
+            printf 'Review packages carefully before removing anything.\n'
+            ;;
+    esac
+    printf '\n'
+
+    # Decision point based on environment and flags
+    if [[ "$CLEANUP_PREVIEW" == "false" ]] && [[ "$CLEANUP_ONLY" == "false" ]]; then
+        local PROMPT_TEXT=""
+
+        if [[ "$ENVIRONMENT_TYPE" == "commercial-cloud" ]]; then
+            PROMPT_TEXT="Run provider package cleanup? (Recommended for cloud VPS)"
+        elif [[ "$ENVIRONMENT_TYPE" == "uncertain-kvm" ]]; then
+            PROMPT_TEXT="Run provider package cleanup? (Verify your environment first)"
+        else
+            PROMPT_TEXT="Run provider package cleanup? (Not recommended for trusted environments)"
+        fi
+
+        if ! confirm "$PROMPT_TEXT" "$DEFAULT_ANSWER"; then
+            print_info "Skipping provider package cleanup."
+            log "Provider package cleanup skipped by user (environment: $ENVIRONMENT_TYPE)."
+            return 0
+        fi
+
+        # Extra warning for non-cloud environments
+        if [[ "$CLEANUP_RECOMMENDED" == "false" ]] && [[ "$ENVIRONMENT_TYPE" != "uncertain-kvm" ]]; then
+            echo
+            print_warning "⚠  You chose to run cleanup on a trusted/personal environment."
+            print_warning "This may remove useful tools or break functionality."
+            echo
+            if ! confirm "Are you sure you want to continue?" "n"; then
+                print_info "Cleanup cancelled."
+                log "User cancelled cleanup after warning."
+                return 0
+            fi
+        fi
+    fi
+
+    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+        print_warning "=== PREVIEW MODE ENABLED ==="
+        print_info "No changes will be made. This is a simulation only."
+        printf '\n'
+    fi
+
+    if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
+        print_warning "RECOMMENDED: Create a snapshot/backup via provider dashboard before cleanup."
+        if ! confirm "Have you created a backup snapshot?" "n"; then
+            print_info "Please create a backup first. Exiting cleanup."
+            log "User declined to proceed without backup snapshot."
+            return 0
+        fi
+    fi
+
+    print_warning "This will identify packages and configurations installed by your VPS provider."
+    if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
+        print_warning "Removing critical packages can break system functionality."
+    fi
+
+    local PROVIDER_PACKAGES=() PROVIDER_SERVICES=() PROVIDER_USERS=() ROOT_SSH_KEYS=()
+
+    # List of common provider and virtualization packages
+    local COMMON_PROVIDER_PKGS=(
+        "qemu-guest-agent" "virtio-utils" "virt-what" "cloud-init" "cloud-guest-utils" "cloud-initramfs-growroot" "cloud-utils" "open-vm-tools"
+        "xe-guest-utilities" "xen-tools" "hyperv-daemons" "oracle-cloud-agent" "aws-systems-manager-agent" "amazon-ssm-agent" "google-compute-engine"
+        "google-osconfig-agent" "walinuxagent" "hetzner-needrestart" "digitalocean-agent" "do-agent" "linode-agent" "vultr-monitoring" "scaleway-ecosystem"
+        "ovh-rtm" "openstack-guest-utils" "openstack-nova-agent"
+    )
+
+    # Common provider-created default users
+    local COMMON_PROVIDER_USERS=(
+        "ubuntu" "debian" "admin" "cloud-user" "ec2-user "linuxuser"
+    )
+
+    print_info "Scanning for provider-installed packages..."
+
+    for pkg in "${COMMON_PROVIDER_PKGS[@]}"; do
+        if execute_check dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+            PROVIDER_PACKAGES+=("$pkg")
+        fi
+    done
+
+    # Detect associated services
+    print_info "Scanning for provider-related services..."
+    for pkg in "${PROVIDER_PACKAGES[@]}"; do
+        local service_name="${pkg}.service"
+        if execute_check systemctl list-unit-files "$service_name" 2>/dev/null | grep -q "$service_name"; then
+            if execute_check systemctl is-enabled "$service_name" 2>/dev/null | grep -qE 'enabled|static'; then
+                PROVIDER_SERVICES+=("$service_name")
+            fi
+        fi
+    done
+
+    # Check for provider-created users (excluding current admin user and script-managed user)
+    print_info "Scanning for default provisioning users..."
+    local MANAGED_USER=""
+    if [[ -f /root/.du_setup_managed_user ]]; then
+        MANAGED_USER=$(tr -d '[:space:]' < /root/.du_setup_managed_user 2>/dev/null)
+        log "Script-managed user detected: $MANAGED_USER (will be excluded from cleanup)"
+    fi
+
+    for user in "${COMMON_PROVIDER_USERS[@]}"; do
+        if execute_check id "$user" &>/dev/null && \
+           [[ "$user" != "$USERNAME" ]] && \
+           [[ "$user" != "$MANAGED_USER" ]]; then
+            PROVIDER_USERS+=("$user")
+        fi
+    done
+
+    # Audit root SSH keys
+    print_info "Auditing /root/.ssh/authorized_keys for unexpected keys..."
+    if [[ -f /root/.ssh/authorized_keys ]]; then
+        local key_count
+        key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0) | tr -dc '0-9' )
+        if [ "$key_count" -gt 0 ]; then
+            print_warning "Found $key_count SSH key(s) in /root/.ssh/authorized_keys"
+            ROOT_SSH_KEYS=("present")
+        fi
+    fi
+
+    # Summary of findings
+    echo
+    print_info "=== Scan Results ==="
+    echo "Packages found: ${#PROVIDER_PACKAGES[@]}"
+    echo "Services found: ${#PROVIDER_SERVICES[@]}"
+    echo "Default users found: ${#PROVIDER_USERS[@]}"
+    echo "Root SSH keys: ${#ROOT_SSH_KEYS[@]}"
+    echo
+
+    if [[ ${#PROVIDER_PACKAGES[@]} -eq 0 && ${#PROVIDER_USERS[@]} -eq 0 && ${#ROOT_SSH_KEYS[@]} -eq 0 ]]; then
+        print_success "No common provider packages or users detected."
+        return 0
+    fi
+
+    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+        print_info "=== PREVIEW: Showing what would be done ==="
+        printf '\n'
+    fi
+
+    # Audit and optionally clean up root SSH keys
+    if [[ ${#ROOT_SSH_KEYS[@]} -gt 0 ]]; then
+        print_section "Root SSH Key Audit"
+        print_warning "SSH keys in /root/.ssh/authorized_keys can allow provider or previous admins access."
+        printf '\n'
+        printf '%s\n' "${YELLOW}Current keys in /root/.ssh/authorized_keys:${NC}"
+        awk '{print NR". "$0}' /root/.ssh/authorized_keys 2>/dev/null | head -20
+        printf '\n'
+
+        if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+            print_info "[PREVIEW] Would offer to review and edit /root/.ssh/authorized_keys"
+            print_info "[PREVIEW] Would backup to $BACKUP_DIR/root_authorized_keys.backup.<timestamp>"
+
+        else
+            if confirm "Review and potentially remove root SSH keys?" "n"; then
+                local backup_file
+                backup_file="$BACKUP_DIR/root_authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
+                cp /root/.ssh/authorized_keys "$backup_file"
+                log "Backed up /root/.ssh/authorized_keys to $backup_file"
+
+                print_warning "IMPORTANT: Do NOT delete ALL keys or you'll be locked out!"
+                print_info "Opening /root/.ssh/authorized_keys for manual review..."
+                read -rp "Press Enter to continue..."
+
+                "${EDITOR:-nano}" /root/.ssh/authorized_keys
+
+                if [[ ! -s /root/.ssh/authorized_keys ]]; then
+                    print_error "WARNING: authorized_keys is empty! This could lock you out."
+                    if [[ -f "$backup_file" ]] && confirm "Restore from backup?" "y"; then
+                        cp "$backup_file" /root/.ssh/authorized_keys
+                        print_info "Restored backup."
+                        log "Restored /root/.ssh/authorized_keys from backup due to empty file."
+                    fi
+                fi
+
+                local new_key_count
+                new_key_count=$(grep -cE '^ssh-(rsa|ed25519|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
+                print_info "Keys remaining: $new_key_count"
+                log "Root SSH keys audit completed. Keys remaining: $new_key_count"
+            else
+                print_info "Skipping root SSH key audit."
+            fi
+        fi
+        printf '\n'
+    fi
+
+    # Special handling for cloud-init due to its complexity
+    if [[ " ${PROVIDER_PACKAGES[*]} " =~ " cloud-init " ]]; then
+        print_section "Cloud-Init Management"
+        printf '%s\n' "${CYAN}ℹ cloud-init${NC}"
+        printf '   Purpose: Initial VM provisioning (SSH keys, hostname, network)\n'
+        printf '   %s\n' "${YELLOW}Official recommendation: DISABLE rather than remove${NC}"
+        printf '   Benefits of disabling vs removing:\n'
+        printf '     - Can be re-enabled if needed for reprovisioning\n'
+        printf '     - Safer than package removal\n'
+        printf '     - No dependency issues\n'
+        printf '\n'
+
+        if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Disable cloud-init (recommended over removal)?" "y"; then
+            print_info "Disabling cloud-init..."
+
+            if ! [[ -f /etc/cloud/cloud-init.disabled ]]; then
+                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+                    print_info "[PREVIEW] Would create /etc/cloud/cloud-init.disabled"
+                else
+                    execute_command touch /etc/cloud/cloud-init.disabled
+                    print_success "Created /etc/cloud/cloud-init.disabled"
+                    log "Created /etc/cloud/cloud-init.disabled"
+                fi
+            else
+                print_info "/etc/cloud/cloud-init.disabled already exists."
+            fi
+
+            local cloud_services=(
+                "cloud-init.service" "cloud-init-local.service" "cloud-config.service" "cloud-final.service"
+            )
+
+            for service in "${cloud_services[@]}"; do
+                if execute_check systemctl is-enabled "$service" &>/dev/null; then
+                    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+                        print_info "[PREVIEW] Would stop and disable $service"
+                    else
+                        execute_command systemctl stop "$service" 2>/dev/null || true
+                        execute_command systemctl disable "$service" 2>/dev/null || true
+                        print_success "Disabled $service"
+                        log "Disabled $service"
+                    fi
+                fi
+            done
+
+            if [[ "$CLEANUP_PREVIEW" == "false" ]]; then
+                print_success "cloud-init disabled successfully."
+                print_info "To re-enable: sudo rm /etc/cloud/cloud-init.disabled && systemctl enable cloud-init.service"
+            fi
+            local filtered_packages=()
+            for pkg in "${PROVIDER_PACKAGES[@]}"; do
+                if [[ "$pkg" != "cloud-init" && -n "$pkg" ]]; then
+                    filtered_packages+=("$pkg")
+                fi
+            done
+            PROVIDER_PACKAGES=("${filtered_packages[@]}")
+        else
+            print_info "Keeping cloud-init enabled."
+        fi
+        printf '\n'
+    fi
+
+    # Remove identified provider packages
+    if [[ ${#PROVIDER_PACKAGES[@]} -gt 0 ]]; then
+        print_section "Provider Package Removal"
+
+        for pkg in "${PROVIDER_PACKAGES[@]}"; do
+            [[ -z "$pkg" ]] && continue
+
+            case "$pkg" in
+                qemu-guest-agent)
+                    printf '%s\n' "${RED}⚠ $pkg${NC}"
+                    printf '   Purpose: VM-host communication for snapshots and graceful shutdowns\n'
+                    printf '   %s\n' "${RED}CRITICAL RISKS if removed:${NC}"
+                    printf '     - Snapshot backups will FAIL or be inconsistent\n'
+                    printf '     - Console access may break\n'
+                    printf '     - Graceful shutdowns replaced with forced stops\n'
+                    printf '     - Provider backup systems will malfunction\n'
+                    printf '   %s\n' "${RED}STRONGLY RECOMMENDED to keep${NC}"
+                    ;;
+                *-agent|*-monitoring)
+                    printf '%s\n' "${YELLOW}⚠ $pkg${NC}"
+                    printf '   Purpose: Provider monitoring/management\n'
+                    printf '   Risks if removed:\n'
+                    printf '     - Provider dashboard metrics will disappear\n'
+                    printf '     - May affect support troubleshooting\n'
+                    printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
+                    ;;
+                *)
+                    printf '%s\n' "${CYAN}ℹ $pkg${NC}"
+                    printf '   Purpose: Provider-specific tooling\n'
+                    printf '  %s\n' "${YELLOW}Review before removing${NC}"
+                    ;;
+            esac
+            printf '\n'
+
+            if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove $pkg?" "n"; then
+                if [[ "$pkg" == "qemu-guest-agent" && "$CLEANUP_PREVIEW" == "false" ]]; then
+                    print_error "FINAL WARNING: Removing qemu-guest-agent will break backups and console access!"
+                    if ! confirm "Are you ABSOLUTELY SURE?" "n"; then
+                        print_info "Keeping $pkg (wise choice)."
+                        continue
+                    fi
+                fi
+
+                local service_name="${pkg}.service"
+                if execute_check systemctl is-active "$service_name" &>/dev/null; then
+                    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+                        print_info "[PREVIEW] Would stop and disable $service_name"
+                    else
+                        print_info "Stopping $service_name..."
+                        execute_command systemctl stop "$service_name" 2>/dev/null || true
+                        execute_command systemctl disable "$service_name" 2>/dev/null || true
+                        log "Stopped and disabled $service_name"
+                    fi
+                fi
+
+                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+                    print_info "[PREVIEW] Would remove package: $pkg (with --purge flag)"
+                    log "[PREVIEW] Would remove provider package: $pkg"
+                else
+                    print_info "Removing $pkg..."
+                    if execute_command apt-get remove --purge -y "$pkg" 2>&1 | tee -a "$LOG_FILE"; then
+                        print_success "$pkg removed."
+                        log "Removed provider package: $pkg"
+                    else
+                        print_error "Failed to remove $pkg. Check logs."
+                        log "Failed to remove: $pkg"
+                    fi
+                fi
+            else
+                print_info "Keeping $pkg."
+            fi
+        done
+        printf '\n'
+    fi
+
+    # Check and remove default users
+    if [[ ${#PROVIDER_USERS[@]} -gt 0 ]]; then
+        print_section "Provider User Cleanup"
+        print_warning "Default users created during provisioning can be security risks."
+        printf '\n'
+
+        for user in "${PROVIDER_USERS[@]}"; do
+            printf '%s\n' "${YELLOW}Found user: $user${NC}"
+
+            local proc_count
+            proc_count=$( (ps -u "$user" --no-headers 2>/dev/null || true) | wc -l)
+            if [[ $proc_count -gt 0 ]]; then
+                print_warning "User $user has $proc_count running process(es)."
+            fi
+
+            if [[ -d "/home/$user" ]] && [[ -f "/home/$user/.ssh/authorized_keys" ]]; then
+                local key_count=0
+                key_count=$( (grep -cE '^ssh-(rsa|ed25519|ecdsa)' "/home/$user/.ssh/authorized_keys" 2>/dev/null || echo 0) | tr -dc '0-9' )
+                if [ "$key_count" -gt 0 ]; then
+                    print_warning "User $user has $key_count SSH key(s) configured."
+                fi
+            fi
+
+            if id -nG "$user" 2>/dev/null | grep -qwE '(sudo|admin)'; then
+                print_warning "User $user has sudo/admin privileges!"
+            fi
+
+            printf '\n'
+
+            if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove user $user and their home directory?" "n"; then
+                if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+                    print_info "[PREVIEW] Would terminate processes owned by $user"
+                    print_info "[PREVIEW] Would remove user $user with home directory"
+                    if [[ -f "/etc/sudoers.d/$user" ]]; then
+                        print_info "[PREVIEW] Would remove /etc/sudoers.d/$user"
+                    fi
+                    log "[PREVIEW] Would remove provider user: $user"
+                else
+                    if [[ $proc_count -gt 1 ]]; then
+                        print_info "Terminating processes owned by $user..."
+
+                        execute_command pkill -u "$user" 2>/dev/null || true
+                        sleep 2
+
+                        if ps -u "$user" &>/dev/null; then
+                            print_warning "Some processes didn't terminate gracefully. Force killing..."
+                            execute_command pkill -9 -u "$user" 2>/dev/null || true
+                            sleep 1
+                        fi
+
+                        if ps -u "$user" &>/dev/null; then
+                            print_error "Unable to kill all processes for $user. Manual intervention needed."
+                            log "Failed to terminate all processes for user: $user"
+                            continue
+                        fi
+                    fi
+
+                    print_info "Removing user $user..."
+
+                    local user_removed=false
+                    if command -v deluser &>/dev/null; then
+                        if execute_command deluser --remove-home "$user" 2>&1 | tee -a "$LOG_FILE"; then
+                            user_removed=true
+                        fi
+                    else
+                        if execute_command userdel -r "$user" 2>&1 | tee -a "$LOG_FILE"; then
+                            user_removed=true
+                        fi
+                    fi
+
+                    if [[ "$user_removed" == "true" ]]; then
+                        print_success "User $user removed."
+                        log "Removed provider user: $user"
+
+                        if [[ -f "/etc/sudoers.d/$user" ]]; then
+                            execute_command rm -f "/etc/sudoers.d/$user"
+                            print_info "Removed sudo configuration for $user."
+                        fi
+                    else
+                        print_error "Failed to remove user $user. Check logs."
+                        log "Failed to remove user: $user"
+                    fi
+                fi
+            else
+                print_info "Keeping user $user."
+            fi
+        done
+        printf '\n'
+    fi
+
+    # Final cleanup step
+    if [[ "$CLEANUP_PREVIEW" == "true" ]] || confirm "Remove residual configuration files and unused dependencies?" "y"; then
+        if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+            print_info "[PREVIEW] Would run: apt-get autoremove --purge -y"
+            print_info "[PREVIEW] Would run: apt-get autoclean -y"
+        else
+            print_info "Cleaning up..."
+            execute_command apt-get autoremove --purge -y 2>&1 | tee -a "$LOG_FILE" || true
+            execute_command apt-get autoclean -y 2>&1 | tee -a "$LOG_FILE" || true
+            print_success "Cleanup complete."
+            log "Ran apt autoremove and autoclean."
+        fi
+    fi
+
+    log "Provider package cleanup completed."
+
+    if [[ "$CLEANUP_PREVIEW" == "true" ]]; then
+        printf '\n'
+        print_success "=== PREVIEW COMPLETED ==="
+        print_info "No changes were made to the system."
+        print_info "Run without --cleanup-preview flag to execute these actions."
+    else
+        print_success "Cleanup function completed successfully."
     fi
 }
 
