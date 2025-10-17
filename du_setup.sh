@@ -200,7 +200,7 @@ if [[ $EUID -ne 0 ]]; then
     fi
     printf "\n"
     printf "%s%sAlternative methods:%s\n" "$BOLD" "$YELLOW" "$NC"
-    printf "  %ssudo su -%s    # Switch to root\n" "$CYAN" "$NC"
+    printf "  %ssudo su %s    # Switch to root\n" "$CYAN" "$NC"
     if [[ -n "$ORIGINAL_ARGS" ]]; then
         printf "  And run: %s%s %s%s\n" "$CYAN" "$0" "$ORIGINAL_ARGS" "$NC"
     else
