@@ -1654,7 +1654,7 @@ configure_ssh() {
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
         print_error "openssh-server package is not installed."
-        exit 1
+        return 1
     fi
 
     # Detect SSH service name
@@ -1666,14 +1666,29 @@ configure_ssh() {
     elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
         SSH_SERVICE="sshd.service"
     else
-        print_error "No SSH service or daemon detected."
-        exit 1
+        print_error "No valid SSH service (ssh, sshd) is active or enabled."
+        return 1
     fi
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
 
-    # Enhanced port detection
-    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || grep -i '^[[:space:]]*Port' /etc/ssh/sshd_config 2>/dev/null | grep -v '^[[:space:]]*#' | awk '{print $2; exit}' || ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}' || echo "22")
+    # Port detection logic
+    PREVIOUS_SSH_PORT=""
+    # 1. Try to detect port from actively listening sshd process
+    PREVIOUS_SSH_PORT=$(ss -tlnp 2>/dev/null | grep -i 'sshd' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+    # 2. If not found, try to parse from sshd_config
+    if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
+        PREVIOUS_SSH_PORT=$(grep -i '^[[:space:]]*Port' /etc/ssh/sshd_config 2>/dev/null | grep -v '^[[:space:]]*#' | awk '{print $2; exit}')
+    fi
+    # 3. If still not found, check for a listener on the default port 22
+    if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
+        PREVIOUS_SSH_PORT=$(ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+    fi
+    # 4. Default to 22 if all else fails
+    if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
+        PREVIOUS_SSH_PORT="22"
+    fi
+    
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
     log "Detected current SSH port: $CURRENT_SSH_PORT"
 
@@ -1687,7 +1702,7 @@ configure_ssh() {
         mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
-        if [[ ! -s "$AUTH_KEYS" ]]; then print_error "Failed to create authorized_keys file."; exit 1; fi
+        if [[ ! -s "$AUTH_KEYS" ]]; then print_error "Failed to create authorized_keys file."; return 1; fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
         printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
@@ -1705,13 +1720,14 @@ configure_ssh() {
 
     if ! confirm "Can you successfully log in using your SSH key on port $CURRENT_SSH_PORT?"; then
         print_error "SSH key authentication is mandatory to proceed. Fix access before re-running."
-        exit 1
+        return 1 
     fi
 
     # Idempotency Check and Reconfiguration
     if [[ "$CURRENT_SSH_PORT" == "$SSH_PORT" ]]; then
         print_success "SSH is already configured on the desired port $SSH_PORT. Verifying hardening rules..."
         log "SSH port matches desired ($SSH_PORT). Skipping port change, verifying hardening."
+        # Even if the port is correct, we still apply hardening rules to ensure they are set.
         mkdir -p /etc/ssh/sshd_config.d
         tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
 PermitRootLogin no
@@ -1730,11 +1746,12 @@ EOF
 ******************************************************************************
 EOF
         print_info "Testing SSH configuration syntax..."
-        if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
+        sshd -t 2> >(tee -a "$LOG_FILE" >&2)
+        if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
             print_warning "SSH configuration test detected potential issues."
             if ! confirm "Continue despite configuration warnings?"; then
                 print_error "Aborting SSH hardening."
-                exit 1
+                return 1
             fi
         fi
         print_info "Reloading SSH service to apply hardening rules..."
@@ -1782,11 +1799,12 @@ EOF
 ******************************************************************************
 EOF
         print_info "Testing SSH configuration syntax..."
-        if ! sshd -t 2>&1 | tee -a "$LOG_FILE"; then
+        sshd -t 2> >(tee -a "$LOG_FILE" >&2)
+        if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
             print_warning "SSH configuration test detected potential issues."
             if ! confirm "Continue despite configuration warnings?"; then
                 print_error "Aborting SSH configuration."
-                exit 1 # This will trigger the error trap and initiate a rollback
+                return 1 # This will trigger the error trap and initiate a rollback
             fi
         fi
 
@@ -1796,7 +1814,7 @@ EOF
         sleep 5
         if ! ss -tuln | grep -q ":$SSH_PORT"; then
             print_error "SSH not listening on port $SSH_PORT after restart! Rolling back."
-            exit 1
+            return 1
         fi
         print_success "SSH service restarted on port $SSH_PORT."
 
@@ -1805,7 +1823,7 @@ EOF
         sleep 2
         if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
             print_error "Root SSH login is still possible! Rolling back."
-            exit 1
+            return 1
         else
             print_success "Confirmed: Root SSH login is disabled."
         fi
@@ -1833,7 +1851,7 @@ EOF
                     sleep 5
                 else
                     print_error "New port test failed. Rolling back to $CURRENT_SSH_PORT."
-                    exit 1
+                    return 1
                 fi
             fi
         done
@@ -1857,19 +1875,17 @@ rollback_ssh_changes() {
     # Restore the original main config file to have a clean slate
     if [[ -f "$SSHD_BACKUP_FILE" ]]; then
         if ! cp "$SSHD_BACKUP_FILE" /etc/ssh/sshd_config; then
-            print_error "FATAL: Failed to restore sshd_config from backup. Manual intervention required."
-            log "Rollback failed: Could not copy $SSHD_BACKUP_FILE to /etc/ssh/sshd_config"
-            return 1 # Return an error code
+            print_warning "Could not restore sshd_config from backup. The rollback will continue by re-applying the port override, but the main config may have unwanted changes."
+            log "Rollback Warning: Could not copy $SSHD_BACKUP_FILE to /etc/ssh/sshd_config"
+        else
+            log "Restored /etc/ssh/sshd_config from $SSHD_BACKUP_FILE"
         fi
-        log "Restored /etc/ssh/sshd_config from $SSHD_BACKUP_FILE"
     else
-        print_error "FATAL: SSHD backup file not found. Cannot restore. Manual intervention required."
-        log "Rollback failed: Backup file $SSHD_BACKUP_FILE not found."
-        return 1
+        print_warning "SSHD backup file not found. Cannot restore original sshd_config. The rollback will proceed by attempting to re-apply the correct port."
+        log "Rollback Warning: Backup file $SSHD_BACKUP_FILE not found."
     fi
 
     # **Actively re-apply the PREVIOUS port configuration**
-    # This is the key fix: instead of just restoring, we re-configure to the last known good state.
     if [[ "$PREVIOUS_SSH_PORT" != "22" ]]; then
         print_info "Re-applying previous custom port configuration for port $PREVIOUS_SSH_PORT..."
         if [[ "$SSH_SERVICE" == "ssh.socket" ]];
@@ -1878,18 +1894,19 @@ rollback_ssh_changes() {
             printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
             log "Rollback: Re-created systemd override for ssh.socket on port $PREVIOUS_SSH_PORT"
         else
-            mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+            mkdir -p /etc/systemd/system/"${SSH_SERVICE}".d
+            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > /etc/systemd/system/"${SSH_SERVICE}".d/override.conf
             log "Rollback: Re-created systemd override for $SSH_SERVICE on port $PREVIOUS_SSH_PORT"
         fi
     else
         log "Rollback: Previous port was default 22, no override needed."
     fi
 
-    # Validate the restored config before restarting
-    if ! sshd -t; then
-        print_error "FATAL: Restored sshd_config is invalid after attempting rollback. Manual intervention required."
-        log "Rollback failed: Restored sshd_config is invalid."
+    # Validate the config before restarting
+    sshd -t 2> >(tee -a "$LOG_FILE" >&2)
+    if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+        print_error "FATAL: SSH configuration is invalid after attempting rollback. Manual intervention required."
+        log "Rollback failed: sshd -t reported invalid config after rollback attempt."
         return 1
     fi
 
