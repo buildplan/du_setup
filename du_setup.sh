@@ -327,9 +327,9 @@ detect_environment() {
     # Cloud provider detection patterns
     local CLOUD_PATTERNS=(
         # VPS/Cloud Providers
-        "digitalocean" "linode" "vultr" "hetzner" "ovh" "scaleway" "contabo"
-        "netcup" "ionos" "hostinger" "racknerd" "upcloud" "dreamhost" "kimsufi"
-		"online.net" "equinix metal" "lightsail" "scaleway"
+        "digitalocean" "linode" "vultr" "hetzner" "ovh" "scaleway"
+		"contabo" "netcup" "ionos" "hostinger" "racknerd" "upcloud"
+		"dreamhost" "kimsufi" "online.net" "equinix metal" "lightsail"
         # Major Cloud Platforms
         "amazon" "amazon ec2" "aws" "google" "gce" "google compute engine"
 		"microsoft" "azure" "oracle cloud" "alibaba" "tencent" "rackspace"
@@ -813,7 +813,7 @@ cleanup_provider_packages() {
                     printf '   Risks if removed:\n'
                     printf '     - Provider dashboard metrics will disappear\n'
                     printf '     - May affect support troubleshooting\n'
-                    printf '   %s\n' "${YELLOW}Remove only if you don'\''t need provider monitoring${NC}"
+					printf '   %s\n' "${YELLOW}Remove only if you don't need provider monitoring${NC}"
                     ;;
                 *)
                     printf '%s\n' "${CYAN}ℹ $pkg${NC}"
