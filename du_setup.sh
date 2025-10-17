@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-20
+# Version: 0.70 | 2025-10-18
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
+#          Improve SSH port validation and rollback logic.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
@@ -222,7 +223,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-18                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
