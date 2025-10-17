@@ -1895,6 +1895,20 @@ rollback_ssh_changes() {
         fi
         print_info "Restored original sshd_config from $SSHD_BACKUP_FILE."
         log "Restored sshd_config from $SSHD_BACKUP_FILE."
+        # Ensure correct port rollback if already using custom port
+        print_info "Applying a systemd override to ensure rollback to port $PREVIOUS_SSH_PORT..."
+        log "Rollback: Creating override to enforce port $PREVIOUS_SSH_PORT."
+        if [[ "$USE_SOCKET" == true ]]; then
+            mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        else
+            local service_for_rollback="ssh.service"
+            if systemctl list-units --full -all --no-pager | grep -qE "[[:space:]]sshd.service[[:space:]]"; then
+                service_fort_rollback="sshd.service"
+            fi
+            mkdir -p "/etc/systemd/system/${service_for_rollback}.d"
+            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > "/etc/systemd/system/${service_for_rollback}.d/override.conf"
+        fi
     else
         print_error "Backup file not found at $SSHD_BACKUP_FILE."
         log "Rollback failed: $SSHD_BACKUP_FILE not found."
