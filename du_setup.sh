@@ -1335,7 +1335,8 @@ collect_config() {
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
-        if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
+        if validate_port "$SSH_PORT" || [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" == "$INITIAL_DETECTED_PORT" ]]; then
+            break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
     SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
     SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
