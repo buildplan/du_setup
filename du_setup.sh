@@ -677,7 +677,7 @@ cleanup_provider_packages() {
         "admin"
         "cloud-user"
         "ec2-user"
-		"linuxuser"
+        "linuxuser"
     )
 
     print_info "Scanning for provider-installed packages..."
@@ -1905,7 +1905,7 @@ rollback_ssh_changes() {
         else
             local service_for_rollback="ssh.service"
             if systemctl list-units --full -all --no-pager | grep -qE "[[:space:]]sshd.service[[:space:]]"; then
-                service_fort_rollback="sshd.service"
+                service_for_rollback="sshd.service"
             fi
             mkdir -p "/etc/systemd/system/${service_for_rollback}.d"
             printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > "/etc/systemd/system/${service_for_rollback}.d/override.conf"
