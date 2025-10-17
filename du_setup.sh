@@ -80,23 +80,11 @@ CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
 # --- Colors for output ---
 if command -v tput >/dev/null 2>&1 && tput setaf 1 >/dev/null 2>&1; then
-    RED=$(tput setaf 1)
-    GREEN=$(tput setaf 2)
-    YELLOW="$(tput bold)$(tput setaf 3)"
-    BLUE=$(tput setaf 4)
-    PURPLE=$(tput setaf 5)
-    CYAN=$(tput setaf 6)
-    BOLD=$(tput bold)
-    NC=$(tput sgr0)
+    RED=$(tput setaf 1) GREEN=$(tput setaf 2) YELLOW="$(tput bold)$(tput setaf 3)" BLUE=$(tput setaf 4)
+    PURPLE=$(tput setaf 5) CYAN=$(tput setaf 6) BOLD=$(tput bold) NC=$(tput sgr0)
 else
-    RED=$'\e[0;31m'
-    GREEN=$'\e[0;32m'
-    YELLOW=$'\e[1;33m'
-    BLUE=$'\e[0;34m'
-    PURPLE=$'\e[0;35m'
-    CYAN=$'\e[0;36m'
-    NC=$'\e[0m'
-    BOLD=$'\e[1m'
+    RED=$'\e[0;31m' GREEN=$'\e[0;32m' YELLOW=$'\e[1;33m' BLUE=$'\e[0;34m'
+	PURPLE=$'\e[0;35m' CYAN=$'\e[0;36m' NC=$'\e[0m' BOLD=$'\e[1m'
 fi
 
 
