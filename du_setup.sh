@@ -1328,10 +1328,13 @@ collect_config() {
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+    local INITIAL_DETECTED_PORT
+    INITIAL_DETECTED_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+    local PROMPT_DEFAULT_PORT=${INITIAL_DETECTED_PORT:-2222}
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
-        SSH_PORT=${SSH_PORT:-2222}
+        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
+        SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
         if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
     done
     SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
@@ -1345,7 +1348,13 @@ collect_config() {
     printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
-    printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+
+    if [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" != "$INITIAL_DETECTED_PORT" ]]; then
+        printf "  %-15s %s (changed from current: %s)\n" "SSH Port:" "$SSH_PORT" "$INITIAL_DETECTED_PORT"
+    else
+        printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+    fi
+
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     fi
@@ -1686,8 +1695,14 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Store the current active port as the previous port
-    PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
+    # Store the current active port as the previous port for rollback purposes
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+
+    if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
+        print_warning "Could not detect an active SSH port. Assuming port 22 for the initial test."
+        log "Could not detect active SSH port, fell back to 22."
+        PREVIOUS_SSH_PORT="22"
+    fi
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     SSH_DIR="$USER_HOME/.ssh"
