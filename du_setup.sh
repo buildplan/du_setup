@@ -327,42 +327,14 @@ detect_environment() {
     # Cloud provider detection patterns
     local CLOUD_PATTERNS=(
         # VPS/Cloud Providers
-        "digitalocean"
-        "linode"
-        "vultr"
-        "hetzner"
-        "ovh"
-        "scaleway"
-        "contabo"
-        "netcup"
-        "ionos"
-        "hostinger"
-        "racknerd"
-        "upcloud"
-        "dreamhost"
-        "kimsufi"
-        "online.net"
-        "equinix metal"
-        "lightsail"
-        "scaleway"
+        "digitalocean" "linode" "vultr" "hetzner" "ovh" "scaleway" "contabo"
+        "netcup" "ionos" "hostinger" "racknerd" "upcloud" "dreamhost" "kimsufi"
+		"online.net" "equinix metal" "lightsail" "scaleway"
         # Major Cloud Platforms
-        "amazon"
-        "amazon ec2"
-        "aws"
-        "google"
-        "gce"
-        "google compute engine"
-        "microsoft"
-        "azure"
-        "oracle cloud"
-        "alibaba"
-        "tencent"
-        "rackspace"
+        "amazon" "amazon ec2" "aws" "google" "gce" "google compute engine"
+		"microsoft" "azure" "oracle cloud" "alibaba" "tencent" "rackspace"
         # Virtualization indicating cloud VPS
-        "droplet"
-        "linodekvm"
-        "kvm"
-        "openstack"
+        "droplet" "linodekvm" "kvm" "openstack"
     )
 
     # Check if manufacturer or product matches cloud patterns
@@ -378,27 +350,15 @@ detect_environment() {
         kvm|qemu)
             if [[ -z "$IS_CLOUD_VPS" ]] || [[ "$IS_CLOUD_VPS" == "false" ]]; then
                 if [[ -d /etc/cloud/cloud.cfg.d ]] && grep -qE "(Hetzner|DigitalOcean|Vultr|OVH)" /etc/cloud/cloud.cfg.d/* 2>/dev/null; then
-                    IS_CLOUD_VPS=true
-                fi
-            fi
-            ;;
-        vmware)
-            IS_CLOUD_VPS=false
-            ;;
-        oracle|virtualbox)
-            IS_CLOUD_VPS=false
-            ;;
-        xen)
-            IS_CLOUD_VPS=true
-            ;;
+                    IS_CLOUD_VPS=true; fi
+            fi ;;
+        vmware) IS_CLOUD_VPS=false ;;
+        oracle|virtualbox) IS_CLOUD_VPS=false ;;
+        xen) IS_CLOUD_VPS=true ;;
         hyperv|microsoft)
             if [[ "$MANUFACTURER" == *"microsoft"* ]] && [[ "$PRODUCT" == *"virtual machine"* ]]; then
-                IS_CLOUD_VPS=false
-            fi
-            ;;
-        none)
-            IS_CLOUD_VPS=false
-            ;;
+                IS_CLOUD_VPS=false; fi ;;
+        none) IS_CLOUD_VPS=false ;;
     esac
 
     # Determine environment type based on detection
@@ -639,49 +599,19 @@ cleanup_provider_packages() {
         print_warning "Removing critical packages can break system functionality."
     fi
 
-    local PROVIDER_PACKAGES=()
-    local PROVIDER_SERVICES=()
-    local PROVIDER_USERS=()
-    local ROOT_SSH_KEYS=()
+    local PROVIDER_PACKAGES=() PROVIDER_SERVICES=() PROVIDER_USERS=() ROOT_SSH_KEYS=()
 
     # List of common provider and virtualization packages
     local COMMON_PROVIDER_PKGS=(
-        "qemu-guest-agent"
-        "virtio-utils"
-        "virt-what"
-        "cloud-init"
-        "cloud-guest-utils"
-        "cloud-initramfs-growroot"
-        "cloud-utils"
-        "open-vm-tools"
-        "xe-guest-utilities"
-        "xen-tools"
-        "hyperv-daemons"
-        "oracle-cloud-agent"
-        "aws-systems-manager-agent"
-        "amazon-ssm-agent"
-        "google-compute-engine"
-        "google-osconfig-agent"
-        "walinuxagent"
-        "hetzner-needrestart"
-        "digitalocean-agent"
-        "do-agent"
-        "linode-agent"
-        "vultr-monitoring"
-        "scaleway-ecosystem"
-        "ovh-rtm"
-        "openstack-guest-utils"
-        "openstack-nova-agent"
+        "qemu-guest-agent" "virtio-utils" "virt-what" "cloud-init" "cloud-guest-utils" "cloud-initramfs-growroot" "cloud-utils" "open-vm-tools"
+		"xe-guest-utilities" "xen-tools" "hyperv-daemons" "oracle-cloud-agent" "aws-systems-manager-agent" "amazon-ssm-agent"
+        "google-compute-engine" "google-osconfig-agent" "walinuxagent" "hetzner-needrestart" "digitalocean-agent" "do-agent"
+        "linode-agent" "vultr-monitoring" "scaleway-ecosystem" "ovh-rtm" "openstack-guest-utils" "openstack-nova-agent"
     )
 
     # Common provider-created default users
     local COMMON_PROVIDER_USERS=(
-        "ubuntu"
-        "debian"
-        "admin"
-        "cloud-user"
-        "ec2-user"
-		"linuxuser"
+        "ubuntu" "debian" "admin" "cloud-user" "ec2-user" "linuxuser"
     )
 
     print_info "Scanning for provider-installed packages..."
@@ -1682,7 +1612,7 @@ configure_ssh() {
     fi
     # 3. If still not found, check for a listener on the default port 22
     if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
-        PREVIOUS_SSH_PORT=$(ss -tuln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
+        PREVIOUS_SSH_PORT=$(ss -tln | grep ':22 ' | awk 'NR==1 {n=split($4,a,":"); print a[n]}')
     fi
     # 4. Default to 22 if all else fails
     if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
@@ -1810,9 +1740,13 @@ EOF
 
         print_info "Reloading systemd and restarting SSH service..."
         systemctl daemon-reload
-        systemctl restart "$SSH_SERVICE"
+        if [[ -f /usr/lib/systemd/system/ssh.socket ]]; then
+            systemctl restart ssh.socket ssh.service
+        else
+            systemctl restart "$SSH_SERVICE"
+        fi
         sleep 5
-        if ! ss -tuln | grep -q ":$SSH_PORT"; then
+        if ! ss -tul | grep -q ":$SSH_PORT"; then
             print_error "SSH not listening on port $SSH_PORT after restart! Rolling back."
             return 1
         fi
@@ -1888,8 +1822,7 @@ rollback_ssh_changes() {
     # **Actively re-apply the PREVIOUS port configuration**
     if [[ "$PREVIOUS_SSH_PORT" != "22" ]]; then
         print_info "Re-applying previous custom port configuration for port $PREVIOUS_SSH_PORT..."
-        if [[ "$SSH_SERVICE" == "ssh.socket" ]];
-        then
+        if [[ -f /usr/lib/systemd/system/ssh.socket ]] && [[ "$ID" == "ubuntu" ]]; then
             mkdir -p /etc/systemd/system/ssh.socket.d
             printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
             log "Rollback: Re-created systemd override for ssh.socket on port $PREVIOUS_SSH_PORT"
