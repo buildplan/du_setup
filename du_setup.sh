@@ -1512,7 +1512,7 @@ EOF
     fi
 }
 
-# --- Privider clean-up ---
+# --- Provider clean-up ---
 
 # cleanup helpers
 execute_check() {
