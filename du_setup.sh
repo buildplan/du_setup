@@ -84,7 +84,7 @@ if command -v tput >/dev/null 2>&1 && tput setaf 1 >/dev/null 2>&1; then
     PURPLE=$(tput setaf 5) CYAN=$(tput setaf 6) BOLD=$(tput bold) NC=$(tput sgr0)
 else
     RED=$'\e[0;31m' GREEN=$'\e[0;32m' YELLOW=$'\e[1;33m' BLUE=$'\e[0;34m'
-	PURPLE=$'\e[0;35m' CYAN=$'\e[0;36m' NC=$'\e[0m' BOLD=$'\e[1m'
+    PURPLE=$'\e[0;35m' CYAN=$'\e[0;36m' NC=$'\e[0m' BOLD=$'\e[1m'
 fi
 
 
