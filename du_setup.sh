@@ -128,6 +128,7 @@ SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
 PREVIOUS_SSH_PORT=""
+SSH_CHANGE_IN_PROGRESS=false # Flag to control SSH rollback logic
 
 # --- --help ---
 show_usage() {
@@ -1646,29 +1647,14 @@ configure_system() {
     log "System configuration completed."
 }
 
-cleanup_and_exit() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 && $(type -t rollback_ssh_changes) == "function" ]]; then
-        print_error "An error occurred. Rolling back SSH changes to port $PREVIOUS_SSH_PORT..."
-        rollback_ssh_changes
-        if [[ $? -ne 0 ]]; then
-            print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
-        fi
-    fi
-    trap - ERR
-    exit $exit_code
-}
-
 configure_ssh() {
-    trap cleanup_and_exit ERR
-
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS NEW_SSH_CONFIG
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
         print_error "openssh-server package is not installed."
-        return 1
+        exit 1
     fi
 
     # Detect SSH service name
@@ -1681,7 +1667,7 @@ configure_ssh() {
         SSH_SERVICE="sshd.service"
     else
         print_error "No SSH service or daemon detected."
-        return 1
+        exit 1
     fi
     print_info "Using SSH service: $SSH_SERVICE"
     log "Detected SSH service: $SSH_SERVICE"
@@ -1695,13 +1681,13 @@ configure_ssh() {
     SSH_DIR="$USER_HOME/.ssh"
     AUTH_KEYS="$SSH_DIR/authorized_keys"
 
-    # Fallback key generation, main logic is in setup_user()
+    # Fallback key generation (main logic is in setup_user)
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
         mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
-        if [[ ! -s "$AUTH_KEYS" ]]; then print_error "Failed to create authorized_keys file."; return 1; fi
+        if [[ ! -s "$AUTH_KEYS" ]]; then print_error "Failed to create authorized_keys file."; exit 1; fi
         chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
         printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
@@ -1719,14 +1705,13 @@ configure_ssh() {
 
     if ! confirm "Can you successfully log in using your SSH key on port $CURRENT_SSH_PORT?"; then
         print_error "SSH key authentication is mandatory to proceed. Fix access before re-running."
-        return 1
+        exit 1
     fi
 
     # Idempotency Check and Reconfiguration
     if [[ "$CURRENT_SSH_PORT" == "$SSH_PORT" ]]; then
         print_success "SSH is already configured on the desired port $SSH_PORT. Verifying hardening rules..."
         log "SSH port matches desired ($SSH_PORT). Skipping port change, verifying hardening."
-        # Even if the port is correct, we still apply hardening rules to ensure they are set.
         mkdir -p /etc/ssh/sshd_config.d
         tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
 PermitRootLogin no
@@ -1749,7 +1734,7 @@ EOF
             print_warning "SSH configuration test detected potential issues."
             if ! confirm "Continue despite configuration warnings?"; then
                 print_error "Aborting SSH hardening."
-                return 1
+                exit 1
             fi
         fi
         print_info "Reloading SSH service to apply hardening rules..."
@@ -1758,6 +1743,7 @@ EOF
 
     else
         print_info "Current SSH port is $CURRENT_SSH_PORT. Changing to desired port $SSH_PORT..."
+        SSH_CHANGE_IN_PROGRESS=true # Set the flag: we are now making critical changes.
         
         print_info "Backing up original SSH config..."
         SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
@@ -1800,8 +1786,7 @@ EOF
             print_warning "SSH configuration test detected potential issues."
             if ! confirm "Continue despite configuration warnings?"; then
                 print_error "Aborting SSH configuration."
-                rollback_ssh_changes
-                return 1
+                exit 1 # This will trigger the error trap and initiate a rollback
             fi
         fi
 
@@ -1811,8 +1796,7 @@ EOF
         sleep 5
         if ! ss -tuln | grep -q ":$SSH_PORT"; then
             print_error "SSH not listening on port $SSH_PORT after restart! Rolling back."
-            rollback_ssh_changes
-            return 1
+            exit 1
         fi
         print_success "SSH service restarted on port $SSH_PORT."
 
@@ -1821,8 +1805,7 @@ EOF
         sleep 2
         if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost true 2>/dev/null; then
             print_error "Root SSH login is still possible! Rolling back."
-            rollback_ssh_changes
-            return 1
+            exit 1
         else
             print_success "Confirmed: Root SSH login is disabled."
         fi
@@ -1850,14 +1833,13 @@ EOF
                     sleep 5
                 else
                     print_error "New port test failed. Rolling back to $CURRENT_SSH_PORT."
-                    rollback_ssh_changes
-                    return 1
+                    exit 1
                 fi
             fi
         done
     fi
 
-    trap - ERR
+    SSH_CHANGE_IN_PROGRESS=false # Unset the flag as we have completed successfully.
     log "SSH hardening completed."
 }
 
@@ -1886,7 +1868,8 @@ rollback_ssh_changes() {
         return 1
     fi
 
-    # Re-apply the PREVIOUS port configuration**
+    # **Actively re-apply the PREVIOUS port configuration**
+    # This is the key fix: instead of just restoring, we re-configure to the last known good state.
     if [[ "$PREVIOUS_SSH_PORT" != "22" ]]; then
         print_info "Re-applying previous custom port configuration for port $PREVIOUS_SSH_PORT..."
         if [[ "$SSH_SERVICE" == "ssh.socket" ]];
@@ -3411,10 +3394,20 @@ handle_error() {
     local exit_code=$?
     local line_no="$1"
     print_error "An error occurred on line $line_no (exit code: $exit_code)."
+
+    # Only attempt rollback if an SSH change was flagged as in-progress
+    if [[ "$SSH_CHANGE_IN_PROGRESS" == "true" ]] && type -t rollback_ssh_changes &> /dev/null; then
+        print_info "Attempting to roll back SSH changes..."
+        if ! rollback_ssh_changes; then
+            print_error "Rollback failed. SSH may not be accessible on port $PREVIOUS_SSH_PORT. Manual intervention required."
+        fi
+    fi
+
     print_info "Log file: $LOG_FILE"
     print_info "Backups: $BACKUP_DIR"
-    exit $exit_code
+    exit "$exit_code"
 }
+
 
 main() {
     trap 'handle_error $LINENO' ERR
