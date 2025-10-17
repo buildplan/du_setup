@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-20
+# Version: 0.70 | 2025-10-18
 # Changelog:
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
+#          Improve SSH port validation and rollback logic.
 # - v0.69: Ensure .ssh directory ownership is set for new user.
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
@@ -200,7 +201,7 @@ if [[ $EUID -ne 0 ]]; then
     fi
     printf "\n"
     printf "%s%sAlternative methods:%s\n" "$BOLD" "$YELLOW" "$NC"
-    printf "  %ssudo su -%s    # Switch to root\n" "$CYAN" "$NC"
+    printf "  %ssudo su %s    # Switch to root\n" "$CYAN" "$NC"
     if [[ -n "$ORIGINAL_ARGS" ]]; then
         printf "  And run: %s%s %s%s\n" "$CYAN" "$0" "$ORIGINAL_ARGS" "$NC"
     else
@@ -222,7 +223,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.70 | 2025-10-18                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -1328,11 +1329,15 @@ collect_config() {
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+    local INITIAL_DETECTED_PORT
+    INITIAL_DETECTED_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+    local PROMPT_DEFAULT_PORT=${INITIAL_DETECTED_PORT:-2222}
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [2222]: ${NC}")" SSH_PORT
-        SSH_PORT=${SSH_PORT:-2222}
-        if validate_port "$SSH_PORT"; then break; else print_error "Invalid port number."; fi
+        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
+        SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
+        if validate_port "$SSH_PORT" || [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" == "$INITIAL_DETECTED_PORT" ]]; then
+            break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
     SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
     SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
@@ -1345,7 +1350,13 @@ collect_config() {
     printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
-    printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+
+    if [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" != "$INITIAL_DETECTED_PORT" ]]; then
+        printf "  %-15s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$INITIAL_DETECTED_PORT"
+    else
+        printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+    fi
+
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     fi
@@ -1686,8 +1697,14 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Store the current active port as the previous port
-    PREVIOUS_SSH_PORT=$(ss -tuln | grep -E ":(22|.*$SSH_SERVICE.*)" | awk '{print $5}' | cut -d':' -f2 | head -n1 || echo "22")
+    # Store the current active port as the previous port for rollback purposes
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+
+    if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
+        print_warning "Could not detect an active SSH port. Assuming port 22 for the initial test."
+        log "Could not detect active SSH port, fell back to 22."
+        PREVIOUS_SSH_PORT="22"
+    fi
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     SSH_DIR="$USER_HOME/.ssh"
@@ -1879,6 +1896,20 @@ rollback_ssh_changes() {
         fi
         print_info "Restored original sshd_config from $SSHD_BACKUP_FILE."
         log "Restored sshd_config from $SSHD_BACKUP_FILE."
+        # Ensure correct port rollback if already using custom port
+        print_info "Applying a systemd override to ensure rollback to port $PREVIOUS_SSH_PORT..."
+        log "Rollback: Creating override to enforce port $PREVIOUS_SSH_PORT."
+        if [[ "$USE_SOCKET" == true ]]; then
+            mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        else
+            local service_for_rollback="ssh.service"
+            if systemctl list-units --full -all --no-pager | grep -qE "[[:space:]]sshd.service[[:space:]]"; then
+                service_fort_rollback="sshd.service"
+            fi
+            mkdir -p "/etc/systemd/system/${service_for_rollback}.d"
+            printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $PREVIOUS_SSH_PORT" > "/etc/systemd/system/${service_for_rollback}.d/override.conf"
+        fi
     else
         print_error "Backup file not found at $SSHD_BACKUP_FILE."
         log "Rollback failed: $SSHD_BACKUP_FILE not found."
