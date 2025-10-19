@@ -1680,7 +1680,7 @@ configure_ssh() {
     trap cleanup_and_exit ERR
 
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -1707,14 +1707,13 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Check our globally detected port, falling back to 22 if detection failed
+    # Check globally detected port, falling back to 22 if detection failed
     if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
         print_warning "Could not detect an active SSH port. Assuming port 22 for the initial test."
-        log "Could not detect active SSH port, fell back to 22 (globally)."
+        log "Could not detect active SSH port, fell back to 22."
         PREVIOUS_SSH_PORT="22"
     fi
     CURRENT_SSH_PORT=$PREVIOUS_SSH_PORT
-
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     SSH_DIR="$USER_HOME/.ssh"
     AUTH_KEYS="$SSH_DIR/authorized_keys"
