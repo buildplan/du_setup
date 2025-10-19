@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70 | 2025-10-18
+# Version: 0.70.1 | 2025-10-19
 # Changelog:
+# - v0.70.1:  Fix SSH port validation and improve firewall handling during SSH port transitions.
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
@@ -70,10 +71,10 @@
 # - If SSH access is lost, use the server console to restore /etc/ssh/sshd_config.backup_*.
 # - Ensure sufficient disk space (>2GB) for swap file creation.
 
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
+set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.70"
+CURRENT_VERSION="0.70.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -125,6 +126,7 @@ LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
+PREVIOUS_SSH_PORT=""
 
 # --- --help ---
 show_usage() {
@@ -1329,14 +1331,13 @@ collect_config() {
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
-    local INITIAL_DETECTED_PORT
-    INITIAL_DETECTED_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
-    local PROMPT_DEFAULT_PORT=${INITIAL_DETECTED_PORT:-2222}
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+    local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
-        if validate_port "$SSH_PORT" || [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" == "$INITIAL_DETECTED_PORT" ]]; then
+        if validate_port "$SSH_PORT" || [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" == "$PREVIOUS_SSH_PORT" ]]; then
             break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
     SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
@@ -1351,8 +1352,8 @@ collect_config() {
     printf "  %-15s %s\n" "Username:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
 
-    if [[ -n "$INITIAL_DETECTED_PORT" && "$SSH_PORT" != "$INITIAL_DETECTED_PORT" ]]; then
-        printf "  %-15s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$INITIAL_DETECTED_PORT"
+    if [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
+        printf "  %-15s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$PREVIOUS_SSH_PORT"
     else
         printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
     fi
@@ -1657,6 +1658,15 @@ cleanup_and_exit() {
     local exit_code=$?
     if [[ $exit_code -ne 0 && $(type -t rollback_ssh_changes) == "function" ]]; then
         print_error "An error occurred. Rolling back SSH changes to port $PREVIOUS_SSH_PORT..."
+        print_info "Rolling back firewall rules..."
+        ufw delete allow "$SSH_PORT"/tcp 2>/dev/null || true
+        if [[ -n "$PREVIOUS_SSH_PORT" ]]; then
+            ufw allow "$PREVIOUS_SSH_PORT"/tcp comment 'SSH Rollback' 2>/dev/null || true
+            print_info "Firewall rolled back to allow port $PREVIOUS_SSH_PORT."
+        else
+            print_warning "Could not determine previous SSH port for firewall rollback."
+        fi
+
         rollback_ssh_changes
         if [[ $? -ne 0 ]]; then
             print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
@@ -1670,7 +1680,7 @@ configure_ssh() {
     trap cleanup_and_exit ERR
 
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS NEW_SSH_CONFIG PREVIOUS_SSH_PORT
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -1697,9 +1707,7 @@ configure_ssh() {
     SSHD_BACKUP_FILE="$BACKUP_DIR/sshd_config.backup_$(date +%Y%m%d_%H%M%S)"
     cp /etc/ssh/sshd_config "$SSHD_BACKUP_FILE"
 
-    # Store the current active port as the previous port for rollback purposes
-    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
-
+    # Check globally detected port, falling back to 22 if detection failed
     if [[ -z "$PREVIOUS_SSH_PORT" ]]; then
         print_warning "Could not detect an active SSH port. Assuming port 22 for the initial test."
         log "Could not detect active SSH port, fell back to 22."
@@ -1821,6 +1829,11 @@ EOF
     while (( retry_count < max_retries )); do
         if confirm "Was the new SSH connection successful?"; then
             print_success "SSH hardening confirmed and finalized."
+            # Remove temporary UFW rule
+            if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
+                print_info "Removing temporary UFW rule for old SSH port $PREVIOUS_SSH_PORT..."
+                ufw delete allow "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
+            fi
             break
         else
             (( retry_count++ ))
@@ -2130,6 +2143,13 @@ configure_firewall() {
         log "UFW IPv6 configuration skipped as no kernel support was detected."
     fi
 
+    # Add temporary rule for current SSH port
+    if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
+        print_info "Temporarily adding UFW rule for current SSH port $PREVIOUS_SSH_PORT for transition..."
+        if ! ufw status | grep -qw "$PREVIOUS_SSH_PORT/tcp"; then
+            ufw allow "$PREVIOUS_SSH_PORT"/tcp comment 'Temporary SSH for transition'
+        fi
+    fi
     print_info "Enabling firewall..."
     if ! ufw --force enable; then
         print_error "Failed to enable UFW. Check 'journalctl -u ufw' for details."
