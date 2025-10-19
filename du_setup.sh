@@ -3,7 +3,7 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.70.1 | 2025-10-19
 # Changelog:
-# - v0.70.1: Allow current SSH port in UFW rules for test during SSH configuration.
+# - v0.70.1:  Fix SSH port validation and improve firewall handling during SSH port transitions.
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
@@ -71,7 +71,7 @@
 # - If SSH access is lost, use the server console to restore /etc/ssh/sshd_config.backup_*.
 # - Ensure sufficient disk space (>2GB) for swap file creation.
 
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
+set -euo pipefail
 
 # --- Update Configuration ---
 CURRENT_VERSION="0.70.1"
