@@ -1074,7 +1074,7 @@ configure_custom_bashrc() {
     fi
     chmod 600 "$temp_source_bashrc"
 
-    if ! cat > "$temp_source_bashrc" <<'EOF'
+    if ! cat > "$temp_source_bashrc" <<'EOF'; then
 # shellcheck shell=bash
 # ===================================================================
 #   Universal Portable .bashrc for Modern Terminals
@@ -1839,7 +1839,7 @@ bashhelp() {
 
     case "$category" in
         all|"")
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ╔════════════════════════════════════════════════════════╗
 ║              .bashrc - Quick Reference                 ║
@@ -2025,11 +2025,11 @@ APT (Debian/Ubuntu):
 💡 TIP: Most commands support --help or -h for more information
      The prompt shows: ✗ for failed commands, git branch when in repo
 
-EOF
+HELPTEXT
             ;;
 
         navigation)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ NAVIGATION & DIRECTORY COMMANDS ═══
 
@@ -2049,11 +2049,11 @@ Examples:
   up 3                       # Go up 3 levels
   cd -                       # Return to previous directory
 
-EOF
+HELPTEXT
             ;;
 
         files)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ FILE OPERATION COMMANDS ═══
 
@@ -2081,11 +2081,11 @@ Examples:
   extract data.tar.gz
   backup ~/.bashrc
 
-EOF
+HELPTEXT
             ;;
 
         system)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ SYSTEM MONITORING COMMANDS ═══
 
@@ -2116,11 +2116,11 @@ Examples:
   psgrep nginx
   psmem | grep docker
 
-EOF
+HELPTEXT
             ;;
 
         docker)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ DOCKER COMMANDS ═══
 
@@ -2155,11 +2155,11 @@ Examples:
   dcupdate nginx
   dcgrep app "error"
 
-EOF
+HELPTEXT
             ;;
 
         git)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ GIT SHORTCUTS ═══
 
@@ -2178,11 +2178,11 @@ Examples:
   gc -m "Update docs"  # Commit
   gp                   # Push to remote
 
-EOF
+HELPTEXT
             ;;
 
         network)
-            cat << 'EOF'
+            cat << 'HELPTEXT'
 
 ═══ NETWORK COMMANDS ═══
 
@@ -2199,7 +2199,7 @@ Examples:
   listening | grep 80
   ping google.com
 
-EOF
+HELPTEXT
             ;;
 
         *)
@@ -2237,7 +2237,6 @@ alias commands='compgen -A function -A alias | grep -v "^_" | sort | column'
 # - Consider moving rarely-used functions to separate files
 # - Use 'time bash -i -c exit' to measure startup time
 EOF
-    then
         print_error "Failed to write .bashrc content to temporary file $temp_source_bashrc."
         log "Critical error: Failed to write bashrc content to $temp_source_bashrc."
         rm -f "$temp_source_bashrc" 2>/dev/null
@@ -2248,8 +2247,7 @@ EOF
 
     local temp_fallback_path="/tmp/custom_bashrc_for_${USERNAME}.txt"
 
-    if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null
-    then
+    if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null; then
         print_error "Failed to automatically write custom .bashrc to $BASHRC_PATH."
         log "Error writing custom .bashrc for $USERNAME to $BASHRC_PATH (likely permissions issue)."
 
