@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.71 | 2025-10-20
+# Version: 0.72 | 2025-10-20
 # Changelog:
 # - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
 # - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
@@ -75,7 +75,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.71"
+CURRENT_VERSION="0.72"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -226,7 +226,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.71 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.72 | 2025-10-20                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2641,7 +2641,7 @@ setup_backup() {
     local ROOT_SSH_KEY="$ROOT_SSH_DIR/id_ed25519"
     local BACKUP_SCRIPT_PATH="/root/run_backup.sh"
     local EXCLUDE_FILE_PATH="/root/rsync_exclude.txt"
-    local CRON_MARKER="#-*- managed by setup_harden script -*-"
+    local CRON_MARKER="#-*- installed by du_setup script -*-"
 
     # --- Generate SSH Key for Root ---
     if [[ ! -f "$ROOT_SSH_KEY" ]]; then
@@ -2885,7 +2885,7 @@ rsync_exit_code=$?; echo "$rsync_output" >> "$LOG_FILE"
 if [[ $rsync_exit_code -eq 0 ]]; then
     data_transferred=$(echo "$rsync_output" | grep 'Total transferred file size' | awk '{print $5}' | sed 's/,//g')
     human_readable=$(numfmt --to=iec-i --suffix=B --format="%.2f" "$data_transferred" 2>/dev/null || echo "0 B")
-    message="Backup completed successfully.\nData Transferred: ${human_readable}"
+    printf -v message "Backup completed successfully.\nData Transferred: %s" "${human_readable}"
     send_notification "SUCCESS" "$message"
 else
     message="rsync failed with exit code ${rsync_exit_code}. Check log for details."
