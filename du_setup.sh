@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70.1 | 2025-10-19
+# Version: 0.71 | 2025-10-20
 # Changelog:
-# - v0.70.1:  Fix SSH port validation and improve firewall handling during SSH port transitions.
+# - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
+# - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
@@ -74,7 +75,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.70.1"
+CURRENT_VERSION="0.71"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -225,7 +226,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.70.1 | 2025-10-18                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.71 | 2025-10-20                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2986,33 +2987,42 @@ test_backup() {
     fi
 
     # Create a temporary directory and file for the test
-    local TEST_DIR
+    local TEST_DIR TEST_FILE
     TEST_DIR="/root/test_backup_$(date +%Y%m%d_%H%M%S)"
-    if ! mkdir -p "$TEST_DIR" || ! echo "Test file for backup verification" > "$TEST_DIR/test.txt"; then
+    TEST_FILE="$TEST_DIR/test_backup_verification_$(date +%s).txt"
+    if ! mkdir -p "$TEST_DIR" || ! echo "Test file for backup verification - $(date)" > "$TEST_FILE"; then
         print_error "Failed to create test directory or file in /root/."
         log "Backup test failed: Cannot create test directory/file."
         rm -rf "$TEST_DIR" 2>/dev/null
         return 0
     fi
 
-    print_info "Running test backup to $BACKUP_DEST:$REMOTE_BACKUP_PATH..."
-    local RSYNC_OUTPUT RSYNC_EXIT_CODE TIMEOUT_DURATION=120
+    print_info "Running test backup of single file to ${BACKUP_DEST}:${REMOTE_BACKUP_PATH}..."
+    local RSYNC_OUTPUT RSYNC_EXIT_CODE TIMEOUT_DURATION=60
     local SSH_KEY="/root/.ssh/id_ed25519"
     local SSH_COMMAND="ssh -p $BACKUP_PORT -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=no"
 
     set +e
-    RSYNC_OUTPUT=$(timeout "$TIMEOUT_DURATION" rsync -avz --delete -e "$SSH_COMMAND" "$TEST_DIR/" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}test_backup/" 2>&1)
+    RSYNC_OUTPUT=$(timeout "$TIMEOUT_DURATION" rsync -avz -e "$SSH_COMMAND" "$TEST_FILE" "${BACKUP_DEST}:${REMOTE_BACKUP_PATH}" 2>&1)
     RSYNC_EXIT_CODE=$?
-    set -e # Re-enable 'exit on error'
+    set -e
 
-    echo "--- Test Backup at $(date) ---" >> "$BACKUP_LOG"
-    echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
+    {
+        echo "--- Test Backup at $(date) ---"
+        echo "Command: rsync -avz -e \"$SSH_COMMAND\" \"$TEST_FILE\" \"${BACKUP_DEST}:${REMOTE_BACKUP_PATH}\""
+        echo "Output:"
+        echo "$RSYNC_OUTPUT"
+        echo "Exit Code: $RSYNC_EXIT_CODE"
+    } >> "$BACKUP_LOG"
 
     if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
-        print_success "Test backup successful! Check $BACKUP_LOG for details."
-        log "Test backup successful."
+        print_success "Test backup (single file) successful! Check $BACKUP_LOG for details."
+        log "Test backup successful (single file)."
+        ssh -p "$BACKUP_PORT" -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no "$BACKUP_DEST" "rm -f '${REMOTE_BACKUP_PATH}$(basename "$TEST_FILE")'" > /dev/null 2>&1 || true
+        log "Attempted cleanup of remote test file: ${REMOTE_BACKUP_PATH}$(basename "$TEST_FILE")"
+
     else
-        print_warning "The backup test failed. This is not critical, and the script will continue."
+        print_warning "The backup test (single file transfer) failed. This is not critical, and the script will continue."
         print_info "You can troubleshoot this after the server setup is complete."
 
         if [[ $RSYNC_EXIT_CODE -eq 124 ]]; then
@@ -3021,15 +3031,29 @@ test_backup() {
         else
             print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). See $BACKUP_LOG for details."
             log "Test backup failed with exit code $RSYNC_EXIT_CODE."
+            # Hints based on common rsync errors
+            case "$RSYNC_OUTPUT" in
+                *"Permission denied"*)
+                    print_info "Hint: Check SSH key authentication and permissions on the remote path."
+                    ;;
+                *"Connection timed out"*|*"Connection refused"*|*"Network is unreachable"*)
+                    print_info "Hint: Check network connectivity, firewall rules (local and remote), and the SSH port."
+                    ;;
+                *"No such file or directory"*)
+                    print_info "Hint: Verify the remote path '${REMOTE_BACKUP_PATH}' is correct and accessible."
+                    ;;
+            esac
         fi
 
         print_info "Common troubleshooting steps:"
-        print_info "  - Ensure the root SSH key is copied to the destination: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$SSH_KEY.pub\" \"$BACKUP_DEST\""
-        print_info "  - Check firewall rules on both this server and the destination."
+        print_info "  - Ensure the root SSH key is copied: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$SSH_KEY.pub\" \"$BACKUP_DEST\""
+        print_info "  - Manually test SSH connection: ssh -p \"$BACKUP_PORT\" -i \"$SSH_KEY\" \"$BACKUP_DEST\""
+        print_info "  - Check permissions on the remote path: '${REMOTE_BACKUP_PATH}'"
     fi
 
-    # Clean up the temporary test directory
+    # Clean up the local temporary test directory and file
     rm -rf "$TEST_DIR" 2>/dev/null
+    print_info "Local test directory cleaned up."
     print_success "Backup test completed."
     log "Backup test completed."
     return 0
