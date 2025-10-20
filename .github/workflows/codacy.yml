@@ -1,18 +1,15 @@
-# This workflow checks out code, performs a Codacy security scan
-# and integrates the results with the
-# GitHub Advanced Security code scanning feature.  For more information on
-# the Codacy security scan action usage and parameters, see
+# Codacy Security Scan (revised: replaced docker action with codacy-cli-v2 install+analyze)
+# - Uses codacy-cli-v2 installer to run analyze when the docker image pre-pull succeeds
+# Codacy security scan action usage and parameters, see
 # https://github.com/codacy/codacy-analysis-cli-action.
 # For more information on Codacy Analysis CLI in general, see
 # https://github.com/codacy/codacy-analysis-cli.
-
 name: Codacy Security Scan
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [ "main" ]
   schedule:
     - cron: '44 7 * * 0'
@@ -22,12 +19,19 @@ permissions:
 
 jobs:
   codacy-security-scan:
-    permissions:
-      contents: read # for actions/checkout to fetch code
-      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
-      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     name: Codacy Security Scan
     runs-on: ubuntu-latest
+
+    env:
+      CLI_VERSION: "4.0.0"
+      CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+      MAX_PULL_RETRIES: "6"
+      PULL_RETRY_BASE: "5"
+
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
 
     steps:
       - name: Checkout code
@@ -37,54 +41,99 @@ jobs:
         run: |
           find . -type f -exec file --mime {} + | grep -v 'charset=utf-8' || true
 
-      - name: Pre-pull Codacy CLI Docker image (with retries)
+      - name: Pre-pull Codacy CLI Docker image (with exponential backoff + jitter)
         run: |
-          IMAGE=codacy/codacy-analysis-cli:4.0.0
-          MAX_RETRIES=3
-          RETRY_DELAY=30
+          set -euo pipefail
+          IMAGE="codacy/codacy-analysis-cli:${CLI_VERSION}"
+          MAX_RETRIES=${MAX_PULL_RETRIES}
+          RETRY_BASE=${PULL_RETRY_BASE}
           echo "CODACY_DOCKER_OK=false" >> $GITHUB_ENV
+
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $i to pull $IMAGE"
             if docker pull "$IMAGE"; then
               echo "Successfully pulled $IMAGE"
               echo "CODACY_DOCKER_OK=true" >> $GITHUB_ENV
               break
-            else
-              echo "Failed to pull $IMAGE (attempt $i)."
-              if [ "$i" -lt "$MAX_RETRIES" ]; then
-                echo "Retrying in ${RETRY_DELAY}s..."
-                sleep $RETRY_DELAY
+            fi
+
+            if [ "$i" -lt "$MAX_RETRIES" ]; then
+              sleep_time=$(( RETRY_BASE * 2 ** (i - 1) ))
+              jitter=$(( (RANDOM % 5) + 1 ))
+              total_sleep=$(( sleep_time + jitter ))
+              if [ "$total_sleep" -gt 300 ]; then
+                total_sleep=300
               fi
+              echo "Failed to pull $IMAGE (attempt $i). Retrying in ${total_sleep}s..."
+              sleep "$total_sleep"
+            else
+              echo "Failed to pull $IMAGE after $i attempts."
             fi
           done
-          if [ "$CODACY_DOCKER_OK" != "true" ]; then
+
+          if [ "${CODACY_DOCKER_OK:-}" != "true" ]; then
             echo "::warning::Could not pull $IMAGE after $MAX_RETRIES attempts. Fallback will run."
           fi
 
-      - name: Run Codacy Analysis CLI (docker)
+      - name: Run Codacy CLI v2 (install & analyze)
         if: env.CODACY_DOCKER_OK == 'true'
-        uses: codacy/codacy-analysis-cli-action@d840f886c4bd4edc059706d09c6a1586111c540b
-        with:
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          verbose: true
-          output: results.sarif
-          format: sarif
-          gh-code-scanning-compat: true
-          max-allowed-issues: 2147483647
-
-      - name: Run Codacy Analysis CLI (fallback download binary)
-        if: env.CODACY_DOCKER_OK != 'true'
         run: |
           set -euo pipefail
-          CLI_VERSION=4.0.0
+
+          echo "Installing codacy-cli-v2 via the official installer script"
+          bash <(curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh)
+
+          echo "Running codacy-cli analyze to produce SARIF (results.sarif)"
+          if [ -n "${{ secrets.CODACY_PROJECT_TOKEN }}" ]; then
+            TOKEN_ARG="--project-token ${{ secrets.CODACY_PROJECT_TOKEN }}"
+          else
+            TOKEN_ARG=""
+          fi
+
+          # Run analyze; keep non-zero exit from analysis from failing the job so SARIF upload can still run
+          codacy-cli analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
+
+      - name: Run Codacy Analysis CLI (fallback binary/jar)
+        if: env.CODACY_DOCKER_OK != 'true'
+        env:
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          CLI_VERSION: ${{ env.CLI_VERSION }}
+        run: |
+          set -euo pipefail
+
+          echo "Fallback: attempt to download Codacy Analysis CLI version ${CLI_VERSION}"
           ARCHIVE="codacy-analysis-cli-${CLI_VERSION}.zip"
           RELEASE_URL="https://github.com/codacy/codacy-analysis-cli/releases/download/${CLI_VERSION}/${ARCHIVE}"
+
+          echo "Checking availability of ${RELEASE_URL}"
+          if ! curl -fI -sS "$RELEASE_URL" >/dev/null 2>&1; then
+            echo "Requested release ${CLI_VERSION} not available at ${RELEASE_URL}."
+            echo "Attempting to determine latest release via GitHub API..."
+
+            latest_tag=$(curl -sS "https://api.github.com/repos/codacy/codacy-analysis-cli/releases/latest" \
+              | grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+
+            if [ -n "$latest_tag" ]; then
+              echo "Found latest release tag: ${latest_tag}. Will try that instead."
+              CLI_VERSION="$latest_tag"
+              ARCHIVE="codacy-analysis-cli-${CLI_VERSION}.zip"
+              RELEASE_URL="https://github.com/codacy/codacy-analysis-cli/releases/download/${CLI_VERSION}/${ARCHIVE}"
+              if ! curl -fI -sS "$RELEASE_URL" >/dev/null 2>&1; then
+                echo "::error::Latest release ${CLI_VERSION} does not expose ${ARCHIVE}. Aborting."
+                exit 1
+              fi
+            else
+              echo "::error::Could not determine latest release via GitHub API. Aborting fallback."
+              exit 1
+            fi
+          fi
 
           echo "Downloading Codacy Analysis CLI ${CLI_VERSION} from ${RELEASE_URL}"
           curl -fSL "$RELEASE_URL" -o "$ARCHIVE" || { echo "::error::Failed to download ${RELEASE_URL}"; exit 1; }
 
+          echo "Extracting ${ARCHIVE}"
           unzip -q "$ARCHIVE"
-          # After unzip, try to find an executable or jar. Adjust commands below if the artifact differs.
+
           if [ -x "./codacy-analysis-cli" ]; then
             CMD="./codacy-analysis-cli"
           elif ls codacy-analysis-cli-* 2>/dev/null | grep -q '\.jar$'; then
@@ -96,10 +145,13 @@ jobs:
           fi
 
           echo "Running Codacy CLI fallback via: $CMD"
-          # Run with same arguments as the action
-          $CMD analyze --format sarif --output results.sarif \
-            $( [ -n "${{ secrets.CODACY_PROJECT_TOKEN }}" ] && echo "--project-token ${{ secrets.CODACY_PROJECT_TOKEN }}" || echo "" ) \
-            --gh-code-scanning-compat --verbose || true
+          if [ -n "${CODACY_PROJECT_TOKEN:-}" ]; then
+            TOKEN_ARG="--project-token ${CODACY_PROJECT_TOKEN}"
+          else
+            TOKEN_ARG=""
+          fi
+
+          $CMD analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
 
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
