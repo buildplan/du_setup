@@ -4,6 +4,7 @@
 # https://github.com/codacy/codacy-analysis-cli-action.
 # For more information on Codacy Analysis CLI in general, see
 # https://github.com/codacy/codacy-analysis-cli.
+
 name: Codacy Security Scan
 
 on:
@@ -23,8 +24,14 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # Change this if you'd like to pin to a different codacy-analysis-cli tag (fallback tries this first)
       CLI_VERSION: "4.0.0"
+      # If you want to run codacy-cli-v2 with a pinned version, set CODACY_CLI_V2_VERSION env here.
+      # Example: CODACY_CLI_V2_VERSION: "1.0.0"
+      CODACY_CLI_V2_VERSION: ""
+      # Project token from secrets
       CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+      # Retry/backoff tuning
       MAX_PULL_RETRIES: "6"
       PULL_RETRY_BASE: "5"
 
@@ -44,9 +51,11 @@ jobs:
       - name: Pre-pull Codacy CLI Docker image (with exponential backoff + jitter)
         run: |
           set -euo pipefail
+
           IMAGE="codacy/codacy-analysis-cli:${CLI_VERSION}"
           MAX_RETRIES=${MAX_PULL_RETRIES}
           RETRY_BASE=${PULL_RETRY_BASE}
+
           echo "CODACY_DOCKER_OK=false" >> $GITHUB_ENV
 
           for i in $(seq 1 $MAX_RETRIES); do
@@ -58,6 +67,7 @@ jobs:
             fi
 
             if [ "$i" -lt "$MAX_RETRIES" ]; then
+              # exponential backoff with jitter
               sleep_time=$(( RETRY_BASE * 2 ** (i - 1) ))
               jitter=$(( (RANDOM % 5) + 1 ))
               total_sleep=$(( sleep_time + jitter ))
@@ -77,23 +87,33 @@ jobs:
 
       - name: Run Codacy CLI v2 (install & analyze)
         if: env.CODACY_DOCKER_OK == 'true'
+        env:
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          CODACY_CLI_V2_VERSION: ${{ env.CODACY_CLI_V2_VERSION }}
         run: |
           set -euo pipefail
 
           echo "Installing codacy-cli-v2 via the official installer script"
+          # If you want to pin the codacy-cli-v2 installer to a specific version, set CODACY_CLI_V2_VERSION env.
+          # The installer supports installing a specific version via CODACY_CLI_V2_VERSION environment variable.
+          if [ -n "${CODACY_CLI_V2_VERSION:-}" ]; then
+            echo "Pinning codacy-cli-v2 installer to version ${CODACY_CLI_V2_VERSION}"
+            export CODACY_CLI_V2_VERSION
+          fi
+
           bash <(curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh)
 
           echo "Running codacy-cli analyze to produce SARIF (results.sarif)"
-          if [ -n "${{ secrets.CODACY_PROJECT_TOKEN }}" ]; then
-            TOKEN_ARG="--project-token ${{ secrets.CODACY_PROJECT_TOKEN }}"
+          if [ -n "${CODACY_PROJECT_TOKEN:-}" ]; then
+            TOKEN_ARG="--project-token ${CODACY_PROJECT_TOKEN}"
           else
             TOKEN_ARG=""
           fi
 
-          # Run analyze; keep non-zero exit from analysis from failing the job so SARIF upload can still run
+          # Run analyze; keep non-zero exit allowed so SARIF upload can still run
           codacy-cli analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
 
-      - name: Run Codacy Analysis CLI (fallback binary/jar)
+      - name: Run Codacy Analysis CLI (robust fallback via GitHub Releases API)
         if: env.CODACY_DOCKER_OK != 'true'
         env:
           CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
@@ -101,46 +121,114 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Fallback: attempt to download Codacy Analysis CLI version ${CLI_VERSION}"
-          ARCHIVE="codacy-analysis-cli-${CLI_VERSION}.zip"
-          RELEASE_URL="https://github.com/codacy/codacy-analysis-cli/releases/download/${CLI_VERSION}/${ARCHIVE}"
+          echo "Fallback: attempt to obtain a Codacy Analysis CLI release asset (tag: ${CLI_VERSION})"
+          REPO="codacy/codacy-analysis-cli"
+          PREFERRED_TAG="${CLI_VERSION}"
 
-          echo "Checking availability of ${RELEASE_URL}"
-          if ! curl -fI -sS "$RELEASE_URL" >/dev/null 2>&1; then
-            echo "Requested release ${CLI_VERSION} not available at ${RELEASE_URL}."
-            echo "Attempting to determine latest release via GitHub API..."
-
-            latest_tag=$(curl -sS "https://api.github.com/repos/codacy/codacy-analysis-cli/releases/latest" \
-              | grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
-
-            if [ -n "$latest_tag" ]; then
-              echo "Found latest release tag: ${latest_tag}. Will try that instead."
-              CLI_VERSION="$latest_tag"
-              ARCHIVE="codacy-analysis-cli-${CLI_VERSION}.zip"
-              RELEASE_URL="https://github.com/codacy/codacy-analysis-cli/releases/download/${CLI_VERSION}/${ARCHIVE}"
-              if ! curl -fI -sS "$RELEASE_URL" >/dev/null 2>&1; then
-                echo "::error::Latest release ${CLI_VERSION} does not expose ${ARCHIVE}. Aborting."
-                exit 1
-              fi
+          # Helper: query releases API for tag; fallback to latest
+          get_release_json() {
+            tag="$1"
+            if [ -n "$tag" ]; then
+              url="https://api.github.com/repos/${REPO}/releases/tags/${tag}"
+              echo "Querying $url"
+              curl -sS "$url" || return 1
             else
-              echo "::error::Could not determine latest release via GitHub API. Aborting fallback."
-              exit 1
+              url="https://api.github.com/repos/${REPO}/releases/latest"
+              echo "Querying $url"
+              curl -sS "$url" || return 1
             fi
+          }
+
+          # Try preferred tag first
+          release_json="$(get_release_json "${PREFERRED_TAG}" || true)"
+
+          if [ -z "$release_json" ] || echo "$release_json" | grep -q '"message": "Not Found"'; then
+            echo "Preferred release '${PREFERRED_TAG}' not found. Falling back to latest release."
+            release_json="$(get_release_json "" )" || { echo "::error::Could not fetch latest release info"; exit 1; }
           fi
 
-          echo "Downloading Codacy Analysis CLI ${CLI_VERSION} from ${RELEASE_URL}"
-          curl -fSL "$RELEASE_URL" -o "$ARCHIVE" || { echo "::error::Failed to download ${RELEASE_URL}"; exit 1; }
+          # Use Python to find a suitable asset:
+          # Preference order:
+          # 1) asset name contains 'codacy-analysis-cli' and ends with .zip
+          # 2) any .zip asset
+          # 3) any .jar asset
+          # 4) first asset
+          asset_url="$(python3 - <<'PY'
+import sys, json, re
+data = json.load(sys.stdin)
+assets = data.get("assets", [])
+def choose_asset(a):
+    # return True if looks like best candidate
+    name = a.get("name","").lower()
+    if "codacy-analysis-cli" in name and name.endswith(".zip"):
+        return 0
+    if name.endswith(".zip"):
+        return 1
+    if name.endswith(".jar"):
+        return 2
+    return 10
+if not assets:
+    print("", end="")
+    sys.exit(0)
+assets_sorted = sorted(assets, key=choose_asset)
+# pick the first with a browser_download_url
+for a in assets_sorted:
+    url = a.get("browser_download_url")
+    if url:
+        print(url)
+        sys.exit(0)
+# if none found, exit empty
+print("", end="")
+PY
+)" <<<"$release_json" || true
 
-          echo "Extracting ${ARCHIVE}"
-          unzip -q "$ARCHIVE"
+          if [ -z "$asset_url" ]; then
+            echo "::error::No suitable release asset found in the release. Release JSON:"
+            echo "$release_json"
+            exit 1
+          fi
 
+          echo "Selected release asset: ${asset_url}"
+          ARCHIVE_NAME="$(basename "$asset_url")"
+          echo "Downloading asset to ${ARCHIVE_NAME}"
+          curl -fSL "$asset_url" -o "$ARCHIVE_NAME" || { echo "::error::Failed to download ${asset_url}"; exit 1; }
+
+          echo "Extracting ${ARCHIVE_NAME}"
+          # Try unzip, then try jar detection
+          if file "$ARCHIVE_NAME" | grep -qi zip; then
+            unzip -q "$ARCHIVE_NAME"
+          else
+            echo "Downloaded asset does not appear to be a zip. Proceeding to check for jar or executable."
+          fi
+
+          # Find executable or jar
           if [ -x "./codacy-analysis-cli" ]; then
             CMD="./codacy-analysis-cli"
           elif ls codacy-analysis-cli-* 2>/dev/null | grep -q '\.jar$'; then
             JAR="$(ls codacy-analysis-cli-*.jar | head -n1)"
             CMD="java -jar ${JAR}"
+          elif ls *.jar 2>/dev/null | head -n1 >/dev/null 2>&1; then
+            JAR="$(ls *.jar | head -n1)"
+            CMD="java -jar ${JAR}"
           else
-            echo "::error::Could not find the codacy CLI executable or jar after extracting ${ARCHIVE}"
+            # If the asset was an executable (no extract), make it executable and run it
+            if [ -f "$ARCHIVE_NAME" ] && [ -x "$ARCHIVE_NAME" ]; then
+              CMD="./${ARCHIVE_NAME}"
+            else
+              # try to detect a single file that looks like the CLI
+              candidate="$(ls | grep -i codacy | head -n1 || true)"
+              if [ -n "$candidate" ]; then
+                if [ -f "$candidate" ]; then
+                  chmod +x "$candidate" || true
+                  CMD="./${candidate}"
+                fi
+              fi
+            fi
+          fi
+
+          if [ -z "${CMD:-}" ]; then
+            echo "::error::Could not determine a runnable CLI (executable or jar) after downloading and extracting ${ARCHIVE_NAME}."
+            ls -la
             exit 1
           fi
 
