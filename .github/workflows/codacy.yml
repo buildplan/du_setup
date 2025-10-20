@@ -24,14 +24,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Change this if you'd like to pin to a different codacy-analysis-cli tag (fallback tries this first)
       CLI_VERSION: "4.0.0"
-      # If you want to run codacy-cli-v2 with a pinned version, set CODACY_CLI_V2_VERSION env here.
-      # Example: CODACY_CLI_V2_VERSION: "1.0.0"
       CODACY_CLI_V2_VERSION: ""
-      # Project token from secrets
       CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-      # Retry/backoff tuning
       MAX_PULL_RETRIES: "6"
       PULL_RETRY_BASE: "5"
 
@@ -94,10 +89,7 @@ jobs:
           set -euo pipefail
 
           echo "Installing codacy-cli-v2 via the official installer script"
-          # If you want to pin the codacy-cli-v2 installer to a specific version, set CODACY_CLI_V2_VERSION env.
-          # The installer supports installing a specific version via CODACY_CLI_V2_VERSION environment variable.
           if [ -n "${CODACY_CLI_V2_VERSION:-}" ]; then
-            echo "Pinning codacy-cli-v2 installer to version ${CODACY_CLI_V2_VERSION}"
             export CODACY_CLI_V2_VERSION
           fi
 
@@ -110,7 +102,6 @@ jobs:
             TOKEN_ARG=""
           fi
 
-          # Run analyze; keep non-zero exit allowed so SARIF upload can still run
           codacy-cli analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
 
       - name: Run Codacy Analysis CLI (robust fallback via GitHub Releases API)
@@ -125,7 +116,6 @@ jobs:
           REPO="codacy/codacy-analysis-cli"
           PREFERRED_TAG="${CLI_VERSION}"
 
-          # Helper: query releases API for tag; fallback to latest
           get_release_json() {
             tag="$1"
             if [ -n "$tag" ]; then
@@ -139,48 +129,24 @@ jobs:
             fi
           }
 
-          # Try preferred tag first
           release_json="$(get_release_json "${PREFERRED_TAG}" || true)"
-
           if [ -z "$release_json" ] || echo "$release_json" | grep -q '"message": "Not Found"'; then
             echo "Preferred release '${PREFERRED_TAG}' not found. Falling back to latest release."
             release_json="$(get_release_json "" )" || { echo "::error::Could not fetch latest release info"; exit 1; }
           fi
 
-          # Use Python to find a suitable asset:
+          # Use jq (installed on ubuntu-latest) to pick the best asset:
           # Preference order:
           # 1) asset name contains 'codacy-analysis-cli' and ends with .zip
           # 2) any .zip asset
           # 3) any .jar asset
           # 4) first asset
-          asset_url="$(python3 - <<'PY'
-import sys, json, re
-data = json.load(sys.stdin)
-assets = data.get("assets", [])
-def choose_asset(a):
-    # return True if looks like best candidate
-    name = a.get("name","").lower()
-    if "codacy-analysis-cli" in name and name.endswith(".zip"):
-        return 0
-    if name.endswith(".zip"):
-        return 1
-    if name.endswith(".jar"):
-        return 2
-    return 10
-if not assets:
-    print("", end="")
-    sys.exit(0)
-assets_sorted = sorted(assets, key=choose_asset)
-# pick the first with a browser_download_url
-for a in assets_sorted:
-    url = a.get("browser_download_url")
-    if url:
-        print(url)
-        sys.exit(0)
-# if none found, exit empty
-print("", end="")
-PY
-)" <<<"$release_json" || true
+          asset_url="$(echo "$release_json" | jq -r '
+            (.assets[] | select(.name | test("codacy-analysis-cli.*\\.zip"; "i")) | .browser_download_url) // 
+            (.assets[] | select(.name | test("\\.zip$"; "i")) | .browser_download_url) //
+            (.assets[] | select(.name | test("\\.jar$"; "i")) | .browser_download_url) //
+            (.assets[] | .browser_download_url)
+          ' | grep -v null | head -n1 || true)"
 
           if [ -z "$asset_url" ]; then
             echo "::error::No suitable release asset found in the release. Release JSON:"
@@ -194,14 +160,13 @@ PY
           curl -fSL "$asset_url" -o "$ARCHIVE_NAME" || { echo "::error::Failed to download ${asset_url}"; exit 1; }
 
           echo "Extracting ${ARCHIVE_NAME}"
-          # Try unzip, then try jar detection
           if file "$ARCHIVE_NAME" | grep -qi zip; then
             unzip -q "$ARCHIVE_NAME"
           else
             echo "Downloaded asset does not appear to be a zip. Proceeding to check for jar or executable."
           fi
 
-          # Find executable or jar
+          # Determine runnable CLI (executable or jar)
           if [ -x "./codacy-analysis-cli" ]; then
             CMD="./codacy-analysis-cli"
           elif ls codacy-analysis-cli-* 2>/dev/null | grep -q '\.jar$'; then
@@ -211,11 +176,9 @@ PY
             JAR="$(ls *.jar | head -n1)"
             CMD="java -jar ${JAR}"
           else
-            # If the asset was an executable (no extract), make it executable and run it
             if [ -f "$ARCHIVE_NAME" ] && [ -x "$ARCHIVE_NAME" ]; then
               CMD="./${ARCHIVE_NAME}"
             else
-              # try to detect a single file that looks like the CLI
               candidate="$(ls | grep -i codacy | head -n1 || true)"
               if [ -n "$candidate" ]; then
                 if [ -f "$candidate" ]; then
