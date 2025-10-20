@@ -28,8 +28,8 @@ jobs:
       actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     name: Codacy Security Scan
     runs-on: ubuntu-latest
+
     steps:
-      # Checkout the repository to the GitHub Actions runner
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -37,23 +37,70 @@ jobs:
         run: |
           find . -type f -exec file --mime {} + | grep -v 'charset=utf-8' || true
 
-      # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
-      - name: Run Codacy Analysis CLI
+      - name: Pre-pull Codacy CLI Docker image (with retries)
+        run: |
+          IMAGE=codacy/codacy-analysis-cli:4.0.0
+          MAX_RETRIES=3
+          RETRY_DELAY=30
+          echo "CODACY_DOCKER_OK=false" >> $GITHUB_ENV
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i to pull $IMAGE"
+            if docker pull "$IMAGE"; then
+              echo "Successfully pulled $IMAGE"
+              echo "CODACY_DOCKER_OK=true" >> $GITHUB_ENV
+              break
+            else
+              echo "Failed to pull $IMAGE (attempt $i)."
+              if [ "$i" -lt "$MAX_RETRIES" ]; then
+                echo "Retrying in ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+          done
+          if [ "$CODACY_DOCKER_OK" != "true" ]; then
+            echo "::warning::Could not pull $IMAGE after $MAX_RETRIES attempts. Fallback will run."
+          fi
+
+      - name: Run Codacy Analysis CLI (docker)
+        if: env.CODACY_DOCKER_OK == 'true'
         uses: codacy/codacy-analysis-cli-action@d840f886c4bd4edc059706d09c6a1586111c540b
         with:
-          # Check https://github.com/codacy/codacy-analysis-cli#project-token to get your project token from your Codacy repository
-          # You can also omit the token and run the tools that support default configurations
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           verbose: true
           output: results.sarif
           format: sarif
-          # Adjust severity of non-security issues
           gh-code-scanning-compat: true
-          # Force 0 exit code to allow SARIF file generation
-          # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
-      # Upload the SARIF file generated in the previous step
+      - name: Run Codacy Analysis CLI (fallback: download binary)
+        if: env.CODACY_DOCKER_OK != 'true'
+        run: |
+          set -euo pipefail
+          CLI_VERSION=4.0.0
+          ARCHIVE="codacy-analysis-cli-${CLI_VERSION}.zip"
+          RELEASE_URL="https://github.com/codacy/codacy-analysis-cli/releases/download/${CLI_VERSION}/${ARCHIVE}"
+
+          echo "Downloading Codacy Analysis CLI ${CLI_VERSION} from ${RELEASE_URL}"
+          curl -fSL "$RELEASE_URL" -o "$ARCHIVE" || { echo "::error::Failed to download ${RELEASE_URL}"; exit 1; }
+
+          unzip -q "$ARCHIVE"
+          # After unzip, try to find an executable or jar. Adjust commands below if the artifact differs.
+          if [ -x "./codacy-analysis-cli" ]; then
+            CMD="./codacy-analysis-cli"
+          elif ls codacy-analysis-cli-* 2>/dev/null | grep -q '\.jar$'; then
+            JAR="$(ls codacy-analysis-cli-*.jar | head -n1)"
+            CMD="java -jar ${JAR}"
+          else
+            echo "::error::Could not find the codacy CLI executable or jar after extracting ${ARCHIVE}"
+            exit 1
+          fi
+
+          echo "Running Codacy CLI fallback via: $CMD"
+          # Run with same arguments as the action
+          $CMD analyze --format sarif --output results.sarif \
+            $( [ -n "${{ secrets.CODACY_PROJECT_TOKEN }}" ] && echo "--project-token ${{ secrets.CODACY_PROJECT_TOKEN }}" || echo "" ) \
+            --gh-code-scanning-compat --verbose || true
+
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
         with:
