@@ -1,6 +1,7 @@
-# Codacy Security Scan (revised: replaced docker action with codacy-cli-v2 install+analyze)
-# - Uses codacy-cli-v2 installer to run analyze when the docker image pre-pull succeeds
-# Codacy security scan action usage and parameters, see
+# This workflow checks out code, performs a Codacy security scan
+# and integrates the results with the
+# GitHub Advanced Security code scanning feature.  For more information on
+# the Codacy security scan action usage and parameters, see
 # https://github.com/codacy/codacy-analysis-cli-action.
 # For more information on Codacy Analysis CLI in general, see
 # https://github.com/codacy/codacy-analysis-cli.
@@ -11,6 +12,7 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
+    # The branches below must be a subset of the branches above
     branches: [ "main" ]
   schedule:
     - cron: '44 7 * * 0'
@@ -20,22 +22,14 @@ permissions:
 
 jobs:
   codacy-security-scan:
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     name: Codacy Security Scan
     runs-on: ubuntu-latest
-
-    env:
-      CLI_VERSION: "4.0.0"
-      CODACY_CLI_V2_VERSION: ""
-      CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-      MAX_PULL_RETRIES: 6
-      PULL_RETRY_BASE: 5
-
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-
     steps:
+      # Checkout the repository to the GitHub Actions runner
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -43,60 +37,23 @@ jobs:
         run: |
           find . -type f -exec file --mime {} + | grep -v 'charset=utf-8' || true
 
-      - name: Pre-pull Codacy CLI Docker image
-        run: |
-          set -euo pipefail
-          IMAGE="codacy/codacy-analysis-cli:${CLI_VERSION}"
-          echo "CODACY_DOCKER_OK=false" >> $GITHUB_ENV
-          for i in $(seq 1 $MAX_PULL_RETRIES); do
-            echo "Attempt $i to pull $IMAGE"
-            if docker pull "$IMAGE"; then
-              echo "Successfully pulled $IMAGE"
-              echo "CODACY_DOCKER_OK=true" >> $GITHUB_ENV
-              break
-            fi
-            if [ "$i" -lt "$MAX_PULL_RETRIES" ]; then
-              sleep_time=$(( PULL_RETRY_BASE * 2 ** (i - 1) + RANDOM % 5 + 1 ))
-              echo "Retrying in $sleep_time seconds..."
-              sleep "$sleep_time"
-            else
-              echo "Failed to pull $IMAGE after $i attempts."
-            fi
-          done
+      # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
+      - name: Run Codacy Analysis CLI
+        uses: codacy/codacy-analysis-cli-action@d840f886c4bd4edc059706d09c6a1586111c540b
+        with:
+          # Check https://github.com/codacy/codacy-analysis-cli#project-token to get your project token from your Codacy repository
+          # You can also omit the token and run the tools that support default configurations
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          verbose: true
+          output: results.sarif
+          format: sarif
+          # Adjust severity of non-security issues
+          gh-code-scanning-compat: true
+          # Force 0 exit code to allow SARIF file generation
+          # This will handover control about PR rejection to the GitHub side
+          max-allowed-issues: 2147483647
 
-      - name: Run Codacy CLI v2 (Install and Analyze)
-        if: env.CODACY_DOCKER_OK == 'true'
-        run: |
-          set -euo pipefail
-          echo "Installing codacy-cli-v2"
-          curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh | bash
-          echo "Verifying installation directory"
-          ls -alh $HOME/.codacy/bin || { echo "Installation directory does not exist"; exit 1; }
-          echo "Adding codacy-cli to PATH"
-          export PATH="$HOME/.codacy/bin:$PATH"
-          echo "Verifying codacy-cli command"
-          which codacy-cli || { echo "codacy-cli not found in PATH"; exit 1; }
-          echo "Running codacy-cli analyze"
-          codacy-cli analyze --format sarif --output results.sarif \
-            --project-token "${CODACY_PROJECT_TOKEN}" --gh-code-scanning-compat --verbose || true
-
-      - name: Run Codacy Analysis CLI (Fallback)
-        if: env.CODACY_DOCKER_OK != 'true'
-        run: |
-          set -euo pipefail
-          echo "Fallback to GitHub Releases API"
-          RELEASE_URL="https://api.github.com/repos/codacy/codacy-analysis-cli/releases/tags/${CLI_VERSION}"
-          RELEASE=$(curl -sS "$RELEASE_URL")
-          ASSET_URL=$(echo "$RELEASE" | jq -r '.assets[] | select(.name | test(".*\\.zip$")) | .browser_download_url')
-          if [ -z "$ASSET_URL" ]; then
-            echo "::error::No suitable asset found"
-            exit 1
-          fi
-          curl -L -o codacy-cli.zip "$ASSET_URL"
-          unzip codacy-cli.zip
-          ./codacy-analysis-cli analyze --format sarif --output results.sarif \
-            --project-token "${CODACY_PROJECT_TOKEN}" --gh-code-scanning-compat --verbose || true
-
+      # Upload the SARIF file generated in the previous step
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
         with:
