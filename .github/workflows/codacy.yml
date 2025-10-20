@@ -43,7 +43,7 @@ jobs:
         run: |
           find . -type f -exec file --mime {} + | grep -v 'charset=utf-8' || true
 
-      - name: Pre-pull Codacy CLI Docker image (with exponential backoff + jitter)
+      - name: Pre-pull Codacy CLI Docker image
         run: |
           set -euo pipefail
           IMAGE="codacy/codacy-analysis-cli:${CLI_VERSION}"
@@ -64,19 +64,23 @@ jobs:
             fi
           done
 
-      - name: Run Codacy CLI v2 (install & analyze)
+      - name: Run Codacy CLI v2 (Install and Analyze)
         if: env.CODACY_DOCKER_OK == 'true'
         run: |
           set -euo pipefail
           echo "Installing codacy-cli-v2"
           curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh | bash
+          echo "Verifying installation directory"
+          ls -alh $HOME/.codacy/bin || { echo "Installation directory does not exist"; exit 1; }
           echo "Adding codacy-cli to PATH"
           export PATH="$HOME/.codacy/bin:$PATH"
+          echo "Verifying codacy-cli command"
+          which codacy-cli || { echo "codacy-cli not found in PATH"; exit 1; }
           echo "Running codacy-cli analyze"
           codacy-cli analyze --format sarif --output results.sarif \
             --project-token "${CODACY_PROJECT_TOKEN}" --gh-code-scanning-compat --verbose || true
 
-      - name: Run Codacy Analysis CLI (fallback robust mechanism)
+      - name: Run Codacy Analysis CLI (Fallback)
         if: env.CODACY_DOCKER_OK != 'true'
         run: |
           set -euo pipefail
