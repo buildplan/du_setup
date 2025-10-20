@@ -1050,8 +1050,6 @@ cleanup_provider_packages() {
     fi
 }
 
-# --- (This function goes AFTER cleanup_provider_packages() and BEFORE setup_user()) ---
-
 configure_custom_bashrc() {
     local USER_HOME="$1"
     local USERNAME="$2"
@@ -1076,7 +1074,7 @@ configure_custom_bashrc() {
     fi
     chmod 600 "$temp_source_bashrc"
 
-    if ! cat > "$temp_source_bashrc" <<'EOF'; then
+    if ! cat > "$temp_source_bashrc" <<'EOF'
 # shellcheck shell=bash
 # ===================================================================
 #   Universal Portable .bashrc for Modern Terminals
@@ -2239,6 +2237,7 @@ alias commands='compgen -A function -A alias | grep -v "^_" | sort | column'
 # - Consider moving rarely-used functions to separate files
 # - Use 'time bash -i -c exit' to measure startup time
 EOF
+    then
         print_error "Failed to write .bashrc content to temporary file $temp_source_bashrc."
         log "Critical error: Failed to write bashrc content to $temp_source_bashrc."
         rm -f "$temp_source_bashrc" 2>/dev/null
@@ -2249,7 +2248,8 @@ EOF
 
     local temp_fallback_path="/tmp/custom_bashrc_for_${USERNAME}.txt"
 
-    if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null; then
+    if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null
+    then
         print_error "Failed to automatically write custom .bashrc to $BASHRC_PATH."
         log "Error writing custom .bashrc for $USERNAME to $BASHRC_PATH (likely permissions issue)."
 
