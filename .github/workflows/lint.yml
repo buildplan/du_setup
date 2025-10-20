@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ "main", "test" ]
+    branches: [ "main", "test", "dev"]
   pull_request:
     branches: [ "main" ]
 
@@ -17,12 +17,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Run Shellcheck (Show All Issues & Fail on Errors)
+      - name: Run Shellcheck
         run: |
           set -o pipefail
 
+          files_to_check=$(find . -type f -name "*.sh" -not -path "./.git/*")
+
+          if [ -z "$files_to_check" ]; then
+            echo "No .sh files found to check."
+            exit 0
+          fi
+
           echo "--- Checking for all warnings and style issues ---"
-          shellcheck -f gcc ./du_setup.sh | while IFS= read -r line; do
+          echo "$files_to_check" | xargs shellcheck -f gcc | while IFS= read -r line; do
             file=$(echo "$line" | cut -d: -f1)
             line_no=$(echo "$line" | cut -d: -f2)
             message=$(echo "$line" | cut -d: -f4-)
@@ -30,4 +37,4 @@ jobs:
           done || true
 
           echo "--- Checking for critical errors ---"
-          shellcheck --severity=error ./du_setup.sh
+          echo "$files_to_check" | xargs shellcheck --severity=error
