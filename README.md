@@ -20,6 +20,8 @@
 
 This script automates the initial setup and security hardening of a fresh Debian or Ubuntu server. It is **idempotent**, **safe**, and suitable for **production environments**, providing a secure baseline for further customization. The script runs interactively, guiding users through critical choices while automating essential security and setup tasks.
 
+-----
+
 ## Features
 
 * **Secure User Management**: Creates a new `sudo` user and disables root SSH access.
@@ -39,6 +41,8 @@ This script automates the initial setup and security hardening of a fresh Debian
   * Tailscale (Mesh VPN)
 * **Comprehensive Logging**: Logs all actions to `/var/log/du_setup_*.log`.
 * **Automation-Friendly**: Supports `--quiet` mode for automated provisioning.
+
+-----
 
 ## Installation & Usage
 
@@ -117,6 +121,8 @@ sudo -E ./du_setup.sh --quiet
 >
 > Ensure your VPS provider’s firewall allows the custom SSH port, backup server’s SSH port (e.g., 23 for Hetzner Storage Box), and Tailscale traffic (UDP 41641 for direct connections).
 
+-----
+
 ## What It Does
 
 | Task | Description |
@@ -140,7 +146,9 @@ sudo -E ./du_setup.sh --quiet
 | **Cleanup & Maintenance** | Performs `autoremove` and `autoclean` of unused packages and services after setup or cleanup phases. |
 | **Final Summary** | Generates a detailed report of all changes and saves it to `/var/log/du_setup_report_*.txt`. |
 
-## Provider Package Cleanup (Since v0.70)
+-----
+
+## Provider Package Cleanup
 
 Detects and optionally removes provider-installed packages, monitoring agents, and default provisioning users to enhance server security.
 
@@ -161,6 +169,8 @@ Cleanup is optional but recommended for commercial VPS environments to reduce at
 * Virtualization guest tools (qemu-guest-agent, cloud-init)
 * Default provisioning users (ubuntu, debian, admin, cloud-user)
 * Unexpected SSH keys in `/root/.ssh/authorized_keys`
+
+-----
 
 ## Post-Reboot Verification
 
@@ -192,6 +202,8 @@ After rebooting, verify the setup:
   * Check results: `sudo less /var/log/setup_harden_security_audit_*.log`
   * Review Lynis hardening index and debsecan vulnerabilities in the script’s summary output
 
+-----
+
 ## Tested On
 
 * Debian 12, 13
@@ -199,6 +211,8 @@ After rebooting, verify the setup:
 * Cloud providers: DigitalOcean, Oracle Cloud, OVH Cloud, Hetzner, Netcup
 * Backup destinations: Hetzner Storage Box (SSH, port 23), custom SSH servers
 * Tailscale: Standard network, custom self-hosted servers
+
+-----
 
 ## Important Notes
 
@@ -209,6 +223,8 @@ After rebooting, verify the setup:
 * For Hetzner Storage Box, ensure `~/.ssh/` exists on the remote server: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`. Backups use SSH (port 23) for rsync, not SFTP.
 * For Tailscale, generate a pre-auth key from [https://login.tailscale.com/admin](https://login.tailscale.com/admin) (standard, must start with `tskey-auth-`) or your custom server (any valid key). Ensure UDP 41641 is open for Tailscale traffic.
 * For security audits, review `/var/log/setup_harden_security_audit_*.log` for Lynis and debsecan recommendations.
+
+-----
 
 ## Troubleshooting
 
@@ -301,6 +317,8 @@ If Tailscale fails to connect:
 5. **Network Issues**:
       * Ensure UDP 41641 is open: `nc -zvu <tailscale-server> 41641`
       * Check VPS firewall for Tailscale traffic.
+
+-----
 
 ## MIT [License](https://github.com/buildplan/du_setup/blob/main/LICENSE)
 
