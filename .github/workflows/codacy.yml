@@ -27,8 +27,8 @@ jobs:
       CLI_VERSION: "4.0.0"
       CODACY_CLI_V2_VERSION: ""
       CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-      MAX_PULL_RETRIES: "6"
-      PULL_RETRY_BASE: "5"
+      MAX_PULL_RETRIES: 6
+      PULL_RETRY_BASE: 5
 
     permissions:
       contents: read
@@ -46,163 +46,52 @@ jobs:
       - name: Pre-pull Codacy CLI Docker image (with exponential backoff + jitter)
         run: |
           set -euo pipefail
-
           IMAGE="codacy/codacy-analysis-cli:${CLI_VERSION}"
-          MAX_RETRIES=${MAX_PULL_RETRIES}
-          RETRY_BASE=${PULL_RETRY_BASE}
-
           echo "CODACY_DOCKER_OK=false" >> $GITHUB_ENV
-
-          for i in $(seq 1 $MAX_RETRIES); do
+          for i in $(seq 1 $MAX_PULL_RETRIES); do
             echo "Attempt $i to pull $IMAGE"
             if docker pull "$IMAGE"; then
               echo "Successfully pulled $IMAGE"
               echo "CODACY_DOCKER_OK=true" >> $GITHUB_ENV
               break
             fi
-
-            if [ "$i" -lt "$MAX_RETRIES" ]; then
-              # exponential backoff with jitter
-              sleep_time=$(( RETRY_BASE * 2 ** (i - 1) ))
-              jitter=$(( (RANDOM % 5) + 1 ))
-              total_sleep=$(( sleep_time + jitter ))
-              if [ "$total_sleep" -gt 300 ]; then
-                total_sleep=300
-              fi
-              echo "Failed to pull $IMAGE (attempt $i). Retrying in ${total_sleep}s..."
-              sleep "$total_sleep"
+            if [ "$i" -lt "$MAX_PULL_RETRIES" ]; then
+              sleep_time=$(( PULL_RETRY_BASE * 2 ** (i - 1) + RANDOM % 5 + 1 ))
+              echo "Retrying in $sleep_time seconds..."
+              sleep "$sleep_time"
             else
               echo "Failed to pull $IMAGE after $i attempts."
             fi
           done
 
-          if [ "${CODACY_DOCKER_OK:-}" != "true" ]; then
-            echo "::warning::Could not pull $IMAGE after $MAX_RETRIES attempts. Fallback will run."
-          fi
-
       - name: Run Codacy CLI v2 (install & analyze)
         if: env.CODACY_DOCKER_OK == 'true'
-        env:
-          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          CODACY_CLI_V2_VERSION: ${{ env.CODACY_CLI_V2_VERSION }}
         run: |
           set -euo pipefail
+          echo "Installing codacy-cli-v2"
+          curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh | bash
+          echo "Adding codacy-cli to PATH"
+          export PATH="$HOME/.codacy/bin:$PATH"
+          echo "Running codacy-cli analyze"
+          codacy-cli analyze --format sarif --output results.sarif \
+            --project-token "${CODACY_PROJECT_TOKEN}" --gh-code-scanning-compat --verbose || true
 
-          echo "Installing codacy-cli-v2 via the official installer script"
-          if [ -n "${CODACY_CLI_V2_VERSION:-}" ]; then
-            export CODACY_CLI_V2_VERSION
-          fi
-
-          bash <(curl -Ls https://raw.githubusercontent.com/codacy/codacy-cli-v2/main/codacy-cli.sh)
-
-          echo "Running codacy-cli analyze to produce SARIF (results.sarif)"
-          if [ -n "${CODACY_PROJECT_TOKEN:-}" ]; then
-            TOKEN_ARG="--project-token ${CODACY_PROJECT_TOKEN}"
-          else
-            TOKEN_ARG=""
-          fi
-
-          codacy-cli analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
-
-      - name: Run Codacy Analysis CLI (robust fallback via GitHub Releases API)
+      - name: Run Codacy Analysis CLI (fallback robust mechanism)
         if: env.CODACY_DOCKER_OK != 'true'
-        env:
-          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          CLI_VERSION: ${{ env.CLI_VERSION }}
         run: |
           set -euo pipefail
-
-          echo "Fallback: attempt to obtain a Codacy Analysis CLI release asset (tag: ${CLI_VERSION})"
-          REPO="codacy/codacy-analysis-cli"
-          PREFERRED_TAG="${CLI_VERSION}"
-
-          get_release_json() {
-            tag="$1"
-            if [ -n "$tag" ]; then
-              url="https://api.github.com/repos/${REPO}/releases/tags/${tag}"
-              echo "Querying $url"
-              curl -sS "$url" || return 1
-            else
-              url="https://api.github.com/repos/${REPO}/releases/latest"
-              echo "Querying $url"
-              curl -sS "$url" || return 1
-            fi
-          }
-
-          release_json="$(get_release_json "${PREFERRED_TAG}" || true)"
-          if [ -z "$release_json" ] || echo "$release_json" | grep -q '"message": "Not Found"'; then
-            echo "Preferred release '${PREFERRED_TAG}' not found. Falling back to latest release."
-            release_json="$(get_release_json "" )" || { echo "::error::Could not fetch latest release info"; exit 1; }
-          fi
-
-          # Use jq (installed on ubuntu-latest) to pick the best asset:
-          # Preference order:
-          # 1) asset name contains 'codacy-analysis-cli' and ends with .zip
-          # 2) any .zip asset
-          # 3) any .jar asset
-          # 4) first asset
-          asset_url="$(echo "$release_json" | jq -r '
-            (.assets[] | select(.name | test("codacy-analysis-cli.*\\.zip"; "i")) | .browser_download_url) // 
-            (.assets[] | select(.name | test("\\.zip$"; "i")) | .browser_download_url) //
-            (.assets[] | select(.name | test("\\.jar$"; "i")) | .browser_download_url) //
-            (.assets[] | .browser_download_url)
-          ' | grep -v null | head -n1 || true)"
-
-          if [ -z "$asset_url" ]; then
-            echo "::error::No suitable release asset found in the release. Release JSON:"
-            echo "$release_json"
+          echo "Fallback to GitHub Releases API"
+          RELEASE_URL="https://api.github.com/repos/codacy/codacy-analysis-cli/releases/tags/${CLI_VERSION}"
+          RELEASE=$(curl -sS "$RELEASE_URL")
+          ASSET_URL=$(echo "$RELEASE" | jq -r '.assets[] | select(.name | test(".*\\.zip$")) | .browser_download_url')
+          if [ -z "$ASSET_URL" ]; then
+            echo "::error::No suitable asset found"
             exit 1
           fi
-
-          echo "Selected release asset: ${asset_url}"
-          ARCHIVE_NAME="$(basename "$asset_url")"
-          echo "Downloading asset to ${ARCHIVE_NAME}"
-          curl -fSL "$asset_url" -o "$ARCHIVE_NAME" || { echo "::error::Failed to download ${asset_url}"; exit 1; }
-
-          echo "Extracting ${ARCHIVE_NAME}"
-          if file "$ARCHIVE_NAME" | grep -qi zip; then
-            unzip -q "$ARCHIVE_NAME"
-          else
-            echo "Downloaded asset does not appear to be a zip. Proceeding to check for jar or executable."
-          fi
-
-          # Determine runnable CLI (executable or jar)
-          if [ -x "./codacy-analysis-cli" ]; then
-            CMD="./codacy-analysis-cli"
-          elif ls codacy-analysis-cli-* 2>/dev/null | grep -q '\.jar$'; then
-            JAR="$(ls codacy-analysis-cli-*.jar | head -n1)"
-            CMD="java -jar ${JAR}"
-          elif ls *.jar 2>/dev/null | head -n1 >/dev/null 2>&1; then
-            JAR="$(ls *.jar | head -n1)"
-            CMD="java -jar ${JAR}"
-          else
-            if [ -f "$ARCHIVE_NAME" ] && [ -x "$ARCHIVE_NAME" ]; then
-              CMD="./${ARCHIVE_NAME}"
-            else
-              candidate="$(ls | grep -i codacy | head -n1 || true)"
-              if [ -n "$candidate" ]; then
-                if [ -f "$candidate" ]; then
-                  chmod +x "$candidate" || true
-                  CMD="./${candidate}"
-                fi
-              fi
-            fi
-          fi
-
-          if [ -z "${CMD:-}" ]; then
-            echo "::error::Could not determine a runnable CLI (executable or jar) after downloading and extracting ${ARCHIVE_NAME}."
-            ls -la
-            exit 1
-          fi
-
-          echo "Running Codacy CLI fallback via: $CMD"
-          if [ -n "${CODACY_PROJECT_TOKEN:-}" ]; then
-            TOKEN_ARG="--project-token ${CODACY_PROJECT_TOKEN}"
-          else
-            TOKEN_ARG=""
-          fi
-
-          $CMD analyze --format sarif --output results.sarif ${TOKEN_ARG} --gh-code-scanning-compat --verbose || true
+          curl -L -o codacy-cli.zip "$ASSET_URL"
+          unzip codacy-cli.zip
+          ./codacy-analysis-cli analyze --format sarif --output results.sarif \
+            --project-token "${CODACY_PROJECT_TOKEN}" --gh-code-scanning-compat --verbose || true
 
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
