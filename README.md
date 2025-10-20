@@ -7,7 +7,7 @@
 
 -----
 
-**Version:** v0.71
+**Version:** v0.72
 
 **Last Updated:** 2025-10-20
 
@@ -24,7 +24,7 @@ This script automates the initial setup and security hardening of a fresh Debian
 
 ## Features
 
-* **Secure User Management**: Creates a new `sudo` user and disables root SSH access.
+* **Secure User Management**: Creates a new `sudo` user and disables root SSH access. Optionally installs a custom .bashrc for enhanced terminal experience.
 * **SSH Hardening**: Configures a custom SSH port, enforces key-based authentication, and applies security best practices.
 * **Firewall Configuration**: Sets up UFW with secure defaults and customizable rules.
 * **Intrusion Prevention**: Installs and configures **Fail2Ban** to block malicious IPs.
@@ -87,12 +87,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`dfc27413d157a29510f2f516cf594a9940942ec8622d292d94a3936b4490a2a6`
+`e402db17ee1738ec96b2f4e2bcd1d1756df8b6a7e49de0953681a49f7f42fe18`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo dfc27413d157a29510f2f516cf594a9940942ec8622d292d94a3936b4490a2a6 du_setup.sh | sha256sum --check
+echo e402db17ee1738ec96b2f4e2bcd1d1756df8b6a7e49de0953681a49f7f42fe18 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
