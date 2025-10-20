@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.70.2 | 2025-10-19
+# Version: 0.71 | 2025-10-20
 # Changelog:
-# - v0.70.2: Simplify test backup function to work reliably with Hetzner storagebox
-# - v0.70.1:  Fix SSH port validation and improve firewall handling during SSH port transitions.
+# - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
+# - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
 #          New operational modes: --cleanup-preview, --cleanup-only, --skip-cleanup.
 #          Add help and usage instructions with --help flag.
@@ -75,7 +75,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.70.2"
+CURRENT_VERSION="0.71"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -226,7 +226,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.70.2 | 2025-10-19                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.71 | 2025-10-20                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3007,11 +3007,13 @@ test_backup() {
     RSYNC_EXIT_CODE=$?
     set -e
 
-    echo "--- Test Backup (single file) at $(date) ---" >> "$BACKUP_LOG"
-    echo "Command: rsync -avz -e \"$SSH_COMMAND\" \"$TEST_FILE\" \"${BACKUP_DEST}:${REMOTE_BACKUP_PATH}\"" >> "$BACKUP_LOG"
-    echo "Output:" >> "$BACKUP_LOG"
-    echo "$RSYNC_OUTPUT" >> "$BACKUP_LOG"
-    echo "Exit Code: $RSYNC_EXIT_CODE" >> "$BACKUP_LOG"
+    {
+        echo "--- Test Backup at $(date) ---"
+        echo "Command: rsync -avz -e \"$SSH_COMMAND\" \"$TEST_FILE\" \"${BACKUP_DEST}:${REMOTE_BACKUP_PATH}\""
+        echo "Output:"
+        echo "$RSYNC_OUTPUT"
+        echo "Exit Code: $RSYNC_EXIT_CODE"
+    } >> "$BACKUP_LOG"
 
     if [[ $RSYNC_EXIT_CODE -eq 0 ]]; then
         print_success "Test backup (single file) successful! Check $BACKUP_LOG for details."
@@ -3029,13 +3031,18 @@ test_backup() {
         else
             print_error "Test backup failed (exit code: $RSYNC_EXIT_CODE). See $BACKUP_LOG for details."
             log "Test backup failed with exit code $RSYNC_EXIT_CODE."
-            if echo "$RSYNC_OUTPUT" | grep -q "Permission denied"; then
-                print_info "Hint: Check SSH key authentication and permissions on the remote path."
-            elif echo "$RSYNC_OUTPUT" | grep -qE "(Connection timed out|Connection refused|Network is unreachable)"; then
-                print_info "Hint: Check network connectivity, firewall rules (local and remote), and the SSH port."
-            elif echo "$RSYNC_OUTPUT" | grep -q "No such file or directory"; then
-                print_info "Hint: Verify the remote path '${REMOTE_BACKUP_PATH}' is correct and accessible."
-            fi
+            # Hints based on common rsync errors
+            case "$RSYNC_OUTPUT" in
+                *"Permission denied"*)
+                    print_info "Hint: Check SSH key authentication and permissions on the remote path."
+                    ;;
+                *"Connection timed out"*|*"Connection refused"*|*"Network is unreachable"*)
+                    print_info "Hint: Check network connectivity, firewall rules (local and remote), and the SSH port."
+                    ;;
+                *"No such file or directory"*)
+                    print_info "Hint: Verify the remote path '${REMOTE_BACKUP_PATH}' is correct and accessible."
+                    ;;
+            esac
         fi
 
         print_info "Common troubleshooting steps:"
