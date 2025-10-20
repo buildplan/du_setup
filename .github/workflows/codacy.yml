@@ -72,7 +72,7 @@ jobs:
           gh-code-scanning-compat: true
           max-allowed-issues: 2147483647
 
-      - name: Run Codacy Analysis CLI (fallback: download binary)
+      - name: Run Codacy Analysis CLI (fallback download binary)
         if: env.CODACY_DOCKER_OK != 'true'
         run: |
           set -euo pipefail
