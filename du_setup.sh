@@ -3,7 +3,7 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.72 | 2025-10-20
 # Changelog:
-# - v0.72: Add a custom .bashrc for new user.
+# - v0.72: Added configure_custom_bashrc() function that creates and installs a feature-rich .bashrc file during user creation.
 # - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
 # - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
 # - v0.70: Option to remove cloud VPS provider packages (like cloud-init).
@@ -1299,7 +1299,7 @@ extract() {
                 ;;
             *)
                 echo "'$1' cannot be extracted via extract()" >&2
-                return 1 # Add return 1 for consistency
+                return 1
                 ;;
         esac
     else
@@ -2147,7 +2147,7 @@ Docker Compose:
   dcstatus           Status & resource usage
   dcreload <srv>     Restart & follow logs
   dcupdate <srv>     Pull & update service
-  dcgrep s> <p>      Filter logs
+  dcgrep <srv> <p>   Filter logs
   dcvalidate         Validate compose file
 
 Examples:
