@@ -35,7 +35,7 @@ jobs:
 
       - name: Check for non-UTF-8 files
         run: |
-          find . -type f -exec file --mime {} + | grep -v 'charset=utf-8' || true
+          find . -name .git -prune -o -type f -exec file --mime {} + | grep -v -e 'charset=utf-8' -e 'charset=us-ascii' -e 'charset=binary' || echo "All files OK"
 
       # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
       - name: Run Codacy Analysis CLI
