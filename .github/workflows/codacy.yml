@@ -12,6 +12,7 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
+    # The branches below must be a subset of the branches above
     branches: [ "main" ]
   schedule:
     - cron: '44 7 * * 0'
@@ -22,89 +23,37 @@ permissions:
 jobs:
   codacy-security-scan:
     permissions:
-      contents: read
-      security-events: write
-      actions: read
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     name: Codacy Security Scan
     runs-on: ubuntu-latest
     steps:
+      # Checkout the repository to the GitHub Actions runner
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Sanitize non-UTF-8 files (convert to UTF-8)
+      - name: Check for non-UTF-8 files
         run: |
-          set -euo pipefail
-          echo "Scanning tracked files for non-UTF-8 contents..."
-          converted=0
-          skipped=0
-          errors=0
+          find . -name .git -prune -o -type f -exec file --mime {} + | grep -v -e 'charset=utf-8' -e 'charset=us-ascii' -e 'charset=binary' || echo "All files OK"
 
-          # Use process substitution to avoid running the while loop in a subshell
-          while IFS= read -r -d '' f; do
-            [ -z "$f" ] && continue
-
-            # Skip very large files
-            filesize=$(stat -c%s "$f" 2>/dev/null || echo 0)
-            if [ "$filesize" -gt $((10 * 1024 * 1024)) ]; then
-              echo "SKIP (too large): $f"
-              skipped=$((skipped+1))
-              continue
-            fi
-
-            # Skip obvious binary types
-            mime=$(file -b --mime "$f" 2>/dev/null || true)
-            if echo "$mime" | grep -qiE 'charset=binary|application/octet-stream|image/|audio/|video/|executable'; then
-              echo "SKIP (binary mime): $f -> $mime"
-              skipped=$((skipped+1))
-              continue
-            fi
-
-            # Check UTF-8 validity using iconv (returns non-zero on invalid sequences)
-            if iconv -f UTF-8 -t UTF-8 "$f" -o /dev/null 2>/dev/null; then
-              # already valid UTF-8
-              continue
-            fi
-
-            echo "CONVERT: $f (non-UTF-8 detected: $mime)"
-
-            # First attempt: try converting from ISO-8859-1 (latin1) to UTF-8
-            if iconv -f ISO-8859-1 -t UTF-8 "$f" -o "${f}.utf8.tmp" 2>/dev/null; then
-              mv "${f}.utf8.tmp" "$f"
-              echo "  -> iconv ISO-8859-1 -> UTF-8 succeeded for $f"
-              converted=$((converted+1))
-              continue
-            fi
-
-            # Fallback: re-encode using Python with 'replace' to guarantee valid UTF-8
-            if python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); s=b.decode("utf-8","replace"); open(p,"w",encoding="utf-8").write(s)' "$f"; then
-              echo "  -> re-encoded with replacement for $f"
-              converted=$((converted+1))
-              continue
-            else
-              echo "  -> failed to convert $f"
-              errors=$((errors+1))
-            fi
-          done < <(git ls-files -z)
-
-          echo "Sanitization complete. Converted: $converted, Skipped: $skipped, Errors: $errors"
-          if [ "$errors" -ne 0 ]; then
-            echo "One or more files could not be sanitized. Please inspect the repository."
-            exit 2
-          fi
-        shell: bash
-
+      # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
       - name: Run Codacy Analysis CLI
         uses: codacy/codacy-analysis-cli-action@d840f886c4bd4edc059706d09c6a1586111c540b
-        env:
-          JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
         with:
+          # Check https://github.com/codacy/codacy-analysis-cli#project-token to get your project token from your Codacy repository
+          # You can also omit the token and run the tools that support default configurations
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           verbose: true
           output: results.sarif
           format: sarif
+          # Adjust severity of non-security issues
           gh-code-scanning-compat: true
+          # Force 0 exit code to allow SARIF file generation
+          # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
+      # Upload the SARIF file generated in the previous step
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
         with:
