@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.72 | 2025-10-20
+# Version: 0.73 | 2025-10-22
 # Changelog:
+# - v0.73: Revised/improved logic in .bashrc for memory and system updates.
 # - v0.72: Added configure_custom_bashrc() function that creates and installs a feature-rich .bashrc file during user creation.
 # - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
 # - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
@@ -76,7 +77,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.72"
+CURRENT_VERSION="0.73"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -227,7 +228,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.72 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.73 | 2025-10-22                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -1410,7 +1411,13 @@ sysinfo() {
     printf "${CYAN}%-15s${RESET} %s\n" "Uptime:" "$(uptime -p 2>/dev/null || uptime | sed 's/.*up //' | sed 's/,.*//')"
     printf "${CYAN}%-15s${RESET} %s\n" "Server time:" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
     printf "${CYAN}%-15s${RESET} %s\n" "CPU:" "$cpu_info"
-    printf "${CYAN}%-15s${RESET} %s\n" "Memory:" "$(free -h | awk '/^Mem:/ {printf "%s / %s (%d%% used)", $3, $2, $3/$2*100}')"
+    printf "${CYAN}%-15s${RESET} " "Memory:"
+    free -m | awk '/Mem/ {
+        used = $3; total = $2; percent = int((used/total)*100);
+        if (used >= 1024) { used_fmt = sprintf("%.1fGi", used/1024); } else { used_fmt = sprintf("%dMi", used); }
+        if (total >= 1024) { total_fmt = sprintf("%.1fGi", total/1024); } else { total_fmt = sprintf("%dMi", total); }
+        printf "%s / %s (%d%% used)\n", used_fmt, total_fmt, percent;
+    }'
     printf "${CYAN}%-15s${RESET} %s\n" "Disk (/):" "$(df -h / | awk 'NR==2 {print $3 " / " $2 " (" $5 " used)"}')"
 
     # --- Reboot Status ---
@@ -1425,14 +1432,25 @@ sysinfo() {
         local total security
         local upgradable_all upgradable_list security_list
         if [ -x /usr/lib/update-notifier/apt-check ]; then
-            IFS=';' read -r total security < <(/usr/lib/update-notifier/apt-check 2>/dev/null)
-        elif [ -r /var/lib/update-notifier/updates-available ]; then
-            total=$(awk '/packages can be updated/ {print $1}' /var/lib/update-notifier/updates-available)
-            security=$(awk '/security updates/ {print $1}' /var/lib/update-notifier/updates-available)
-        else
+            local apt_check_output
+            apt_check_output=$(/usr/lib/update-notifier/apt-check 2>/dev/null)
+            if [ -n "$apt_check_output" ]; then
+                total="${apt_check_output%%;*}"
+                security="${apt_check_output##*;}"
+            fi
+        fi
+        # Fallback if apt-check didn't provide values
+        if [ -z "$total" ] && [ -r /var/lib/update-notifier/updates-available ]; then
+            total=$(awk '/[0-9]+ (update|package)s? can be (updated|applied|installed)/ {print $1; exit}' /var/lib/update-notifier/updates-available 2>/dev/null)
+            security=$(awk '/[0-9]+ (update|package)s? .*security/ {print $1; exit}' /var/lib/update-notifier/updates-available 2>/dev/null)
+        fi
+        # Final fallback
+        if [ -z "$total" ]; then
             total=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
             security=$(apt list --upgradable 2>/dev/null | grep -ci security)
         fi
+        total="${total:-0}"
+        security="${security:-0}"
 
         if [ -n "$total" ] && [ "$total" -gt 0 ] 2>/dev/null; then
             printf "${CYAN}%-15s${RESET} " "Updates:"
