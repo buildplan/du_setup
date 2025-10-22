@@ -39,11 +39,12 @@ jobs:
           skipped=0
           errors=0
 
-          git ls-files -z | while IFS= read -r -d '' f; do
+          # Use process substitution to avoid running the while loop in a subshell
+          while IFS= read -r -d '' f; do
             [ -z "$f" ] && continue
 
             # Skip very large files
-            filesize=$(stat -c%s "$f" || echo 0)
+            filesize=$(stat -c%s "$f" 2>/dev/null || echo 0)
             if [ "$filesize" -gt $((10 * 1024 * 1024)) ]; then
               echo "SKIP (too large): $f"
               skipped=$((skipped+1))
@@ -51,7 +52,7 @@ jobs:
             fi
 
             # Skip obvious binary types
-            mime=$(file -b --mime "$f" || true)
+            mime=$(file -b --mime "$f" 2>/dev/null || true)
             if echo "$mime" | grep -qiE 'charset=binary|application/octet-stream|image/|audio/|video/|executable'; then
               echo "SKIP (binary mime): $f -> $mime"
               skipped=$((skipped+1))
@@ -75,15 +76,7 @@ jobs:
             fi
 
             # Fallback: re-encode using Python with 'replace' to guarantee valid UTF-8
-            if python3 - <<PY
-import sys
-p = sys.argv[1]
-b = open(p,'rb').read()
-s = b.decode('utf-8','replace')
-open(p,'w',encoding='utf-8').write(s)
-print("ok")
-PY
-            then
+            if python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); s=b.decode("utf-8","replace"); open(p,"w",encoding="utf-8").write(s)' "$f"; then
               echo "  -> re-encoded with replacement for $f"
               converted=$((converted+1))
               continue
@@ -91,7 +84,7 @@ PY
               echo "  -> failed to convert $f"
               errors=$((errors+1))
             fi
-          done
+          done < <(git ls-files -z)
 
           echo "Sanitization complete. Converted: $converted, Skipped: $skipped, Errors: $errors"
           if [ "$errors" -ne 0 ]; then
