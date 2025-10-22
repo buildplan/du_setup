@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.72 | 2025-10-20
+# Version: 0.72.1 | 2025-10-22
 # Changelog:
+# - v0.72.1: Revised/improved logic in .bashrc for memory and system updates.
 # - v0.72: Added configure_custom_bashrc() function that creates and installs a feature-rich .bashrc file during user creation.
 # - v0.71: Simplify test backup function to work reliably with Hetzner storagebox
 # - v0.70.1: Fix SSH port validation and improve firewall handling during SSH port transitions.
@@ -76,7 +77,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.72"
+CURRENT_VERSION="0.72.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -227,7 +228,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.72 | 2025-10-20                         ║${NC}"
+    printf '%s\n' "${CYAN}║                     v0.72.1 | 2025-10-22                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
