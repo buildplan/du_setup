@@ -7,9 +7,9 @@
 
 -----
 
-**Version:** v0.73
+**Version:** v0.74
 
-**Last Updated:** 2025-10-22
+**Last Updated:** 2025-11-06
 
 **Compatible With:**
 
@@ -87,12 +87,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`63695b2b18219e9fed579ae2545ed413c04fbf024cd181d72139409ba1811c1e`
+`af57d62a989e370b153027ebda10350d936bf6d8879d7f470f0f233f3847b138`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo 63695b2b18219e9fed579ae2545ed413c04fbf024cd181d72139409ba1811c1e du_setup.sh | sha256sum --check
+echo af57d62a989e370b153027ebda10350d936bf6d8879d7f470f0f233f3847b138 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -317,6 +317,72 @@ If Tailscale fails to connect:
 5. **Network Issues**:
       * Ensure UDP 41641 is open: `nc -zvu <tailscale-server> 41641`
       * Check VPS firewall for Tailscale traffic.
+
+-----
+
+## Acknowledgments & Credits
+
+This setup script leverages the following excellent open-source projects and tools:
+
+### Core System Tools
+
+* **OpenSSH** - Secure Shell for remote access
+* **Fail2Ban** - Intrusion prevention system for protecting SSH and services
+* **UFW** - Uncomplicated Firewall for easy firewall management
+* **Chrony** - Time synchronization and NTP service
+* **Rsyslog** - System logging facility
+
+### Monitoring & Administration
+
+* **htop** - Interactive process viewer
+* **iotop** - I/O monitoring tool
+* **nethogs** - Real-time network traffic monitor
+* **ncdu** - Disk usage analyzer with TUI
+* **tree** - Directory structure visualization
+
+### Networking & VPN
+
+* **Tailscale** - Zero config VPN for secure networking (optional installation)
+
+### Container & Orchestration
+
+* **Docker Engine** - Container runtime and orchestration
+* **Docker Compose** - Multi-container orchestration
+* **dtop** - Terminal-based Docker container monitoring (by [amir20](https://github.com/amir20/dtop))
+* **Skopeo** - Utility for working with container images and image repositories
+
+### Security & Auditing
+
+* **Lynis** - Comprehensive system security auditing
+* **debsecan** - Debian package vulnerability checker (Debian only)
+* **unattended-upgrades** - Automatic security update management
+* **GPG** - GNU Privacy Guard for cryptographic operations
+
+### Development & Utilities
+
+* **Git** - Version control system
+* **jq** - JSON query processor for data manipulation
+* **rsync** - Efficient file synchronization
+* **curl** - Data transfer tool
+* **wget** - File download utility
+* **Vim** - Text editor
+* **netcat** - Network utility for diagnostics
+* **coreutils, gawk, perl** - Core GNU utilities
+
+### Security & System Hardening
+
+This script implements hardening recommendations based on:
+
+* **CIS Benchmarks** - Center for Internet Security standards
+* **NIST guidelines** - National Institute of Standards and Technology
+* **OWASP security practices** - Open Web Application Security Project
+
+### Special Thanks
+
+* Debian and Ubuntu maintainers
+* Open-source community developers
+
+**License & Attribution Note:** Most tools included are free, open-source software under various permissive licenses (GPL, MIT, Apache 2.0). Tailscale's client is open source, though its coordination server is proprietary. Hardening guidelines reference industry standards (NIST, CIS, OWASP).
 
 -----
 
