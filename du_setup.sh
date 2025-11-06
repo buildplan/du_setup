@@ -3852,14 +3852,15 @@ install_dtop_optional() {
         return 0
     fi
     print_info "Installing dtop for user '$USERNAME'..."
-    local DTOP_INSTALLER="/tmp/dtop-installer.sh"    
+    local DTOP_INSTALLER="/tmp/dtop-installer.sh"
     if ! curl -fsSL "https://github.com/amir20/dtop/releases/latest/download/dtop-installer.sh" -o "$DTOP_INSTALLER"; then
         print_warning "Failed to download dtop installer. Continuing setup..."
         log "Failed to download dtop installer."
         return 0
-    fi    
+    fi
     chmod +x "$DTOP_INSTALLER"
-    trap 'rm -f "$DTOP_INSTALLER"' RETURN    
+    # shellcheck disable=SC2064
+    trap "rm -f '$DTOP_INSTALLER'" RETURN
     local USER_HOME
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     local USER_LOCAL_BIN="$USER_HOME/.local/bin"
