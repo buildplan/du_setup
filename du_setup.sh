@@ -3871,6 +3871,7 @@ install_dtop_optional() {
             return 0
         fi
     fi
+    # shellcheck disable=SC2024
     if sudo -u "$USERNAME" bash "$DTOP_INSTALLER" < /dev/null >> "$LOG_FILE" 2>&1; then
         # Verify installation
         if [[ -f "$USER_LOCAL_BIN/dtop" ]]; then
