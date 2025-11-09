@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.74 | 2025-11-06
+# Version: 0.75 | 2025-11-09
 # Changelog:
+# - v0.75: Updated Docker daemon.json file to be more secure.
 # - v0.74: Add optional dtop (https://github.com/amir20/dtop) after docker installation.
 #.         Update .bashrc
 # - v0.73: Revised/improved logic in .bashrc for memory and system updates.
@@ -79,7 +80,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.74"
+CURRENT_VERSION="0.75"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -230,7 +231,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.74 | 2025-11-06                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.75 | 2025-11-09                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3812,13 +3813,27 @@ install_docker() {
     print_info "Configuring Docker daemon..."
     local NEW_DOCKER_CONFIG
     NEW_DOCKER_CONFIG=$(mktemp)
-    tee "$NEW_DOCKER_CONFIG" > /dev/null <<EOF
+    tee "$NEW_DOCKER_CONFIG" > /dev/null <<DAEMONFILE
 {
   "log-driver": "json-file",
-  "log-opts": { "max-size": "10m", "max-file": "3" },
-  "live-restore": true
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "live-restore": true,
+  "dns": ["9.9.9.9", "1.1.1.1", "208.67.222.222"],
+  "userland-proxy": false,
+  "no-new-privileges": true,
+  "icc": false,
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  }
 }
-EOF
+DAEMONFILE
     mkdir -p /etc/docker
     if [[ -f /etc/docker/daemon.json ]] && cmp -s "$NEW_DOCKER_CONFIG" /etc/docker/daemon.json; then
         print_info "Docker daemon configuration already correct. Skipping."
