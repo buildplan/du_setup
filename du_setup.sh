@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.75 | 2025-11-09
+# Version: 0.76 | 2025-11-10
 # Changelog:
+# - v0.76: Improve the flexibility of the built-in Docker daemon.json file to prevent any potential Docker issues.
 # - v0.75: Updated Docker daemon.json file to be more secure.
 # - v0.74: Add optional dtop (https://github.com/amir20/dtop) after docker installation.
 #.         Update .bashrc
@@ -80,7 +81,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.75"
+CURRENT_VERSION="0.76"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -231,7 +232,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.75 | 2025-11-09                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.76 | 2025-11-10                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
