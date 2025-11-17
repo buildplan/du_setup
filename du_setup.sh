@@ -2560,8 +2560,8 @@ validate_ip_or_cidr() {
     # IPv4 address (simple check)
     if [[ "$input" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
         # Validate octets are <= 255
-        local IFS='.'
-        local -a octets=($input)
+        local -a octets
+        IFS='.' read -ra octets <<< "$input"
         for octet in "${octets[@]}"; do
             if [[ "$octet" -gt 255 ]]; then
                 return 1
@@ -2574,8 +2574,8 @@ validate_ip_or_cidr() {
         local ip="${input%/*}"
         local cidr="${input##*/}"
         # Validate IP part
-        local IFS='.'
-        local -a octets=($ip)
+        local -a octets
+        IFS='.' read -ra octets <<< "$ip"
         for octet in "${octets[@]}"; do
             if [[ "$octet" -gt 255 ]]; then
                 return 1
@@ -3655,6 +3655,7 @@ configure_fail2ban() {
 
     # --- Collect User IPs to Ignore ---
     local IGNORE_IPS="127.0.0.1/8 ::1"
+    local INVALID_IPS=""
 
     if confirm "Add custom IP addresses or ranges to Fail2Ban ignore list (e.g., your IP, Tailscale)?"; then
         print_info "Enter IP addresses or CIDR ranges to whitelist (space-separated)."
@@ -3673,6 +3674,7 @@ configure_fail2ban() {
                     VALID_IPS="$VALID_IPS $ip"
                 else
                     print_error "Invalid format, skipping: $ip"
+                    INVALID_IPS="$INVALID_IPS $ip"
                     ((INVALID_COUNT++))
                 fi
             done
@@ -3684,7 +3686,9 @@ configure_fail2ban() {
             fi
 
             if [[ $INVALID_COUNT -gt 0 ]]; then
-                print_error "$INVALID_COUNT invalid IP(s) were skipped."
+                print_warning "$INVALID_COUNT invalid IP(s) were skipped:$INVALID_IPS"
+                print_info "Continuing with valid IPs only. You can add more IPs later."
+                log "Skipped invalid IPs:$INVALID_IPS"
             fi
         else
             print_info "No custom IPs provided. Using defaults only."
@@ -3759,6 +3763,22 @@ EOF
     if systemctl is-active --quiet fail2ban; then
         print_success "Fail2Ban is active with the new configuration."
         fail2ban-client status | tee -a "$LOG_FILE"
+
+        # Show how to add IPs later
+        if [[ $INVALID_COUNT -gt 0 ]] || confirm "Show instructions for adding IPs later?" "n"; then
+            printf "\n"
+            print_info "To add more IP addresses to Fail2Ban ignore list later:"
+            printf "${CYAN}1. Edit the configuration file:${NC}\n"
+            printf "   ${BOLD}sudo nano /etc/fail2ban/jail.local${NC}\n"
+            printf "${CYAN}2. Update the 'ignoreip' line under [DEFAULT]:${NC}\n"
+            printf "   ${BOLD}ignoreip = 127.0.0.1/8 ::1 YOUR_IP_HERE${NC}\n"
+            printf "${CYAN}3. Restart Fail2Ban:${NC}\n"
+            printf "   ${BOLD}sudo systemctl restart fail2ban${NC}\n"
+            printf "${CYAN}4. Verify the configuration:${NC}\n"
+            printf "   ${BOLD}sudo fail2ban-client status${NC}\n"
+            printf "\n"
+            log "Displayed post-installation Fail2Ban instructions."
+        fi
     else
         print_error "Fail2Ban service failed to start. Check 'journalctl -u fail2ban' for errors."
         FAILED_SERVICES+=("fail2ban")
