@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.76 | 2025-11-10
+# Version: 0.77 | 2025-11-17
 # Changelog:
+# - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
+#          Add a few more core packages in install_packages function.
 # - v0.76: Improve the flexibility of the built-in Docker daemon.json file to prevent any potential Docker issues.
 # - v0.75: Updated Docker daemon.json file to be more secure.
 # - v0.74: Add optional dtop (https://github.com/amir20/dtop) after docker installation.
@@ -81,7 +83,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.76"
+CURRENT_VERSION="0.77"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -232,7 +234,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.76 | 2025-11-10                         ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.77 | 2025-11-17                         ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2811,6 +2813,7 @@ install_packages() {
         ufw fail2ban unattended-upgrades chrony \
         rsync wget vim htop iotop nethogs netcat-traditional ncdu \
         tree rsyslog cron jq gawk coreutils perl skopeo git \
+        apt-listchanges ca-certificates gnupg logrotate \
         ssh openssh-client openssh-server; then
         print_error "Failed to install one or more essential packages."
         exit 1
@@ -3603,8 +3606,47 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
+    # --- Collect User IPs to Ignore ---
+    local IGNORE_IPS="127.0.0.1/8 ::1"
+
+    if confirm "Add custom IP addresses or ranges to Fail2Ban ignore list (e.g., your IP, Tailscale)?"; then
+        print_info "Enter IP addresses or CIDR ranges to whitelist (space-separated)."
+        print_info "Examples: 192.168.1.100 10.0.0.0/8 100.64.0.0/10"
+        print_info "Tailscale range: 100.64.0.0/10"
+
+        read -rp "$(printf '%s' "${CYAN}IPs to ignore: ${NC}")" CUSTOM_IPS
+
+        if [[ -n "$CUSTOM_IPS" ]]; then
+            # Validate each IP/CIDR in the input
+            local VALID_IPS=""
+            local INVALID_COUNT=0
+
+            for ip in $CUSTOM_IPS; do
+                if validate_ip_or_cidr "$ip"; then
+                    VALID_IPS="$VALID_IPS $ip"
+                else
+                    print_error "Invalid format, skipping: $ip"
+                    ((INVALID_COUNT++))
+                fi
+            done
+
+            if [[ -n "$VALID_IPS" ]]; then
+                IGNORE_IPS="$IGNORE_IPS$VALID_IPS"
+                print_success "Added ${VALID_IPS// /, } to ignore list."
+                log "Added custom Fail2Ban ignore IPs:$VALID_IPS"
+            fi
+
+            if [[ $INVALID_COUNT -gt 0 ]]; then
+                print_error "$INVALID_COUNT invalid IP(s) were skipped."
+            fi
+        else
+            print_info "No custom IPs provided. Using defaults only."
+        fi
+    else
+        print_info "Using default ignore IPs only (localhost)."
+    fi
+
     # --- Define Desired Configurations ---
-    # Define content of config file.
     local UFW_PROBES_CONFIG
     UFW_PROBES_CONFIG=$(cat <<'EOF'
 [Definition]
@@ -3617,7 +3659,7 @@ EOF
     local JAIL_LOCAL_CONFIG
     JAIL_LOCAL_CONFIG=$(cat <<EOF
 [DEFAULT]
-ignoreip = 127.0.0.1/8 ::1
+ignoreip = $IGNORE_IPS
 bantime = 1d
 findtime = 10m
 maxretry = 5
@@ -3641,7 +3683,6 @@ EOF
     local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
 
     # --- Idempotency Check ---
-    # This checks if the on-disk files are already identical to our desired configuration.
     if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" ]] && \
        cmp -s "$UFW_FILTER_PATH" <<<"$UFW_PROBES_CONFIG" && \
        cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG"; then
@@ -3651,7 +3692,6 @@ EOF
     fi
 
     # --- Apply Configuration ---
-    # If the check above fails, we write the correct configuration files.
     print_info "Applying new Fail2Ban configuration..."
     mkdir -p /etc/fail2ban/filter.d
     echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
@@ -3667,11 +3707,10 @@ EOF
     print_info "Enabling and restarting Fail2Ban to apply new rules..."
     systemctl enable fail2ban
     systemctl restart fail2ban
-    sleep 2 # Give the service a moment to initialize.
+    sleep 2
 
     if systemctl is-active --quiet fail2ban; then
         print_success "Fail2Ban is active with the new configuration."
-        # Show the status of the enabled jails for confirmation.
         fail2ban-client status | tee -a "$LOG_FILE"
     else
         print_error "Fail2Ban service failed to start. Check 'journalctl -u fail2ban' for errors."
