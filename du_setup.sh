@@ -2555,6 +2555,53 @@ validate_ufw_port() {
     [[ "$port" =~ ^[0-9]+(/tcp|/udp)?$ ]]
 }
 
+validate_ip_or_cidr() {
+    local input="$1"
+    # IPv4 address (simple check)
+    if [[ "$input" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        # Validate octets are <= 255
+        local IFS='.'
+        local -a octets=($input)
+        for octet in "${octets[@]}"; do
+            if [[ "$octet" -gt 255 ]]; then
+                return 1
+            fi
+        done
+        return 0
+    fi
+    # IPv4 CIDR (e.g., 10.0.0.0/8)
+    if [[ "$input" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+        local ip="${input%/*}"
+        local cidr="${input##*/}"
+        # Validate IP part
+        local IFS='.'
+        local -a octets=($ip)
+        for octet in "${octets[@]}"; do
+            if [[ "$octet" -gt 255 ]]; then
+                return 1
+            fi
+        done
+        # Validate CIDR is 0-32
+        if [[ "$cidr" -ge 0 && "$cidr" -le 32 ]]; then
+            return 0
+        fi
+        return 1
+    fi
+    # IPv6 address (basic check)
+    if [[ "$input" =~ ^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$ ]]; then
+        return 0
+    fi
+    # IPv6 CIDR (e.g., 2001:db8::/32)
+    if [[ "$input" =~ ^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}/[0-9]{1,3}$ ]]; then
+        local cidr="${input##*/}"
+        if [[ "$cidr" -ge 0 && "$cidr" -le 128 ]]; then
+            return 0
+        fi
+        return 1
+    fi
+    return 1
+}
+
 convert_to_bytes() {
     local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
     local unit="${size_upper: -1}"
@@ -3631,7 +3678,7 @@ configure_fail2ban() {
             done
 
             if [[ -n "$VALID_IPS" ]]; then
-                IGNORE_IPS="$IGNORE_IPS$VALID_IPS"
+                IGNORE_IPS="$IGNORE_IPS $VALID_IPS"
                 print_success "Added ${VALID_IPS// /, } to ignore list."
                 log "Added custom Fail2Ban ignore IPs:$VALID_IPS"
             fi
