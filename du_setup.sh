@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.77 | 2025-11-17
+# Version: 0.77.1 | 2025-11-19
 # Changelog:
+# - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
 # - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
 #          Add a few more core packages in install_packages function.
 # - v0.76: Improve the flexibility of the built-in Docker daemon.json file to prevent any potential Docker issues.
@@ -83,7 +84,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.77"
+CURRENT_VERSION="0.77.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -234,7 +235,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.77 | 2025-11-17                         ║${NC}"
+    printf '%s\n' "${CYAN}║                     v0.77.1 | 2025-11-19                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
