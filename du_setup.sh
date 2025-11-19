@@ -3683,6 +3683,7 @@ configure_fail2ban() {
             printf '  %-24s %s\n' "Single IP:" "192.168.1.100"
             printf '  %-24s %s\n' "CIDR Range:" "10.0.0.0/8"
             printf '  %-24s %s\n' "IPv6 Address:" "2606:4700::1111"
+            printf '  %-24s %s\n' "Tailscale Range:" "100.64.0.0/10"
             read -ra WHITELIST_IPS -p "  > "
             if (( ${#WHITELIST_IPS[@]} == 0 )); then
                 print_info "No IP addresses entered. Skipping."
