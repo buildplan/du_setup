@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.77 | 2025-11-17
+# Version: 0.77.1 | 2025-11-19
 # Changelog:
+# - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
 # - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
 #          Add a few more core packages in install_packages function.
 # - v0.76: Improve the flexibility of the built-in Docker daemon.json file to prevent any potential Docker issues.
@@ -83,7 +84,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.77"
+CURRENT_VERSION="0.77.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -234,7 +235,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.77 | 2025-11-17                         ║${NC}"
+    printf '%s\n' "${CYAN}║                     v0.77.1 | 2025-11-19                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3651,47 +3652,81 @@ configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
     # --- Collect User IPs to Ignore ---
-    local IGNORE_IPS="127.0.0.1/8 ::1"
-    local INVALID_IPS=""
+    local -a IGNORE_IPS=("127.0.0.1/8" "::1") # Array for easier dedup.
+    local -a INVALID_IPS=()
+    local prompt_change=""
 
-    if confirm "Add custom IP addresses or ranges to Fail2Ban ignore list (e.g., your IP, Tailscale)?"; then
-        print_info "Enter IP addresses or CIDR ranges to whitelist (space-separated)."
-        print_info "Examples: 192.168.1.100 10.0.0.0/8 100.64.0.0/10"
-        print_info "Tailscale range: 100.64.0.0/10"
+    # NEW: Auto-detect and offer to whitelist current SSH connection
+    if [[ -n "$SSH_CONNECTION" ]]; then
+        local CURRENT_IP="${SSH_CONNECTION%% *}"
+        print_info "Detected SSH connection from: $CURRENT_IP"
 
-        read -rp "$(printf '%s' "${CYAN}IPs to ignore: ${NC}")" CUSTOM_IPS
+        if confirm "Whitelist your current IP ($CURRENT_IP) in Fail2Ban?"; then
+            if validate_ip_or_cidr "$CURRENT_IP"; then
+                IGNORE_IPS+=("$CURRENT_IP")
+                print_success "Added your current IP to whitelist."
+                log "Auto-whitelisted SSH connection IP: $CURRENT_IP"
+            else
+                print_warning "Could not validate current IP. Please add it manually."
+            fi
+        fi
+        prompt_change=" additional" # Modifies following prompt based on presence of SSH connection.
+    fi
 
-        if [[ -n "$CUSTOM_IPS" ]]; then
-            # Validate each IP/CIDR in the input
-            local VALID_IPS=""
-            local INVALID_COUNT=0
-
-            for ip in $CUSTOM_IPS; do
-                if validate_ip_or_cidr "$ip"; then
-                    VALID_IPS="$VALID_IPS $ip"
-                else
-                    print_error "Invalid format, skipping: $ip"
-                    INVALID_IPS="$INVALID_IPS $ip"
-                    ((INVALID_COUNT++))
+    if [[ $VERBOSE != false ]] && \
+        confirm "Add$prompt_change IP addresses or CIDR ranges to Fail2Ban ignore list (e.g., Tailscale)?"; then
+        while true; do
+            local -a WHITELIST_IPS=()
+            log "Prompting user for IP addresses or CIDR ranges to whitelist via Fail2Ban ignore list..."
+            printf '%s\n' "${CYAN}Enter IP addresses or CIDR ranges to whitelist, separated by spaces.${NC}"
+            printf '%s\n' "Examples:"
+            printf '  %-24s %s\n' "Single IP:" "192.168.1.100"
+            printf '  %-24s %s\n' "CIDR Range:" "10.0.0.0/8"
+            printf '  %-24s %s\n' "IPv6 Address:" "2606:4700::1111"
+            printf '  %-24s %s\n' "Tailscale Range:" "100.64.0.0/10"
+            read -ra WHITELIST_IPS -p "  > "
+            if (( ${#WHITELIST_IPS[@]} == 0 )); then
+                print_info "No IP addresses entered. Skipping."
+                break
+            fi
+            local valid=true
+            INVALID_IPS=()
+            for ip in "${WHITELIST_IPS[@]}"; do
+                if ! validate_ip_or_cidr "$ip"; then
+                    valid=false
+                    INVALID_IPS+=("$ip")
                 fi
             done
-
-            if [[ -n "$VALID_IPS" ]]; then
-                IGNORE_IPS="$IGNORE_IPS $VALID_IPS"
-                print_success "Added ${VALID_IPS// /, } to ignore list."
-                log "Added custom Fail2Ban ignore IPs:$VALID_IPS"
+            if [[ "$valid" == true ]]; then
+                IGNORE_IPS+=( "${WHITELIST_IPS[@]}" )
+                break
+            else
+                local s=""
+                (( ${#INVALID_IPS[@]} > 1 )) && s="s" # Plural if > 1
+                print_error "Invalid IP$s: ${INVALID_IPS[*]}"
+                printf '%s\n\n' "Please try again. Leave blank to skip."
             fi
-
-            if [[ $INVALID_COUNT -gt 0 ]]; then
-                print_warning "$INVALID_COUNT invalid IP(s) were skipped:$INVALID_IPS"
-                print_info "Continuing with valid IPs only. You can add more IPs later."
-                log "Skipped invalid IPs:$INVALID_IPS"
+        done
+    fi
+    # Deduplicate final IGNORE_IPS
+    if (( ${#IGNORE_IPS[@]} > 0 )); then
+        local -A seen=()
+        local -a unique=()
+        for ip in "${IGNORE_IPS[@]}"; do
+            if [[ ! -v seen[$ip] ]]; then
+                seen[$ip]=1
+                unique+=( "$ip" )
             fi
-        else
-            print_info "No custom IPs provided. Using defaults only."
-        fi
-    else
-        print_info "Using default ignore IPs only (localhost)."
+        done
+        IGNORE_IPS=( "${unique[@]}" )
+    fi
+    if (( ${#IGNORE_IPS[@]} > 2 )); then
+        local WHITELIST_STR
+        printf -v WHITELIST_STR "Whitelisting:\n"
+        for ip in "${IGNORE_IPS[@]:2}"; do # Skip first two entries in console output ("127.0.0.1/8" "::1").
+            printf -v WHITELIST_STR "%s  %s\n" "$WHITELIST_STR" "$ip"
+        done
+        print_info "$WHITELIST_STR"
     fi
 
     # --- Define Desired Configurations ---
@@ -3707,7 +3742,7 @@ EOF
     local JAIL_LOCAL_CONFIG
     JAIL_LOCAL_CONFIG=$(cat <<EOF
 [DEFAULT]
-ignoreip = $IGNORE_IPS
+ignoreip = ${IGNORE_IPS[*]}
 bantime = 1d
 findtime = 10m
 maxretry = 5
@@ -3762,8 +3797,11 @@ EOF
         fail2ban-client status | tee -a "$LOG_FILE"
 
         # Show how to add IPs later
-        if [[ $INVALID_COUNT -gt 0 ]] || confirm "Show instructions for adding IPs later?" "n"; then
+        if (( ${#INVALID_IPS[@]} > 0 )) || confirm "Show instructions for adding IPs later?" "n"; then
             printf "\n"
+            if [[ $VERBOSE == false ]]; then
+                printf '%s\n' "${PURPLE}ℹ Fail2Ban ignore list modification:${NC}"
+            fi
             print_info "To add more IP addresses to Fail2Ban ignore list later:"
             printf "%s1. Edit the configuration file:%s\n" "$CYAN" "$NC"
             printf "   %ssudo nano /etc/fail2ban/jail.local%s\n" "$BOLD" "$NC"
