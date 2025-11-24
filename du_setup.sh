@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.77.1 | 2025-11-19
+# Version: 0.77.2 | 2025-11-24
 # Changelog:
+# - v0.77.2: unbound variable fix for SSH when on local VM
 # - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
 # - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
 #          Add a few more core packages in install_packages function.
@@ -84,7 +85,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.77.1"
+CURRENT_VERSION="0.77.2"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -235,7 +236,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                     v0.77.1 | 2025-11-19                        ║${NC}"
+    printf '%s\n' "${CYAN}║                     v0.77.2 | 2025-11-24                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3656,8 +3657,8 @@ configure_fail2ban() {
     local -a INVALID_IPS=()
     local prompt_change=""
 
-    # NEW: Auto-detect and offer to whitelist current SSH connection
-    if [[ -n "$SSH_CONNECTION" ]]; then
+    # Auto-detect and offer to whitelist current SSH connection
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
         local CURRENT_IP="${SSH_CONNECTION%% *}"
         print_info "Detected SSH connection from: $CURRENT_IP"
 
