@@ -3,7 +3,8 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.77.2 | 2025-11-24
 # Changelog:
-# - v0.77.2: unbound variable fix for SSH when on local VM
+# - v0.77.2: Fixed an unbound variable for SSH when on a local virtual machine;
+#            check_dependencies should come before check_system to keep minimal servers from failing.
 # - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
 # - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
 #          Add a few more core packages in install_packages function.
@@ -5225,9 +5226,9 @@ main() {
 
     # --- PRELIMINARY CHECKS ---
     print_header
+    check_dependencies
     check_system
     run_update_check
-    check_dependencies
 
     # --- HANDLE SPECIAL OPERATIONAL MODES ---
     if [[ "$CLEANUP_ONLY" == "true" ]]; then
