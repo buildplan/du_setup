@@ -2820,8 +2820,17 @@ collect_config() {
         if validate_port "$SSH_PORT" || [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" == "$PREVIOUS_SSH_PORT" ]]; then
             break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
-    SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
-    SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
+    print_info "Detecting server IP addresses..."
+    SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -4 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -4 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+                   echo "unknown")
+
+    SERVER_IP_V6=$(curl -6 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -6 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -6 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+                   echo "not available")
+
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         print_info "Detected server IPv4: $SERVER_IP_V4"
     fi
