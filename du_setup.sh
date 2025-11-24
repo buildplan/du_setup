@@ -3659,20 +3659,36 @@ configure_fail2ban() {
     local prompt_change=""
 
     # Auto-detect and offer to whitelist current SSH connection
+    local DETECTED_IP=""
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        local CURRENT_IP="${SSH_CONNECTION%% *}"
-        print_info "Detected SSH connection from: $CURRENT_IP"
-
-        if confirm "Whitelist your current IP ($CURRENT_IP) in Fail2Ban?"; then
-            if validate_ip_or_cidr "$CURRENT_IP"; then
-                IGNORE_IPS+=("$CURRENT_IP")
-                print_success "Added your current IP to whitelist."
-                log "Auto-whitelisted SSH connection IP: $CURRENT_IP"
-            else
-                print_warning "Could not validate current IP. Please add it manually."
-            fi
+        DETECTED_IP="${SSH_CONNECTION%% *}"
+    fi
+    if [[ -z "$DETECTED_IP" ]]; then
+        local WHO_IP
+        WHO_IP=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()')
+        if validate_ip_or_cidr "$WHO_IP"; then
+            DETECTED_IP="$WHO_IP"
         fi
-        prompt_change=" additional" # Modifies following prompt based on presence of SSH connection.
+    fi
+    if [[ -z "$DETECTED_IP" ]]; then
+        local SS_IP
+        SS_IP=$(ss -tnH state established '( dport = :22 or sport = :22 )' 2>/dev/null | head -n 1 | awk '{print $NF}' | cut -d: -f1 | cut -d] -f1)
+        if validate_ip_or_cidr "$SS_IP"; then
+             DETECTED_IP="$SS_IP"
+        fi
+    fi
+    if [[ -n "$DETECTED_IP" ]]; then
+        print_info "Detected SSH connection from: $DETECTED_IP"
+
+        if confirm "Whitelist your current IP ($DETECTED_IP) in Fail2Ban?"; then
+            IGNORE_IPS+=("$DETECTED_IP")
+            print_success "Added your current IP to whitelist."
+            log "Auto-whitelisted SSH connection IP: $DETECTED_IP"
+        fi
+        prompt_change=" additional"
+    else
+        print_warning "Could not auto-detect current SSH IP. (This is normal in some VM/sudo environments)"
+        print_info "You can manually add your IP in the next step."
     fi
 
     if [[ $VERBOSE != false ]] && \
