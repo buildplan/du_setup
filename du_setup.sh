@@ -3248,36 +3248,62 @@ configure_ssh() {
     print_warning "SSH Key Authentication Required for Next Steps!"
     printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
 
-    # --- Context-Aware Connection Instructions ---
-    local CURRENT_LOCAL_IP
-    CURRENT_LOCAL_IP=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+    # --- Connection Display Function ---
+    show_connection_options() {
+        local port="$1"
+        local public_ip="$2"
+        
+        local TS_IP=""
+        if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
+            TS_IP=$(tailscale ip -4 2>/dev/null)
+        fi
 
-    local TS_IP=""
-    if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
-        TS_IP=$(tailscale ip -4 2>/dev/null)
-    fi
+        printf "\n"
 
-    printf "\n"
-    # 1. Public IP (Only show if we found one and it's not the same as the local IP)
-    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "Unknown" && "$SERVER_IP_V4" != "$CURRENT_LOCAL_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$CURRENT_SSH_PORT" "$USERNAME" "$SERVER_IP_V4"
-    fi
+        # 1. Public IP (Internet)
+        # Only show if valid and not "Unknown"
+        if [[ -n "$public_ip" && "$public_ip" != "Unknown" ]]; then
+             printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$port" "$USERNAME" "$public_ip"
+        fi
 
-    # 2. Local IP (Standard LAN)
-    if [[ -n "$CURRENT_LOCAL_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$CURRENT_SSH_PORT" "$USERNAME" "$CURRENT_LOCAL_IP"
-    fi
+        # 2. Internal/LAN IPs
+        # scan all interfaces. exclude the Public IP (already shown) and Loopback.
+        local found_internal=false
+        while read -r ip_addr; do
+            # Remove subnet mask if present
+            local clean_ip="${ip_addr%/*}"
 
-    # 3. Tailscale IP (VPN)
-    if [[ -n "$TS_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$CURRENT_SSH_PORT" "$USERNAME" "$TS_IP"
-    fi
+            # Skip if empty, loopback, or matches the Public IP we just displayed
+            if [[ -n "$clean_ip" && "$clean_ip" != "127.0.0.1" && "$clean_ip" != "$public_ip" ]]; then
+                 printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Internal/Private:" "$port" "$USERNAME" "$clean_ip"
+                 found_internal=true
+            fi
+        done < <(ip -4 -o addr show scope global | awk '{print $4}')
 
-    # 4. IPv6
-    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "Not available" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "IPv6:" "$CURRENT_SSH_PORT" "$USERNAME" "$SERVER_IP_V6"
-    fi
-    printf "\n"
+        # Fallback: If we found NO internal IPs and NO Public IP (local VM offline?), 
+        # show the detected local IP from route (Home VM scenario)
+        if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
+             local fallback_ip
+             fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+             if [[ -n "$fallback_ip" ]]; then
+                printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$port" "$USERNAME" "$fallback_ip"
+             fi
+        fi
+
+        # 3. IPv6
+        if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "Not available" ]]; then
+            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "IPv6:" "$port" "$USERNAME" "$SERVER_IP_V6"
+        fi
+
+        # 4. Tailscale IP (VPN)
+        if [[ -n "$TS_IP" ]]; then
+            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$port" "$USERNAME" "$TS_IP"
+        fi
+        printf "\n"
+    }
+
+    # Show options for CURRENT port
+    show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
         print_error "SSH key authentication is mandatory to proceed."
@@ -3354,18 +3380,8 @@ EOF
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
     print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
 
-    printf "\n"
-    # Show connection options again for the NEW port
-    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "Unknown" && "$SERVER_IP_V4" != "$CURRENT_LOCAL_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$SSH_PORT" "$USERNAME" "$SERVER_IP_V4"
-    fi
-    if [[ -n "$CURRENT_LOCAL_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$SSH_PORT" "$USERNAME" "$CURRENT_LOCAL_IP"
-    fi
-    if [[ -n "$TS_IP" ]]; then
-        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$SSH_PORT" "$USERNAME" "$TS_IP"
-    fi
-    printf "\n"
+    # Show options for NEW port
+    show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
     # Retry loop for SSH connection test
     local retry_count=0
