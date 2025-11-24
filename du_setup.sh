@@ -3252,7 +3252,7 @@ configure_ssh() {
     show_connection_options() {
         local port="$1"
         local public_ip="$2"
-        
+
         local TS_IP=""
         if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
             TS_IP=$(tailscale ip -4 2>/dev/null)
@@ -3280,7 +3280,7 @@ configure_ssh() {
             fi
         done < <(ip -4 -o addr show scope global | awk '{print $4}')
 
-        # Fallback: If we found NO internal IPs and NO Public IP (local VM offline?), 
+        # Fallback: If we found NO internal IPs and NO Public IP (local VM offline?),
         # show the detected local IP from route (Home VM scenario)
         if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
              local fallback_ip
@@ -5134,10 +5134,10 @@ generate_summary() {
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+    if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
         printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+    if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
@@ -5233,12 +5233,34 @@ generate_summary() {
     # --- Post-Reboot Verification Steps ---
     print_separator "Post-Reboot Verification Steps:"
     printf '  - SSH access:\n'
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+
+    # 1. Public Access
+    if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
+        printf "    %-26s ${CYAN}%s${NC}\n" "- Public (Internet):" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+
+    # 2. Local Access (Only if different from Public)
+    if [[ -n "$LOCAL_IP_V4" ]]; then
+        if [[ "$SERVER_IP_V4" == "Unknown" || "$SERVER_IP_V4" == "unknown" || "$LOCAL_IP_V4" != "$SERVER_IP_V4" ]]; then
+            printf "    %-26s ${CYAN}%s${NC}\n" "- Local (LAN):" "ssh -p $SSH_PORT $USERNAME@$LOCAL_IP_V4"
+        fi
     fi
+
+    # 3. Tailscale Access
+    if [[ -f /tmp/tailscale_ips.txt ]]; then
+        local TS_SUMMARY_IP
+        TS_SUMMARY_IP=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt | head -n 1)
+        if [[ -n "$TS_SUMMARY_IP" ]]; then
+            printf "    %-26s ${CYAN}%s${NC}\n" "- Tailscale (VPN):" "ssh -p $SSH_PORT $USERNAME@$TS_SUMMARY_IP"
+        fi
+    fi
+
+    # 4. IPv6 Access
+    if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
+        printf "    %-26s ${CYAN}%s${NC}\n" "- IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+    fi
+
+    # Other verification commands
     printf "  %-28s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
