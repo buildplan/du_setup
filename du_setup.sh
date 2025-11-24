@@ -3,7 +3,8 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.77.2 | 2025-11-24
 # Changelog:
-# - v0.77.2: unbound variable fix for SSH when on local VM
+# - v0.77.2: Fixed an unbound variable for SSH when on a local virtual machine;
+#            check_dependencies should come before check_system to keep minimal servers from failing.
 # - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
 # - v0.77: User-configurable ignoreip functionality for configure_fail2ban function.
 #          Add a few more core packages in install_packages function.
@@ -2819,8 +2820,17 @@ collect_config() {
         if validate_port "$SSH_PORT" || [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" == "$PREVIOUS_SSH_PORT" ]]; then
             break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
-    SERVER_IP_V4=$(curl -4 -s https://ifconfig.me 2>/dev/null || echo "unknown")
-    SERVER_IP_V6=$(curl -6 -s https://ifconfig.me 2>/dev/null || echo "not available")
+    print_info "Detecting server IP addresses..."
+    SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -4 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -4 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+                   echo "unknown")
+
+    SERVER_IP_V6=$(curl -6 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -6 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -6 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+                   echo "not available")
+
     if [[ "$SERVER_IP_V4" != "unknown" ]]; then
         print_info "Detected server IPv4: $SERVER_IP_V4"
     fi
@@ -3658,20 +3668,36 @@ configure_fail2ban() {
     local prompt_change=""
 
     # Auto-detect and offer to whitelist current SSH connection
+    local DETECTED_IP=""
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        local CURRENT_IP="${SSH_CONNECTION%% *}"
-        print_info "Detected SSH connection from: $CURRENT_IP"
-
-        if confirm "Whitelist your current IP ($CURRENT_IP) in Fail2Ban?"; then
-            if validate_ip_or_cidr "$CURRENT_IP"; then
-                IGNORE_IPS+=("$CURRENT_IP")
-                print_success "Added your current IP to whitelist."
-                log "Auto-whitelisted SSH connection IP: $CURRENT_IP"
-            else
-                print_warning "Could not validate current IP. Please add it manually."
-            fi
+        DETECTED_IP="${SSH_CONNECTION%% *}"
+    fi
+    if [[ -z "$DETECTED_IP" ]]; then
+        local WHO_IP
+        WHO_IP=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()')
+        if validate_ip_or_cidr "$WHO_IP"; then
+            DETECTED_IP="$WHO_IP"
         fi
-        prompt_change=" additional" # Modifies following prompt based on presence of SSH connection.
+    fi
+    if [[ -z "$DETECTED_IP" ]]; then
+        local SS_IP
+        SS_IP=$(ss -tnH state established '( dport = :22 or sport = :22 )' 2>/dev/null | head -n 1 | awk '{print $NF}' | cut -d: -f1 | cut -d] -f1)
+        if validate_ip_or_cidr "$SS_IP"; then
+             DETECTED_IP="$SS_IP"
+        fi
+    fi
+    if [[ -n "$DETECTED_IP" ]]; then
+        print_info "Detected SSH connection from: $DETECTED_IP"
+
+        if confirm "Whitelist your current IP ($DETECTED_IP) in Fail2Ban?"; then
+            IGNORE_IPS+=("$DETECTED_IP")
+            print_success "Added your current IP to whitelist."
+            log "Auto-whitelisted SSH connection IP: $DETECTED_IP"
+        fi
+        prompt_change=" additional"
+    else
+        print_warning "Could not auto-detect current SSH IP. (This is normal in some VM/sudo environments)"
+        print_info "You can manually add your IP in the next step."
     fi
 
     if [[ $VERBOSE != false ]] && \
@@ -5225,9 +5251,9 @@ main() {
 
     # --- PRELIMINARY CHECKS ---
     print_header
+    check_dependencies
     check_system
     run_update_check
-    check_dependencies
 
     # --- HANDLE SPECIAL OPERATIONAL MODES ---
     if [[ "$CLEANUP_ONLY" == "true" ]]; then
