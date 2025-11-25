@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78 | 2025-11-24
+# Version: 0.78 | 2025-11-25
 # Changelog:
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
 #          The configure_ssh function provides context-aware instructions based on different environments.
@@ -135,6 +135,10 @@ DETECTED_PRODUCT=""
 IS_CLOUD_PROVIDER=false
 IS_CONTAINER=false
 
+SERVER_IP_V4="Unknown"
+SERVER_IP_V6="Not available"
+LOCAL_IP_V4=""
+
 SSHD_BACKUP_FILE=""
 LOCAL_KEY_ADDED=false
 SSH_SERVICE=""
@@ -239,7 +243,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                       v0.78 | 2025-11-24                        ║${NC}"
+    printf '%s\n' "${CYAN}║                       v0.78 | 2025-11-25                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2735,8 +2739,9 @@ check_system() {
     fi
 
     if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
         source /etc/os-release
-        ID=$ID  # Populate global ID variable
+        ID=${ID:-unknown} # Populate global ID variable
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -2830,7 +2835,6 @@ collect_config() {
     # --- IP Detection ---
     print_info "Detecting network configuration..."
     # 1. Get the Local LAN IP (the actual interface IP)
-    local LOCAL_IP_V4
     LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
     # 2. Get Public IPs with robust timeouts (prevents hanging on broken IPv6 routes)
     SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
@@ -3178,9 +3182,7 @@ cleanup_and_exit() {
         else
             print_warning "Could not determine previous SSH port for firewall rollback."
         fi
-
-        rollback_ssh_changes
-        if [[ $? -ne 0 ]]; then
+        if ! rollback_ssh_changes; then
             print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
         fi
     fi
@@ -4030,8 +4032,9 @@ install_docker() {
     apt-get remove -y -qq docker docker-engine docker.io containerd runc 2>/dev/null || true
     print_info "Adding Docker's official GPG key and repository..."
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/${ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
+    # shellcheck source=/dev/null
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     print_info "Installing Docker packages..."
     if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
@@ -4495,7 +4498,7 @@ setup_backup() {
         else
             print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
             print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
-            print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
+            print_info "  - Check port: nc -zv $(echo "$BACKUP_DEST" | cut -d'@' -f2) \"$BACKUP_PORT\""
             print_info "  - Ensure key is in ~/.ssh/authorized_keys on the backup server."
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 print_info "  - For Hetzner, ensure ~/.ssh/ exists: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
@@ -5023,6 +5026,7 @@ configure_security_audit() {
     fi
 
     # Check if system is Debian before running debsecan
+    # shellcheck source=/dev/null
     source /etc/os-release
     if [[ "$ID" == "debian" ]]; then
         if confirm "Also run debsecan to check for package vulnerabilities?"; then
@@ -5235,13 +5239,14 @@ generate_summary() {
     printf '  - SSH access:\n'
 
     # 1. Public Access
-    if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
+    if [[ "${SERVER_IP_V4:-}" != "unknown" && "${SERVER_IP_V4:-}" != "Unknown" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- Public (Internet):" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
 
-    # 2. Local Access (Only if different from Public)
-    if [[ -n "$LOCAL_IP_V4" ]]; then
-        if [[ "$SERVER_IP_V4" == "Unknown" || "$SERVER_IP_V4" == "unknown" || "$LOCAL_IP_V4" != "$SERVER_IP_V4" ]]; then
+    # 2. Local Access
+    if [[ -n "${LOCAL_IP_V4:-}" ]]; then
+        # Show local if public is unknown OR if they are different IPs
+        if [[ "${SERVER_IP_V4:-}" == "Unknown" || "${SERVER_IP_V4:-}" == "unknown" || "${LOCAL_IP_V4:-}" != "${SERVER_IP_V4:-}" ]]; then
             printf "    %-26s ${CYAN}%s${NC}\n" "- Local (LAN):" "ssh -p $SSH_PORT $USERNAME@$LOCAL_IP_V4"
         fi
     fi
@@ -5256,7 +5261,7 @@ generate_summary() {
     fi
 
     # 4. IPv6 Access
-    if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
+    if [[ "${SERVER_IP_V6:-}" != "not available" && "${SERVER_IP_V6:-}" != "Not available" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
     fi
 
