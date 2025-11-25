@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.1 | 2025-11-25
+# Version: 0.78.2 | 2025-11-25
 # Changelog:
+# - v0.78.2: In configure_system set choosen hostname from collect_config in the /etc/hosts
 # - v0.78.1: Collect config failure fixed on IPv6 only VPS.
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
 #          The configure_ssh function provides context-aware instructions based on different environments.
@@ -90,7 +91,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.1"
+CURRENT_VERSION="0.78.2"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -245,7 +246,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.1 | 2025-11-25                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.2 | 2025-11-25                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
