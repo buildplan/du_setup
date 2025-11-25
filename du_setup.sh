@@ -3173,21 +3173,28 @@ configure_system() {
     if [[ $(hostnamectl --static) != "$SERVER_NAME" ]]; then
         hostnamectl set-hostname "$SERVER_NAME"
         hostnamectl set-hostname "$PRETTY_NAME" --pretty
-        print_success "Hostname configured: $SERVER_NAME"
+        print_success "Hostname updated to: $SERVER_NAME"
     else
-        print_info "Hostname already set to $SERVER_NAME."
+        print_info "Hostname is already set to $SERVER_NAME."
     fi
+    if [[ -f /etc/cloud/cloud.cfg ]]; then
+        if grep -q "manage_etc_hosts: true" /etc/cloud/cloud.cfg; then
+            print_info "Disabling cloud-init 'manage_etc_hosts' to prevent overwrite..."
+            sed -i 's/manage_etc_hosts: true/manage_etc_hosts: false/g' /etc/cloud/cloud.cfg
+            log "Disabled manage_etc_hosts in /etc/cloud/cloud.cfg"
+        fi
+    fi
+
     if grep -q "^127.0.1.1" /etc/hosts; then
-        # Check if the line matches the chosen server name; if not, update it
-        if ! grep -q "^127.0.1.1.*$SERVER_NAME" /etc/hosts; then
+        if ! grep -qE "^127.0.1.1[[:space:]]+$SERVER_NAME" /etc/hosts; then
              sed -i "s/^127.0.1.1.*/127.0.1.1\t$SERVER_NAME/" /etc/hosts
-             print_info "Updated /etc/hosts to resolve $SERVER_NAME."
+             print_success "Fixed /etc/hosts to map 127.0.1.1 to $SERVER_NAME."
         else
-             print_info "/etc/hosts already resolves $SERVER_NAME correctly."
+             print_info "/etc/hosts is already correct."
         fi
     else
         echo "127.0.1.1 $SERVER_NAME" >> /etc/hosts
-        print_info "Added entry to /etc/hosts for $SERVER_NAME."
+        print_success "Added missing 127.0.1.1 entry to /etc/hosts."
     fi
 
     log "System configuration completed."
