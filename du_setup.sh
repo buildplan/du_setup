@@ -5,6 +5,7 @@
 # Changelog:
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
 #          The configure_ssh function provides context-aware instructions based on different environments.
+#          In setup_user handle if group exists but user doesn't - attach user to existing group.
 # - v0.77.2: Fixed an unbound variable for SSH when on a local virtual machine;
 #            check_dependencies should come before check_system to keep minimal servers from failing.
 # - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
