@@ -3172,15 +3172,23 @@ configure_system() {
     if [[ $(hostnamectl --static) != "$SERVER_NAME" ]]; then
         hostnamectl set-hostname "$SERVER_NAME"
         hostnamectl set-hostname "$PRETTY_NAME" --pretty
-        if grep -q "^127.0.1.1" /etc/hosts; then
-            sed -i "s/^127.0.1.1.*/127.0.1.1\t$SERVER_NAME/" /etc/hosts
-        else
-            echo "127.0.1.1 $SERVER_NAME" >> /etc/hosts
-        fi
         print_success "Hostname configured: $SERVER_NAME"
     else
         print_info "Hostname already set to $SERVER_NAME."
     fi
+    if grep -q "^127.0.1.1" /etc/hosts; then
+        # Check if the line matches the chosen server name; if not, update it
+        if ! grep -q "^127.0.1.1.*$SERVER_NAME" /etc/hosts; then
+             sed -i "s/^127.0.1.1.*/127.0.1.1\t$SERVER_NAME/" /etc/hosts
+             print_info "Updated /etc/hosts to resolve $SERVER_NAME."
+        else
+             print_info "/etc/hosts already resolves $SERVER_NAME correctly."
+        fi
+    else
+        echo "127.0.1.1 $SERVER_NAME" >> /etc/hosts
+        print_info "Added entry to /etc/hosts for $SERVER_NAME."
+    fi
+
     log "System configuration completed."
 }
 
