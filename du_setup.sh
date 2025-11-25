@@ -2912,7 +2912,13 @@ setup_user() {
 
     if [[ $USER_EXISTS == false ]]; then
         print_info "Creating user '$USERNAME'..."
-        if ! adduser --disabled-password --gecos "" "$USERNAME"; then
+        # Check if group exists but user doesn't (common with 'admin' on Ubuntu)
+        local -a ADDUSER_OPTS=("--disabled-password" "--gecos" "")
+        if getent group "$USERNAME" >/dev/null 2>&1; then
+            print_warning "Group '$USERNAME' already exists. Attaching new user to this existing group."
+            ADDUSER_OPTS+=("--ingroup" "$USERNAME")
+        fi
+        if ! adduser "${ADDUSER_OPTS[@]}" "$USERNAME"; then
             print_error "Failed to create user '$USERNAME'."
             exit 1
         fi
