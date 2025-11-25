@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.77.2 | 2025-11-24
+# Version: 0.78 | 2025-11-25
 # Changelog:
+# - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
+#          The configure_ssh function provides context-aware instructions based on different environments.
+#          In setup_user handle if group exists but user doesn't - attach user to existing group.
 # - v0.77.2: Fixed an unbound variable for SSH when on a local virtual machine;
 #            check_dependencies should come before check_system to keep minimal servers from failing.
 # - v0.77.1: Auto SSH connection whitelist feat & whitelist deduplication.
@@ -86,7 +89,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.77.2"
+CURRENT_VERSION="0.78"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -132,6 +135,10 @@ DETECTED_MANUFACTURER=""
 DETECTED_PRODUCT=""
 IS_CLOUD_PROVIDER=false
 IS_CONTAINER=false
+
+SERVER_IP_V4="Unknown"
+SERVER_IP_V6="Not available"
+LOCAL_IP_V4=""
 
 SSHD_BACKUP_FILE=""
 LOCAL_KEY_ADDED=false
@@ -237,7 +244,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                     v0.77.2 | 2025-11-24                        ║${NC}"
+    printf '%s\n' "${CYAN}║                       v0.78 | 2025-11-25                        ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2733,8 +2740,9 @@ check_system() {
     fi
 
     if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
         source /etc/os-release
-        ID=$ID  # Populate global ID variable
+        ID=${ID:-unknown} # Populate global ID variable
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -2762,7 +2770,10 @@ check_system() {
         fi
     fi
 
-    if curl -s --head https://deb.debian.org >/dev/null || curl -s --head https://archive.ubuntu.com >/dev/null; then
+    if curl -s --head https://deb.debian.org >/dev/null || \
+       curl -s --head https://archive.ubuntu.com >/dev/null || \
+       wget -q --spider https://deb.debian.org || \
+       wget -q --spider https://archive.ubuntu.com; then
         print_success "Internet connectivity confirmed."
     else
         print_error "No internet connectivity. Please check your network."
@@ -2793,6 +2804,7 @@ check_system() {
 
 collect_config() {
     print_section "Configuration Setup"
+    # --- Input Collection ---
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
         if validate_username "$USERNAME"; then
@@ -2811,50 +2823,62 @@ collect_config() {
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+    [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
+    # --- SSH Port Detection ---
     PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
     local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
-    [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
         if validate_port "$SSH_PORT" || [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" == "$PREVIOUS_SSH_PORT" ]]; then
             break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
     done
-    print_info "Detecting server IP addresses..."
+    # --- IP Detection ---
+    print_info "Detecting network configuration..."
+    # 1. Get the Local LAN IP (the actual interface IP)
+    LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+    # 2. Get Public IPs with robust timeouts (prevents hanging on broken IPv6 routes)
     SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
                    curl -4 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
                    curl -4 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
-                   echo "unknown")
+                   echo "Unknown")
 
     SERVER_IP_V6=$(curl -6 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
                    curl -6 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
                    curl -6 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
-                   echo "not available")
-
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-        print_info "Detected server IPv4: $SERVER_IP_V4"
-    fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        print_info "Detected server IPv6: $SERVER_IP_V6"
-    fi
+                   echo "Not available")
+    # --- Display Summary ---
     printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
-    printf "  %-15s %s\n" "Username:" "$USERNAME"
-    printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
-
+    printf "  %-22s %s\n" "Username:" "$USERNAME"
+    printf "  %-22s %s\n" "Hostname:" "$SERVER_NAME"
     if [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
-        printf "  %-15s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$PREVIOUS_SSH_PORT"
+        printf "  %-22s %s (change from current: %s)\n" "SSH Port:" "$SSH_PORT" "$PREVIOUS_SSH_PORT"
     else
-        printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
+        printf "  %-22s %s\n" "SSH Port:" "$SSH_PORT"
     fi
-
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-        printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
+    # --- IP Display Logic ---
+    if [[ "$SERVER_IP_V4" != "Unknown" ]]; then
+        if [[ "$SERVER_IP_V4" == "$LOCAL_IP_V4" ]]; then
+            # 1: Direct Public IP (DigitalOcean, Vultr, etc.)
+            printf "  %-22s %s (Direct)\n" "Server IPv4:" "$SERVER_IP_V4"
+        else
+            # 2: NAT (AWS, Oracle, OR Local VM behind Router)
+            printf "  %-22s %s (Internet)\n" "Public IPv4:" "$SERVER_IP_V4"
+            if [[ -n "$LOCAL_IP_V4" ]]; then
+                printf "  %-22s %s (Internal)\n" "Local IPv4:" "$LOCAL_IP_V4"
+            fi
+        fi
+    else
+        # Fallback if public check failed entirely
+        if [[ -n "$LOCAL_IP_V4" ]]; then
+            printf "  %-22s %s (Local)\n" "Server IPv4:" "$LOCAL_IP_V4"
+        fi
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
+    if [[ "$SERVER_IP_V6" != "Not available" ]]; then
+        printf "  %-22s %s\n" "Public IPv6:" "$SERVER_IP_V6"
     fi
     if ! confirm $'\nContinue with this configuration?' "y"; then print_info "Exiting."; exit 0; fi
-    log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6"
+    log "Configuration collected: USER=$USERNAME, HOST=$SERVER_NAME, PORT=$SSH_PORT, IPV4=$SERVER_IP_V4, IPV6=$SERVER_IP_V6, LOCAL=$LOCAL_IP_V4"
 }
 
 install_packages() {
@@ -2889,7 +2913,13 @@ setup_user() {
 
     if [[ $USER_EXISTS == false ]]; then
         print_info "Creating user '$USERNAME'..."
-        if ! adduser --disabled-password --gecos "" "$USERNAME"; then
+        # Check if group exists but user doesn't (common with 'admin' on Ubuntu)
+        local -a ADDUSER_OPTS=("--disabled-password" "--gecos" "")
+        if getent group "$USERNAME" >/dev/null 2>&1; then
+            print_warning "Group '$USERNAME' already exists. Attaching new user to this existing group."
+            ADDUSER_OPTS+=("--ingroup" "$USERNAME")
+        fi
+        if ! adduser "${ADDUSER_OPTS[@]}" "$USERNAME"; then
             print_error "Failed to create user '$USERNAME'."
             exit 1
         fi
@@ -3159,9 +3189,7 @@ cleanup_and_exit() {
         else
             print_warning "Could not determine previous SSH port for firewall rollback."
         fi
-
-        rollback_ssh_changes
-        if [[ $? -ne 0 ]]; then
+        if ! rollback_ssh_changes; then
             print_error "Rollback failed. SSH may not be accessible. Please check 'systemctl status $SSH_SERVICE' and 'journalctl -u $SSH_SERVICE'."
         fi
     fi
@@ -3227,13 +3255,64 @@ configure_ssh() {
     fi
 
     print_warning "SSH Key Authentication Required for Next Steps!"
-    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now:${NC}"
-    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
-        printf '%s\n' "${CYAN}  Using IPv4: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
-    fi
-    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
-        printf '%s\n' "${CYAN}  Using IPv6: ssh -p $CURRENT_SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
-    fi
+    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
+
+    # --- Connection Display Function ---
+    show_connection_options() {
+        local port="$1"
+        local public_ip="$2"
+
+        local TS_IP=""
+        if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
+            TS_IP=$(tailscale ip -4 2>/dev/null)
+        fi
+
+        printf "\n"
+
+        # 1. Public IP (Internet)
+        # Only show if valid and not "Unknown"
+        if [[ -n "$public_ip" && "$public_ip" != "Unknown" ]]; then
+             printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$port" "$USERNAME" "$public_ip"
+        fi
+
+        # 2. Internal/LAN IPs
+        # scan all interfaces. exclude the Public IP (already shown) and Loopback.
+        local found_internal=false
+        while read -r ip_addr; do
+            # Remove subnet mask if present
+            local clean_ip="${ip_addr%/*}"
+
+            # Skip if empty, loopback, or matches the Public IP we just displayed
+            if [[ -n "$clean_ip" && "$clean_ip" != "127.0.0.1" && "$clean_ip" != "$public_ip" ]]; then
+                 printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Internal/Private:" "$port" "$USERNAME" "$clean_ip"
+                 found_internal=true
+            fi
+        done < <(ip -4 -o addr show scope global | awk '{print $4}')
+
+        # Fallback: If we found NO internal IPs and NO Public IP (local VM offline?),
+        # show the detected local IP from route (Home VM scenario)
+        if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
+             local fallback_ip
+             fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+             if [[ -n "$fallback_ip" ]]; then
+                printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$port" "$USERNAME" "$fallback_ip"
+             fi
+        fi
+
+        # 3. IPv6
+        if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "Not available" ]]; then
+            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "IPv6:" "$port" "$USERNAME" "$SERVER_IP_V6"
+        fi
+
+        # 4. Tailscale IP (VPN)
+        if [[ -n "$TS_IP" ]]; then
+            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$port" "$USERNAME" "$TS_IP"
+        fi
+        printf "\n"
+    }
+
+    # Show options for CURRENT port
+    show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
 
     if ! confirm "Can you successfully log in using your SSH key?"; then
         print_error "SSH key authentication is mandatory to proceed."
@@ -3309,12 +3388,9 @@ EOF
 
     print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
     print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
-    if [[ -n "$SERVER_IP_V4" && "$SERVER_IP_V4" != "unknown" ]]; then
-        print_info "Use IPv4: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
-    fi
-    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "not available" ]]; then
-        print_info "Use IPv6: ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
-    fi
+
+    # Show options for NEW port
+    show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
     # Retry loop for SSH connection test
     local retry_count=0
@@ -3963,8 +4039,9 @@ install_docker() {
     apt-get remove -y -qq docker docker-engine docker.io containerd runc 2>/dev/null || true
     print_info "Adding Docker's official GPG key and repository..."
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/${ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
+    # shellcheck source=/dev/null
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     print_info "Installing Docker packages..."
     if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
@@ -4428,7 +4505,7 @@ setup_backup() {
         else
             print_error "SSH connection test failed. Please ensure the key was copied correctly and the port is open."
             print_info "  - Copy key: ssh-copy-id -p \"$BACKUP_PORT\" -i \"$ROOT_SSH_KEY.pub\" $SSH_COPY_ID_FLAGS \"$BACKUP_DEST\""
-            print_info "  - Check port: nc -zv $(echo \"$BACKUP_DEST\" | cut -d'@' -f2) \"$BACKUP_PORT\""
+            print_info "  - Check port: nc -zv $(echo "$BACKUP_DEST" | cut -d'@' -f2) \"$BACKUP_PORT\""
             print_info "  - Ensure key is in ~/.ssh/authorized_keys on the backup server."
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 print_info "  - For Hetzner, ensure ~/.ssh/ exists: ssh -p \"$BACKUP_PORT\" \"$BACKUP_DEST\" \"mkdir -p ~/.ssh && chmod 700 ~/.ssh\""
@@ -4956,6 +5033,7 @@ configure_security_audit() {
     fi
 
     # Check if system is Debian before running debsecan
+    # shellcheck source=/dev/null
     source /etc/os-release
     if [[ "$ID" == "debian" ]]; then
         if confirm "Also run debsecan to check for package vulnerabilities?"; then
@@ -5067,10 +5145,10 @@ generate_summary() {
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
+    if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
         printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
+    if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
@@ -5166,12 +5244,35 @@ generate_summary() {
     # --- Post-Reboot Verification Steps ---
     print_separator "Post-Reboot Verification Steps:"
     printf '  - SSH access:\n'
-    if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv4:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
+
+    # 1. Public Access
+    if [[ "${SERVER_IP_V4:-}" != "unknown" && "${SERVER_IP_V4:-}" != "Unknown" ]]; then
+        printf "    %-26s ${CYAN}%s${NC}\n" "- Public (Internet):" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" ]]; then
-        printf "    %-26s ${CYAN}%s${NC}\n" "- Using IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+
+    # 2. Local Access
+    if [[ -n "${LOCAL_IP_V4:-}" ]]; then
+        # Show local if public is unknown OR if they are different IPs
+        if [[ "${SERVER_IP_V4:-}" == "Unknown" || "${SERVER_IP_V4:-}" == "unknown" || "${LOCAL_IP_V4:-}" != "${SERVER_IP_V4:-}" ]]; then
+            printf "    %-26s ${CYAN}%s${NC}\n" "- Local (LAN):" "ssh -p $SSH_PORT $USERNAME@$LOCAL_IP_V4"
+        fi
     fi
+
+    # 3. Tailscale Access
+    if [[ -f /tmp/tailscale_ips.txt ]]; then
+        local TS_SUMMARY_IP
+        TS_SUMMARY_IP=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt | head -n 1)
+        if [[ -n "$TS_SUMMARY_IP" ]]; then
+            printf "    %-26s ${CYAN}%s${NC}\n" "- Tailscale (VPN):" "ssh -p $SSH_PORT $USERNAME@$TS_SUMMARY_IP"
+        fi
+    fi
+
+    # 4. IPv6 Access
+    if [[ "${SERVER_IP_V6:-}" != "not available" && "${SERVER_IP_V6:-}" != "Not available" ]]; then
+        printf "    %-26s ${CYAN}%s${NC}\n" "- IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
+    fi
+
+    # Other verification commands
     printf "  %-28s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
