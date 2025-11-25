@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78 | 2025-11-25
+# Version: 0.78.1 | 2025-11-25
 # Changelog:
+# - v0.78.1: Collect config failure fixed on IPv6 only VPS.
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
 #          The configure_ssh function provides context-aware instructions based on different environments.
 #          In setup_user handle if group exists but user doesn't - attach user to existing group.
@@ -89,7 +90,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78"
+CURRENT_VERSION="0.78.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -244,7 +245,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                       v0.78 | 2025-11-25                        ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.1 | 2025-11-25                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2835,9 +2836,14 @@ collect_config() {
     done
     # --- IP Detection ---
     print_info "Detecting network configuration..."
-    # 1. Get the Local LAN IP (the actual interface IP)
-    LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
-    # 2. Get Public IPs with robust timeouts (prevents hanging on broken IPv6 routes)
+    # 1. Get the Local LAN IP (Explicit Check)
+    # This prevents crashing on IPv6-only servers
+    if ip -4 route get 8.8.8.8 >/dev/null 2>&1; then
+        LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 | head -1 | awk '{print $7}')
+    else
+        LOCAL_IP_V4=""
+    fi
+    # 2. Get Public IPs with timeouts
     SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
                    curl -4 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
                    curl -4 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
@@ -2847,6 +2853,7 @@ collect_config() {
                    curl -6 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
                    curl -6 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
                    echo "Not available")
+
     # --- Display Summary ---
     printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
     printf "  %-22s %s\n" "Username:" "$USERNAME"
@@ -2859,17 +2866,17 @@ collect_config() {
     # --- IP Display Logic ---
     if [[ "$SERVER_IP_V4" != "Unknown" ]]; then
         if [[ "$SERVER_IP_V4" == "$LOCAL_IP_V4" ]]; then
-            # 1: Direct Public IP (DigitalOcean, Vultr, etc.)
+            # 1: Direct Public IP
             printf "  %-22s %s (Direct)\n" "Server IPv4:" "$SERVER_IP_V4"
         else
-            # 2: NAT (AWS, Oracle, OR Local VM behind Router)
+            # 2: NAT
             printf "  %-22s %s (Internet)\n" "Public IPv4:" "$SERVER_IP_V4"
             if [[ -n "$LOCAL_IP_V4" ]]; then
                 printf "  %-22s %s (Internal)\n" "Local IPv4:" "$LOCAL_IP_V4"
             fi
         fi
     else
-        # Fallback if public check failed entirely
+        # Fallback if public check failed
         if [[ -n "$LOCAL_IP_V4" ]]; then
             printf "  %-22s %s (Local)\n" "Server IPv4:" "$LOCAL_IP_V4"
         fi
