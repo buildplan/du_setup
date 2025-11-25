@@ -3170,6 +3170,8 @@ configure_system() {
     fi
 
     print_info "Configuring hostname..."
+
+    # System Hostname
     if [[ $(hostnamectl --static) != "$SERVER_NAME" ]]; then
         hostnamectl set-hostname "$SERVER_NAME"
         hostnamectl set-hostname "$PRETTY_NAME" --pretty
@@ -3177,11 +3179,35 @@ configure_system() {
     else
         print_info "Hostname is already set to $SERVER_NAME."
     fi
-    if [[ -f /etc/cloud/cloud.cfg ]]; then
+    if [[ -d /etc/cloud/cloud.cfg.d ]]; then
+        print_info "Disabling cloud-init host management via override file..."
+        echo "manage_etc_hosts: false" > /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg
+        echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg
+        log "Created /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg"
+    elif [[ -f /etc/cloud/cloud.cfg ]]; then
         if grep -q "manage_etc_hosts: true" /etc/cloud/cloud.cfg; then
-            print_info "Disabling cloud-init 'manage_etc_hosts' to prevent overwrite..."
+            print_info "Disabling cloud-init 'manage_etc_hosts' in main config..."
             sed -i 's/manage_etc_hosts: true/manage_etc_hosts: false/g' /etc/cloud/cloud.cfg
             log "Disabled manage_etc_hosts in /etc/cloud/cloud.cfg"
+        fi
+    fi
+
+    # Stop cloud-init from overwriting /etc/hosts
+    local TEMPLATE_FILE=""
+    if [[ -n "$ID" && -f "/etc/cloud/templates/hosts.${ID}.tmpl" ]]; then
+        TEMPLATE_FILE="/etc/cloud/templates/hosts.${ID}.tmpl"
+    elif [[ -f "/etc/cloud/templates/hosts.tmpl" ]]; then
+        TEMPLATE_FILE="/etc/cloud/templates/hosts.tmpl"
+    fi
+    if [[ -n "$TEMPLATE_FILE" ]]; then
+        print_info "Patching cloud-init hosts template ($TEMPLATE_FILE) to enforce persistence..."
+        cp "$TEMPLATE_FILE" "$BACKUP_DIR/$(basename "$TEMPLATE_FILE").backup"
+        sed -i "s/^127.0.1.1.*/127.0.1.1\t$SERVER_NAME/g" "$TEMPLATE_FILE"
+        log "Hardcoded hostname into $TEMPLATE_FILE"
+    else
+        if [[ -d /etc/cloud/templates ]]; then
+            print_warning "Could not locate a standard hosts template in /etc/cloud/templates."
+            log "Warning: Cloud-init template patching skipped (no matching template found)."
         fi
     fi
 
