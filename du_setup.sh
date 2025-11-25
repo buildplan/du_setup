@@ -3177,9 +3177,15 @@ configure_system() {
     else
         print_info "Hostname is already set to $SERVER_NAME."
     fi
-    if [[ -f /etc/cloud/cloud.cfg ]]; then
+    if [[ -d /etc/cloud/cloud.cfg.d ]]; then
+        print_info "Disabling cloud-init host management via override file..."
+        # Create the override file to override provider defaults
+        echo "manage_etc_hosts: false" > /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg
+        echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg
+        log "Created /etc/cloud/cloud.cfg.d/99-du-setup-hosts.cfg to prevent cloud-init reverts."
+    elif [[ -f /etc/cloud/cloud.cfg ]]; then
         if grep -q "manage_etc_hosts: true" /etc/cloud/cloud.cfg; then
-            print_info "Disabling cloud-init 'manage_etc_hosts' to prevent overwrite..."
+            print_info "Disabling cloud-init 'manage_etc_hosts' in main config..."
             sed -i 's/manage_etc_hosts: true/manage_etc_hosts: false/g' /etc/cloud/cloud.cfg
             log "Disabled manage_etc_hosts in /etc/cloud/cloud.cfg"
         fi
