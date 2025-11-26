@@ -137,7 +137,6 @@ SKIP_CLEANUP=false # If true, skip cleanup tasks
 DETECTED_VIRT_TYPE=""
 DETECTED_MANUFACTURER=""
 DETECTED_PRODUCT=""
-IS_CLOUD_PROVIDER=false
 IS_CONTAINER=false
 ENVIRONMENT_TYPE="unknown"
 DETECTED_PROVIDER_NAME=""
@@ -486,7 +485,6 @@ detect_environment() {
     DETECTED_MANUFACTURER="$MANUFACTURER"
     DETECTED_PRODUCT="$PRODUCT"
     DETECTED_BIOS_VENDOR="${DETECTED_BIOS_VENDOR:-unknown}"
-    IS_CLOUD_PROVIDER="$IS_CLOUD_VPS"
 
     log "Environment detection: VIRT=$VIRT_TYPE, MANUFACTURER=$MANUFACTURER, PRODUCT=$PRODUCT, IS_CLOUD=$IS_CLOUD_VPS, TYPE=$ENVIRONMENT_TYPE"
 }
@@ -5318,21 +5316,11 @@ generate_summary() {
     # Environment Classification
     printf "%-20s " "Environment:"
     case "$ENVIRONMENT_TYPE" in
-        commercial-cloud)
-            printf "%sCloud VPS%s\n" "$YELLOW" "$NC"
-            ;;
-        bare-metal)
-            printf "%sBare Metal%s\n" "$GREEN" "$NC"
-            ;;
-        uncertain-kvm)
-            printf "%sGeneric KVM (Likely Cloud VPS)%s\n" "$YELLOW" "$NC"
-            ;;
-        personal-vm)
-            printf "%sPersonal VM%s\n" "$CYAN" "$NC"
-            ;;
-        *)
-            printf "Unknown\n"
-            ;;
+        commercial-cloud) printf "%sCloud VPS%s\n" "$YELLOW" "$NC" ;;
+        bare-metal)       printf "%sBare Metal%s\n" "$GREEN" "$NC" ;;
+        uncertain-kvm)    printf "%sGeneric KVM (Likely Cloud VPS)%s\n" "$YELLOW" "$NC" ;;
+        personal-vm)      printf "%sPersonal VM%s\n" "$CYAN" "$NC" ;;
+        *)                printf "Unknown\n" ;;
     esac
 
     if [[ -n "$DETECTED_PROVIDER_NAME" ]]; then
