@@ -5212,10 +5212,10 @@ generate_summary() {
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
     printf "  %-15s %s\n" "Hostname:" "$SERVER_NAME"
     printf "  %-15s %s\n" "SSH Port:" "$SSH_PORT"
-    if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
+    if [[ "${SERVER_IP_V4:-}" != "unknown" && "${SERVER_IP_V4:-}" != "Unknown" ]]; then
         printf "  %-15s %s\n" "Server IPv4:" "$SERVER_IP_V4"
     fi
-    if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
+    if [[ "${SERVER_IP_V6:-}" != "not available" && "${SERVER_IP_V6:-}" != "Not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
@@ -5295,12 +5295,27 @@ generate_summary() {
     fi
     printf '\n'
 
-    # --- Environment summary ---
-    print_separator "Environment Information"
-    printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
-    printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
-    printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
+    # --- System & Environment Information ---
+    print_separator "System & Environment Information"
 
+    # OS and Kernel Info
+    printf "%-20s %s\n" "OS:" "${PRETTY_NAME:-Unknown}"
+    printf "%-20s %s\n" "Kernel:" "$(uname -r)"
+    printf "%-20s %s\n" "Uptime:" "$(uptime -p 2>/dev/null || uptime | sed 's/.*up //;s/,.*//')"
+
+    # Hardware/Virtualization Info
+    printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
+    if [[ "${DETECTED_MANUFACTURER:-unknown}" != "unknown" ]]; then
+        printf "%-20s %s\n" "Manufacturer:" "$DETECTED_MANUFACTURER"
+    fi
+    if [[ "${DETECTED_PRODUCT:-unknown}" != "unknown" ]]; then
+        printf "%-20s %s\n" "Product:" "$DETECTED_PRODUCT"
+    fi
+    if [[ "${DETECTED_BIOS_VENDOR:-unknown}" != "unknown" ]]; then
+        printf "%-20s %s\n" "BIOS Vendor:" "$DETECTED_BIOS_VENDOR"
+    fi
+
+    # Environment Classification
     printf "%-20s " "Environment:"
     case "$ENVIRONMENT_TYPE" in
         commercial-cloud)
