@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.2 | 2025-11-25
+# Version: 0.78.3 | 2025-11-26
 # Changelog:
+# - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
+#            Run update & upgrade in the final step to ensure system is fully updated after restart.
 # - v0.78.2: In configure_system set choosen hostname from collect_config in the /etc/hosts
 # - v0.78.1: Collect config failure fixed on IPv6 only VPS.
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
@@ -91,7 +93,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.2"
+CURRENT_VERSION="0.78.3"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -137,6 +139,8 @@ DETECTED_MANUFACTURER=""
 DETECTED_PRODUCT=""
 IS_CLOUD_PROVIDER=false
 IS_CONTAINER=false
+ENVIRONMENT_TYPE="unknown"
+DETECTED_PROVIDER_NAME=""
 
 SERVER_IP_V4="Unknown"
 SERVER_IP_V6="Not available"
@@ -246,7 +250,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.2 | 2025-11-25                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.3 | 2025-11-25                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -5117,16 +5121,30 @@ configure_security_audit() {
 }
 
 final_cleanup() {
-    print_section "Final System Cleanup"
-    print_info "Running final system update and cleanup..."
-    if ! apt-get update -qq; then
+    print_section "Final System Update & Cleanup"
+    print_info "Performing final system upgrade (dist-upgrade) and cleanup..."
+    print_info "This may take a moment. Please wait..."
+    # Upgrade ALL packages (including kernels)
+    if ! apt-get update -qq >/dev/null 2>&1; then
         print_warning "Failed to update package lists during final cleanup."
+        log "Final apt-get update failed."
     fi
-    if ! apt-get upgrade -y -qq || ! apt-get --purge autoremove -y -qq || ! apt-get autoclean -y -qq; then
-        print_warning "Final system cleanup failed on one or more commands."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" >> "$LOG_FILE" 2>&1; then
+        print_warning "Final system upgrade encountered issues. Check log for details."
+        log "Final apt-get dist-upgrade failed."
+    else
+        print_success "System packages (including kernels) upgraded successfully."
+        log "Final apt-get dist-upgrade completed."
+    fi
+    # Final cleanup
+    print_info "Removing unused packages..."
+    if ! apt-get --purge autoremove -y -qq >> "$LOG_FILE" 2>&1 || ! apt-get autoclean -y -qq >> "$LOG_FILE" 2>&1; then
+        print_warning "Cleanup commands encountered minor issues."
+    else
+        print_success "Unused packages removed."
     fi
     systemctl daemon-reload
-    print_success "Final system update and cleanup complete."
+    print_success "Final cleanup complete."
     log "Final system cleanup completed."
 }
 
@@ -5277,16 +5295,33 @@ generate_summary() {
     fi
     printf '\n'
 
+    # --- Environment summary ---
     print_separator "Environment Information"
     printf "%-20s %s\n" "Virtualization:" "${DETECTED_VIRT_TYPE:-unknown}"
     printf "%-20s %s\n" "Manufacturer:" "${DETECTED_MANUFACTURER:-unknown}"
     printf "%-20s %s\n" "Product:" "${DETECTED_PRODUCT:-unknown}"
-    if [[ "$IS_CLOUD_PROVIDER" == "true" ]]; then
-        printf "%-20s %s\n" "Environment:" "${YELLOW}Cloud VPS${NC}"
-    elif [[ "$DETECTED_VIRT_TYPE" == "none" ]]; then
-        printf "%-20s %s\n" "Environment:" "${GREEN}Bare Metal${NC}"
-    else
-        printf "%-20s %s\n" "Environment:" "${CYAN}Personal VM${NC}"
+
+    printf "%-20s " "Environment:"
+    case "$ENVIRONMENT_TYPE" in
+        commercial-cloud)
+            printf "%sCloud VPS%s\n" "$YELLOW" "$NC"
+            ;;
+        bare-metal)
+            printf "%sBare Metal%s\n" "$GREEN" "$NC"
+            ;;
+        uncertain-kvm)
+            printf "%sGeneric KVM (Likely Cloud VPS)%s\n" "$YELLOW" "$NC"
+            ;;
+        personal-vm)
+            printf "%sPersonal VM%s\n" "$CYAN" "$NC"
+            ;;
+        *)
+            printf "Unknown\n"
+            ;;
+    esac
+
+    if [[ -n "$DETECTED_PROVIDER_NAME" ]]; then
+        printf "%-20s %s\n" "Detected Provider:" "$DETECTED_PROVIDER_NAME"
     fi
     printf '\n'
 
