@@ -3,7 +3,7 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.78.4 | 2025-11-27
 # Changelog:
-# - v0.78.4: Improved configure_swap to detect swap partitions vs files. 
+# - v0.78.4: Improved configure_swap to detect swap partitions vs files.
 #            Prevents 'fallocate' crashes on physical partitions by offering to disable them or skip.
 # - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
 #            Run update & upgrade in the final step to ensure system is fully updated after restart.
@@ -2899,6 +2899,7 @@ collect_config() {
 install_packages() {
     print_section "Package Installation"
     print_info "Updating package lists and upgrading system..."
+    print_info "This may take a moment. Please wait..."
     if ! apt-get update -qq || ! DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq; then
         print_error "Failed to update or upgrade system packages."
         exit 1
