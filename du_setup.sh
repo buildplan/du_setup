@@ -4885,6 +4885,7 @@ configure_swap() {
     fi
     print_section "Swap Configuration"
 
+    # Check for existing swap partition entries in fstab
     if lsblk -r | grep -q '\[SWAP\]'; then
         print_warning "Existing swap partition found on disk."
     fi
@@ -4912,7 +4913,6 @@ configure_swap() {
                 fi
 
                 sed -i "s|^${existing_swap}[[:space:]]|#&|" /etc/fstab
-
                 local swap_uuid
                 swap_uuid=$(blkid -s UUID -o value "$existing_swap" 2>/dev/null || true)
                 if [[ -n "$swap_uuid" ]]; then
@@ -4920,7 +4920,6 @@ configure_swap() {
                 fi
 
                 print_success "Swap partition disabled and removed from fstab."
-
                 existing_swap=""
             else
                 print_info "Keeping existing swap partition."
@@ -4928,39 +4927,47 @@ configure_swap() {
                 return 0
             fi
         else
-            # --- Case 2: Swap File detected ---
+            # --- Case 2: Resize Existing Swap File ---
             if confirm "Modify existing swap file size?"; then
-                local SWAP_SIZE
+                local SWAP_SIZE REQUIRED_MB
+
                 while true; do
                     read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $display_size]: ${NC}")" SWAP_SIZE
                     SWAP_SIZE=${SWAP_SIZE:-$display_size}
-                    if convert_to_mb "$SWAP_SIZE" >/dev/null; then
-                        break
+                    # 1. Validate Format
+                    if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                        continue
                     fi
+                    # 2. Min Size
+                    if (( REQUIRED_MB < 128 )); then
+                        print_error "Swap size too small (minimum: 128M)."
+                        continue
+                    fi
+                    # 3. Disk Space Check
+                    local AVAILABLE_KB AVAILABLE_MB
+                    AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
+                    AVAILABLE_MB=$((AVAILABLE_KB / 1024))
+                    if (( AVAILABLE_MB < REQUIRED_MB )); then
+                        print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: ${AVAILABLE_MB}MB"
+                        # Suggest Max Safe Size (80% of free space)
+                        local MAX_SAFE_MB=$(( AVAILABLE_MB * 80 / 100 ))
+                        if (( MAX_SAFE_MB >= 128 )); then
+                            print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
+                        fi
+                        continue
+                    fi
+                    break
                 done
-
-                local REQUIRED_MB AVAILABLE_KB
-                if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then return 1; fi
-
-                AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
-
-                # Compare (Convert MB to KB for comparison)
-                if (( (AVAILABLE_KB / 1024) < REQUIRED_MB )); then
-                    print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: $((AVAILABLE_KB / 1024))MB"
-                    exit 1
-                fi
 
                 print_info "Disabling existing swap file..."
                 swapoff "$existing_swap" || { print_error "Failed to disable swap file."; exit 1; }
 
                 print_info "Resizing swap file to $SWAP_SIZE..."
-
-                # Try fallocate first (fast), fallback to dd (compatible)
+                # Try fallocate, fallback to dd
                 if ! fallocate -l "$SWAP_SIZE" "$existing_swap" 2>/dev/null; then
                     print_warning "fallocate failed. Using dd (slower)..."
                     rm -f "$existing_swap"
 
-                    # Check if dd supports progress
                     local dd_status=""
                     if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
 
@@ -4990,44 +4997,52 @@ configure_swap() {
             return 0
         fi
 
-        local SWAP_SIZE
+        local SWAP_SIZE REQUIRED_MB
+
         while true; do
             read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
-            if convert_to_mb "$SWAP_SIZE" >/dev/null; then break; fi
+            # 1. Validate Format
+            if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                continue
+            fi
+            # 2. Min Size
+            if (( REQUIRED_MB < 128 )); then
+                print_error "Swap size too small (minimum: 128M)."
+                continue
+            fi
+            # 3. Disk Space Check
+            local AVAILABLE_KB AVAILABLE_MB
+            AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
+            AVAILABLE_MB=$((AVAILABLE_KB / 1024))
+            if (( AVAILABLE_MB < REQUIRED_MB )); then
+                print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: ${AVAILABLE_MB}MB"
+                # Suggest Max Safe Size
+                local MAX_SAFE_MB=$(( AVAILABLE_MB * 80 / 100 ))
+                if (( MAX_SAFE_MB >= 128 )); then
+                    print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
+                fi
+                continue
+            fi
+            break
         done
-
-        local REQUIRED_MB AVAILABLE_KB
-        if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then return 1; fi
-        AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
-
-        if (( (AVAILABLE_KB / 1024) < REQUIRED_MB )); then
-            print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: $((AVAILABLE_KB / 1024))MB"
-            exit 1
-        fi
 
         print_info "Creating $SWAP_SIZE swap file at /swapfile..."
         if ! fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null; then
             print_warning "fallocate failed. Using dd (slower)..."
-
-            # Check dd status support
             local dd_status=""
             if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
-
             if ! dd if=/dev/zero of=/swapfile bs=1M count="$REQUIRED_MB" $dd_status; then
                 print_error "Failed to create swap file."
                 rm -f /swapfile || true
                 exit 1
             fi
         fi
-
         if ! chmod 600 /swapfile || ! mkswap /swapfile >/dev/null || ! swapon /swapfile; then
             print_error "Failed to enable swap file."
             rm -f /swapfile || true
             exit 1
         fi
-
-        # Add to fstab if missing
         if ! grep -q '^/swapfile ' /etc/fstab; then
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
             print_success "Swap entry added to /etc/fstab."
@@ -5092,7 +5107,7 @@ EOF
     log "Swap configuration completed."
 }
 
-# Helper: Convert size (e.g., 2G) to MB for dd count
+# Helper: Convert size (e.g., 2G) to MB for validation/dd
 convert_to_mb() {
     local input="${1:-}"
     local size="${input^^}"
@@ -5106,8 +5121,10 @@ convert_to_mb() {
     case "$unit" in
         G) echo "$((num * 1024))" ;;
         M) echo "$num" ;;
-        *) print_error "Unknown or missing unit in swap size: '$input'. Use 'M' or 'G' (e.g., 2G)." >&2
-            return 1 ;;
+        *)
+           print_error "Unknown or missing unit in swap size: '$input'. Use 'M' or 'G'." >&2
+           return 1
+           ;;
     esac
 }
 
