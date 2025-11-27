@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.3 | 2025-11-26
+# Version: 0.78.4 | 2025-11-27
 # Changelog:
+# - v0.78.4: Improved configure_swap to detect swap partitions vs files.
+#            Prevents 'fallocate' crashes on physical partitions by offering to disable them or skip.
 # - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
 #            Run update & upgrade in the final step to ensure system is fully updated after restart.
 # - v0.78.2: In configure_system set choosen hostname from collect_config in the /etc/hosts
@@ -93,7 +95,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.3"
+CURRENT_VERSION="0.78.4"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -249,7 +251,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.3 | 2025-11-25                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.4 | 2025-11-27                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2558,11 +2560,6 @@ validate_timezone() {
     [[ -e "/usr/share/zoneinfo/$tz" ]]
 }
 
-validate_swap_size() {
-    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
-    [[ "$size_upper" =~ ^[0-9]+[MG]$ && "${size_upper%[MG]}" -ge 1 ]]
-}
-
 validate_ufw_port() {
     local port="$1"
     # Matches port (e.g., 8080) or port/protocol (e.g., 8080/tcp, 123/udp)
@@ -2613,17 +2610,25 @@ validate_ip_or_cidr() {
     return 1
 }
 
-convert_to_bytes() {
-    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
-    local unit="${size_upper: -1}"
-    local value="${size_upper%[MG]}"
-    if [[ "$unit" == "G" ]]; then
-        echo $((value * 1024 * 1024 * 1024))
-    elif [[ "$unit" == "M" ]]; then
-        echo $((value * 1024 * 1024))
-    else
-        echo 0
+# Convert size (e.g., 2G) to MB for validation/dd
+convert_to_mb() {
+    local input="${1:-}"
+    local size="${input^^}"
+    size="${size// /}"
+    local num="${size%[MG]}"
+    local unit="${size: -1}"
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+        print_error "Invalid swap size format: '$input'. Expected format: 2G, 512M." >&2
+        return 1
     fi
+    case "$unit" in
+        G) echo "$((num * 1024))" ;;
+        M) echo "$num" ;;
+        *)
+           print_error "Unknown or missing unit in swap size: '$input'. Use 'M' or 'G'." >&2
+           return 1
+           ;;
+    esac
 }
 
 # --- script update check ---
@@ -2894,6 +2899,7 @@ collect_config() {
 install_packages() {
     print_section "Package Installation"
     print_info "Updating package lists and upgrading system..."
+    print_info "This may take a moment. Please wait..."
     if ! apt-get update -qq || ! DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq; then
         print_error "Failed to update or upgrade system packages."
         exit 1
@@ -4879,148 +4885,229 @@ test_backup() {
 }
 
 configure_swap() {
-    if [[ $IS_CONTAINER == true ]]; then
+    if [[ "$IS_CONTAINER" == true ]]; then
         print_info "Swap configuration skipped in container."
         return 0
     fi
     print_section "Swap Configuration"
-    # Check for existing swap partition
+
+    # Check for existing swap partition entries in fstab
     if lsblk -r | grep -q '\[SWAP\]'; then
-        print_warning "Existing swap partition found. Verify with 'lsblk -f'. Proceed with caution."
+        print_warning "Existing swap partition found on disk."
     fi
-    local existing_swap
-    existing_swap=$(swapon --show --noheadings | awk '{print $1}' || true)
+
+    # Detect active swap
+    local existing_swap swap_type
+    existing_swap=$(swapon --show=NAME,TYPE,SIZE --noheadings --bytes 2>/dev/null | head -n 1 | awk '{print $1}' || true)
+
     if [[ -n "$existing_swap" ]]; then
-        local current_size
-        current_size=$(du -h "$existing_swap" | awk '{print $1}')
-        print_info "Existing swap file found: $existing_swap ($current_size)"
-        if confirm "Modify existing swap file size?"; then
-            local SWAP_SIZE
-            while true; do
-                read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $current_size]: ${NC}")" SWAP_SIZE
-                SWAP_SIZE=${SWAP_SIZE:-$current_size}
-                if validate_swap_size "$SWAP_SIZE"; then
-                    break
-                else
-                    print_error "Invalid size. Use format like '2G' or '512M'."
+        swap_type=$(swapon --show=NAME,TYPE,SIZE --noheadings | head -n 1 | awk '{print $2}')
+        local display_size
+        display_size=$(du -h "$existing_swap" 2>/dev/null | awk '{print $1}' || echo "Unknown")
+
+        print_info "Existing swap detected: $existing_swap (Type: $swap_type, Size: $display_size)"
+
+        # --- Case 1: Partition detected ---
+        if [[ "$swap_type" == "partition" ]] || [[ "$existing_swap" =~ ^/dev/ ]]; then
+            print_warning "The detected swap is a disk partition, which cannot be resized by this script."
+
+            if confirm "Disable this swap partition and create a standard /swapfile instead?" "n"; then
+                print_info "Disabling swap partition $existing_swap..."
+                if ! swapoff "$existing_swap"; then
+                    print_error "Failed to disable swap partition. Keeping it active."
+                    return 0
                 fi
-            done
-            local REQUIRED_SPACE
-            REQUIRED_SPACE=$(convert_to_bytes "$SWAP_SIZE")
-            local AVAILABLE_SPACE
-            AVAILABLE_SPACE=$(df -k / | tail -n 1 | awk '{print $4}')
-            if (( AVAILABLE_SPACE < REQUIRED_SPACE / 1024 )); then
-                print_error "Insufficient disk space for $SWAP_SIZE swap file. Available: $((AVAILABLE_SPACE / 1024))MB"
-                exit 1
+
+                sed -i "s|^${existing_swap}[[:space:]]|#&|" /etc/fstab
+                local swap_uuid
+                swap_uuid=$(blkid -s UUID -o value "$existing_swap" 2>/dev/null || true)
+                if [[ -n "$swap_uuid" ]]; then
+                    sed -i "s|^UUID=${swap_uuid}[[:space:]]|#&|" /etc/fstab
+                fi
+
+                print_success "Swap partition disabled and removed from fstab."
+                existing_swap=""
+            else
+                print_info "Keeping existing swap partition."
+                configure_swap_settings
+                return 0
             fi
-            print_info "Disabling existing swap file..."
-            swapoff "$existing_swap" || { print_error "Failed to disable swap file."; exit 1; }
-            print_info "Resizing swap file to $SWAP_SIZE..."
-            if ! fallocate -l "$SWAP_SIZE" "$existing_swap" || ! chmod 600 "$existing_swap" || ! mkswap "$existing_swap" || ! swapon "$existing_swap"; then
-                print_error "Failed to resize or enable swap file."
-                exit 1
-            fi
-            print_success "Swap file resized to $SWAP_SIZE."
         else
-            print_info "Keeping existing swap file."
+            # --- Case 2: Resize Existing Swap File ---
+            if confirm "Modify existing swap file size?"; then
+                local SWAP_SIZE REQUIRED_MB
+
+                while true; do
+                    read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $display_size]: ${NC}")" SWAP_SIZE
+                    SWAP_SIZE=${SWAP_SIZE:-$display_size}
+                    # 1. Validate Format
+                    if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                        continue
+                    fi
+                    # 2. Min Size
+                    if (( REQUIRED_MB < 128 )); then
+                        print_error "Swap size too small (minimum: 128M)."
+                        continue
+                    fi
+                    # 3. Disk Space Check
+                    local AVAILABLE_KB AVAILABLE_MB
+                    AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
+                    AVAILABLE_MB=$((AVAILABLE_KB / 1024))
+                    if (( AVAILABLE_MB < REQUIRED_MB )); then
+                        print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: ${AVAILABLE_MB}MB"
+                        # Suggest Max Safe Size (80% of free space)
+                        local MAX_SAFE_MB=$(( AVAILABLE_MB * 80 / 100 ))
+                        if (( MAX_SAFE_MB >= 128 )); then
+                            print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
+                        fi
+                        continue
+                    fi
+                    break
+                done
+
+                print_info "Disabling existing swap file..."
+                swapoff "$existing_swap" || { print_error "Failed to disable swap file."; exit 1; }
+
+                print_info "Resizing swap file to $SWAP_SIZE..."
+                # Try fallocate, fallback to dd
+                if ! fallocate -l "$SWAP_SIZE" "$existing_swap" 2>/dev/null; then
+                    print_warning "fallocate failed. Using dd (slower)..."
+                    rm -f "$existing_swap"
+
+                    local dd_status=""
+                    if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
+
+                    if ! dd if=/dev/zero of="$existing_swap" bs=1M count="$REQUIRED_MB" $dd_status; then
+                        print_error "Failed to create swap file with dd."
+                        exit 1
+                    fi
+                fi
+
+                if ! chmod 600 "$existing_swap" || ! mkswap "$existing_swap" >/dev/null || ! swapon "$existing_swap"; then
+                    print_error "Failed to configure swap file."
+                    exit 1
+                fi
+                print_success "Swap file resized to $SWAP_SIZE."
+            else
+                print_info "Keeping existing swap file."
+            fi
+            configure_swap_settings
             return 0
         fi
-    else
+    fi
+
+    # --- Case 3: Create New Swap ---
+    if [[ -z "$existing_swap" ]]; then
         if ! confirm "Configure a swap file (recommended for < 4GB RAM)?"; then
             print_info "Skipping swap configuration."
             return 0
         fi
-        local SWAP_SIZE
+
+        local SWAP_SIZE REQUIRED_MB
+
         while true; do
             read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
             SWAP_SIZE=${SWAP_SIZE:-2G}
-            if validate_swap_size "$SWAP_SIZE"; then
-                break
-            else
-                print_error "Invalid size. Use format like '2G' or '512M'."
+            # 1. Validate Format
+            if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                continue
             fi
+            # 2. Min Size
+            if (( REQUIRED_MB < 128 )); then
+                print_error "Swap size too small (minimum: 128M)."
+                continue
+            fi
+            # 3. Disk Space Check
+            local AVAILABLE_KB AVAILABLE_MB
+            AVAILABLE_KB=$(df -k / | tail -n 1 | awk '{print $4}')
+            AVAILABLE_MB=$((AVAILABLE_KB / 1024))
+            if (( AVAILABLE_MB < REQUIRED_MB )); then
+                print_error "Insufficient disk space. Required: ${REQUIRED_MB}MB, Available: ${AVAILABLE_MB}MB"
+                # Suggest Max Safe Size
+                local MAX_SAFE_MB=$(( AVAILABLE_MB * 80 / 100 ))
+                if (( MAX_SAFE_MB >= 128 )); then
+                    print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
+                fi
+                continue
+            fi
+            break
         done
-        local REQUIRED_SPACE
-        REQUIRED_SPACE=$(convert_to_bytes "$SWAP_SIZE")
-        local AVAILABLE_SPACE
-        AVAILABLE_SPACE=$(df -k / | tail -n 1 | awk '{print $4}')
-        if (( AVAILABLE_SPACE < REQUIRED_SPACE / 1024 )); then
-            print_error "Insufficient disk space for $SWAP_SIZE swap file. Available: $((AVAILABLE_SPACE / 1024))MB"
-            exit 1
+
+        print_info "Creating $SWAP_SIZE swap file at /swapfile..."
+        if ! fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null; then
+            print_warning "fallocate failed. Using dd (slower)..."
+            local dd_status=""
+            if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
+            if ! dd if=/dev/zero of=/swapfile bs=1M count="$REQUIRED_MB" $dd_status; then
+                print_error "Failed to create swap file."
+                rm -f /swapfile || true
+                exit 1
+            fi
         fi
-        print_info "Creating $SWAP_SIZE swap file..."
-        if ! fallocate -l "$SWAP_SIZE" /swapfile || ! chmod 600 /swapfile || ! mkswap /swapfile || ! swapon /swapfile; then
-            print_error "Failed to create or enable swap file."
+        if ! chmod 600 /swapfile || ! mkswap /swapfile >/dev/null || ! swapon /swapfile; then
+            print_error "Failed to enable swap file."
             rm -f /swapfile || true
             exit 1
         fi
-        # Check for existing swap entry in /etc/fstab to prevent duplicates
-        if grep -q '^/swapfile ' /etc/fstab; then
-            print_info "Swap entry already exists in /etc/fstab. Skipping."
-        else
+        if ! grep -q '^/swapfile ' /etc/fstab; then
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
             print_success "Swap entry added to /etc/fstab."
+        else
+            print_info "Swap entry already exists in /etc/fstab."
         fi
         print_success "Swap file created: $SWAP_SIZE"
     fi
+
+    configure_swap_settings
+}
+
+# Helper: Apply Sysctl Settings for Swap
+configure_swap_settings() {
     print_info "Configuring swap settings..."
     local SWAPPINESS=10
     local CACHE_PRESSURE=50
+
     if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
         while true; do
-            read -rp "$(printf '%s' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT_SWAPPINESS
-            INPUT_SWAPPINESS=${INPUT_SWAPPINESS:-$SWAPPINESS}
-            if [[ "$INPUT_SWAPPINESS" =~ ^[0-9]+$ && "$INPUT_SWAPPINESS" -ge 0 && "$INPUT_SWAPPINESS" -le 100 ]]; then
-                SWAPPINESS=$INPUT_SWAPPINESS
-                break
-            else
-                print_error "Invalid value for vm.swappiness. Must be between 0 and 100."
-            fi
+            read -rp "$(printf '%s' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT
+            INPUT=${INPUT:-$SWAPPINESS}
+            if [[ "$INPUT" =~ ^[0-9]+$ && "$INPUT" -ge 0 && "$INPUT" -le 100 ]]; then SWAPPINESS=$INPUT; break; fi
+            print_error "Invalid value (0-100)."
         done
         while true; do
-            read -rp "$(printf '%s' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT_CACHE_PRESSURE
-            INPUT_CACHE_PRESSURE=${INPUT_CACHE_PRESSURE:-$CACHE_PRESSURE}
-            if [[ "$INPUT_CACHE_PRESSURE" =~ ^[0-9]+$ && "$INPUT_CACHE_PRESSURE" -ge 1 && "$INPUT_CACHE_PRESSURE" -le 1000 ]]; then
-                CACHE_PRESSURE=$INPUT_CACHE_PRESSURE
-                break
-            else
-                print_error "Invalid value for vm.vfs_cache_pressure. Must be between 1 and 1000."
-            fi
+            read -rp "$(printf '%s' "${CYAN}Enter vm.vfs_cache_pressure (1-1000) [default: $CACHE_PRESSURE]: ${NC}")" INPUT
+            INPUT=${INPUT:-$CACHE_PRESSURE}
+            if [[ "$INPUT" =~ ^[0-9]+$ && "$INPUT" -ge 1 && "$INPUT" -le 1000 ]]; then CACHE_PRESSURE=$INPUT; break; fi
+            print_error "Invalid value (1-1000)."
         done
     else
         print_info "Using default swap settings (vm.swappiness=$SWAPPINESS, vm.vfs_cache_pressure=$CACHE_PRESSURE)."
     fi
+
     local NEW_SWAP_CONFIG
     NEW_SWAP_CONFIG=$(mktemp)
     tee "$NEW_SWAP_CONFIG" > /dev/null <<EOF
 vm.swappiness=$SWAPPINESS
 vm.vfs_cache_pressure=$CACHE_PRESSURE
 EOF
-    # Check if sysctl settings are already correct to prevent duplicates
+
     if [[ -f /etc/sysctl.d/99-swap.conf ]] && cmp -s "$NEW_SWAP_CONFIG" /etc/sysctl.d/99-swap.conf; then
-        print_info "Swap settings already correct in /etc/sysctl.d/99-swap.conf. Skipping."
+        print_info "Swap settings already correct. Skipping."
         rm -f "$NEW_SWAP_CONFIG"
     else
-        # Check for conflicting settings in /etc/sysctl.conf or other sysctl files
-        local sysctl_conflicts=false
+        # Scan for conflicts
         for file in /etc/sysctl.conf /etc/sysctl.d/*.conf; do
-            if [[ -f "$file" && "$file" != "/etc/sysctl.d/99-swap.conf" ]]; then
-                if grep -E '^(vm\.swappiness|vm\.vfs_cache_pressure)=' "$file" >/dev/null; then
-                    print_warning "Existing swap settings found in $file. Manual review recommended."
-                    sysctl_conflicts=true
-                fi
-            fi
+            [[ -f "$file" && "$file" != "/etc/sysctl.d/99-swap.conf" ]] && \
+            grep -E '^(vm\.swappiness|vm\.vfs_cache_pressure)=' "$file" >/dev/null && \
+            print_warning "Note: Duplicate swap settings found in $file."
         done
+
         mv "$NEW_SWAP_CONFIG" /etc/sysctl.d/99-swap.conf
         chmod 644 /etc/sysctl.d/99-swap.conf
         sysctl -p /etc/sysctl.d/99-swap.conf >/dev/null
-        if [[ $sysctl_conflicts == true ]]; then
-            print_warning "Potential conflicting sysctl settings detected. Verify with 'sysctl -a | grep -E \"vm\.swappiness|vm\.vfs_cache_pressure\"'."
-        else
-            print_success "Swap settings applied to /etc/sysctl.d/99-swap.conf."
-        fi
+        print_success "Swap settings applied to /etc/sysctl.d/99-swap.conf."
     fi
-    print_success "Swap configured successfully."
+
     swapon --show | tee -a "$LOG_FILE"
     free -h | tee -a "$LOG_FILE"
     log "Swap configuration completed."
