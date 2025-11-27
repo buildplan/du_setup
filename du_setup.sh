@@ -2560,11 +2560,6 @@ validate_timezone() {
     [[ -e "/usr/share/zoneinfo/$tz" ]]
 }
 
-validate_swap_size() {
-    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
-    [[ "$size_upper" =~ ^[0-9]+[MG]$ && "${size_upper%[MG]}" -ge 1 ]]
-}
-
 validate_ufw_port() {
     local port="$1"
     # Matches port (e.g., 8080) or port/protocol (e.g., 8080/tcp, 123/udp)
@@ -2615,17 +2610,25 @@ validate_ip_or_cidr() {
     return 1
 }
 
-convert_to_bytes() {
-    local size_upper="${1^^}" # Convert to uppercase for case-insensitivity
-    local unit="${size_upper: -1}"
-    local value="${size_upper%[MG]}"
-    if [[ "$unit" == "G" ]]; then
-        echo $((value * 1024 * 1024 * 1024))
-    elif [[ "$unit" == "M" ]]; then
-        echo $((value * 1024 * 1024))
-    else
-        echo 0
+# Convert size (e.g., 2G) to MB for validation/dd
+convert_to_mb() {
+    local input="${1:-}"
+    local size="${input^^}"
+    size="${size// /}"
+    local num="${size%[MG]}"
+    local unit="${size: -1}"
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+        print_error "Invalid swap size format: '$input'. Expected format: 2G, 512M." >&2
+        return 1
     fi
+    case "$unit" in
+        G) echo "$((num * 1024))" ;;
+        M) echo "$num" ;;
+        *)
+           print_error "Unknown or missing unit in swap size: '$input'. Use 'M' or 'G'." >&2
+           return 1
+           ;;
+    esac
 }
 
 # --- script update check ---
@@ -5107,27 +5110,6 @@ EOF
     swapon --show | tee -a "$LOG_FILE"
     free -h | tee -a "$LOG_FILE"
     log "Swap configuration completed."
-}
-
-# Helper: Convert size (e.g., 2G) to MB for validation/dd
-convert_to_mb() {
-    local input="${1:-}"
-    local size="${input^^}"
-    size="${size// /}"
-    local num="${size%[MG]}"
-    local unit="${size: -1}"
-    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
-        print_error "Invalid swap size format: '$input'. Expected format: 2G, 512M." >&2
-        return 1
-    fi
-    case "$unit" in
-        G) echo "$((num * 1024))" ;;
-        M) echo "$num" ;;
-        *)
-           print_error "Unknown or missing unit in swap size: '$input'. Use 'M' or 'G'." >&2
-           return 1
-           ;;
-    esac
 }
 
 configure_time_sync() {
