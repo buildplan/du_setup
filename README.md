@@ -389,10 +389,3 @@ This script implements hardening recommendations based on:
 ## MIT [License](https://github.com/buildplan/du_setup/blob/main/LICENSE)
 
 This script is open-source and provided "as is" without warranty. Use at your own risk.
-
------
-
-Powered by:  
-<a href="https://dartnode.com" title="Powered by DartNode - Free VPS for Open Source">
-  <img src="https://dartnode.com/_branding/black_color_full.png" alt="Powered by DartNode" width="200">
-</a>
