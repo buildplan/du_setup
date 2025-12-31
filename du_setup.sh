@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.4 | 2025-11-27
+# Version: 0.78.5 | 2025-12-31
 # Changelog:
+# - v0.78.5: Switched to using nano as the default editor in .bashrc.
 # - v0.78.4: Improved configure_swap to detect swap partitions vs files.
 #            Prevents 'fallocate' crashes on physical partitions by offering to disable them or skip.
 # - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
@@ -95,7 +96,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.4"
+CURRENT_VERSION="0.78.5"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -251,7 +252,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.4 | 2025-11-27                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.5 | 2025-12-31                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -1101,8 +1102,8 @@ configure_custom_bashrc() {
     if ! cat > "$temp_source_bashrc" <<'EOF'
 # shellcheck shell=bash
 # ===================================================================
-#   Universal Portable .bashrc for Modern Terminals
-#   Optimized for Debian/Ubuntu servers with multi-terminal support
+#   Universal Portable .bashrc
+#   For Debian/Ubuntu servers with multi-terminal support
 # ===================================================================
 
 # If not running interactively, don't do anything.
@@ -1260,12 +1261,12 @@ __bash_prompt_command() {
 PROMPT_COMMAND=__bash_prompt_command
 
 # --- Editor Configuration ---
-if command -v vim &>/dev/null; then
-    export EDITOR=vim
-    export VISUAL=vim
-elif command -v nano &>/dev/null; then
+if command -v nano &>/dev/null; then
     export EDITOR=nano
     export VISUAL=nano
+elif command -v vim &>/dev/null; then
+    export EDITOR=vim
+    export VISUAL=vim
 else
     export EDITOR=vi
     export VISUAL=vi
@@ -1671,13 +1672,14 @@ alias ltr='ls -alFhtr'     # Sort by modification time, oldest first
 alias lS='ls -alFhS'       # Sort by size, largest first
 
 # Last command with sudo
-alias please='sudo $(history -p !!)'
+alias please='eval sudo "$(history -p !!)"'
 
 # Safety aliases to prompt before overwriting.
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
 alias ln='ln -i'
+alias mkdir='mkdir -p'
 
 # Convenience & Navigation aliases.
 alias ..='cd ..'
@@ -1727,7 +1729,10 @@ alias pscpu='ps auxf | sort -nr -k 3 | head -10'
 alias top10='ps aux --sort=-%mem | head -n 11'
 
 # Quick network info.
-alias myip='curl -s ifconfig.me || curl -s icanhazip.com' # Alternatives: api.ipify.org, icanhazip.co
+# Get public IP with timeouts (3s), fallbacks, and newline formatting
+alias myip='curl -s --connect-timeout 3 ip.me || curl -s --connect-timeout 3 icanhazip.com || curl -s --connect-timeout 3 ifconfig.me; echo'
+alias myip4='curl -4 -s --connect-timeout 3 ip.me || curl -4 -s --connect-timeout 3 icanhazip.com || curl -4 -s --connect-timeout 3 ifconfig.me; echo'
+alias myip6='curl -6 -s --connect-timeout 3 ip.me || curl -6 -s --connect-timeout 3 icanhazip.com || curl -6 -s --connect-timeout 3 ifconfig.me; echo'
 # Show local IP address(es), excluding loopback.
 localip() {
     ip -4 addr | awk '/inet/ {print $2}' | cut -d/ -f1 | grep -v '127.0.0.1'
@@ -1765,6 +1770,7 @@ if command -v docker &>/dev/null; then
     alias d='docker'
     alias dps='docker ps'
     alias dpsa='docker ps -a'
+    alias dpsn="docker ps --format '{{.Names}}'"
     alias dpsq='docker ps -q'
     alias di='docker images'
     alias dv='docker volume ls'
