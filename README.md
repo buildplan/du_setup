@@ -7,9 +7,9 @@
 
 -----
 
-**Version:** v0.78.4
+**Version:** v0.78.5
 
-**Last Updated:** 2025-11-27
+**Last Updated:** 2025-12-31
 
 **Compatible With:**
 
@@ -87,12 +87,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`d7378f43082166cad26c7b232f3cd01e778a3377dea996c3f434e0f483317659`
+`efd2359032942499d8f59551ded16b0a9e45bda1c8748e0e17db0bc32c0a013b`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo d7378f43082166cad26c7b232f3cd01e778a3377dea996c3f434e0f483317659 du_setup.sh | sha256sum --check
+echo efd2359032942499d8f59551ded16b0a9e45bda1c8748e0e17db0bc32c0a013b du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -130,7 +130,7 @@ sudo -E ./du_setup.sh --quiet
 | **Provider Package Cleanup** | Detects and optionally removes cloud provider packages, monitoring agents, and default provisioning users to reduce attack surface and unnecessary services. |
 | **System Compatibility Checks** | Verifies OS compatibility, root privileges, and internet connectivity. |
 | **Package Management** | Verifies root privileges, OS version compatibility, and internet connectivity. Prevents running on unsupported environments. |
-| **Setup User Creation & Management**| Creates or uses an existing admin user with optional SSH key setup and strong password enforcement. Includes marker file for cleanup exclusion. |
+| **Setup User Creation & Management** | Creates or uses an existing admin user with optional SSH key setup and strong password enforcement. Includes marker file for cleanup exclusion. |
 | **SSH Hardening and Rollback** | Disables root login, configures key-based authentication, sets custom SSH port, and supports rollback of SSH configuration if connectivity fails. |
 | **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific user-defined ports. |
 | **Fail2Ban Setup** | Configures Fail2Ban to monitor SSH and UFW logs, blocking suspicious IPs. |
@@ -139,7 +139,7 @@ sudo -E ./du_setup.sh --quiet
 | **Kernel and Sysctl Hardening** | Optional improvements to kernel parameters to mitigate common network attacks and improve system hardening. |
 | **Docker Install** | Installs Docker Engine and Docker Compose, then adds the admin user to the `docker` group. |
 | **Tailscale Setup** | Installs Tailscale and connects to a mesh network using a pre-auth key, with optional advanced flags. |
-| **Automated Remote Backup**| Sets up cron-driven `rsync` backup script to remote SSH servers, integrates with notifications and performs backup verification. |
+| **Automated Remote Backup** | Sets up cron-driven `rsync` backup script to remote SSH servers, integrates with notifications and performs backup verification. |
 | **Swap File Setup** | Creates an optional swap file with tuned `swappiness` and `vfs_cache_pressure` settings. |
 | **Security Auditing** | Runs optional **Lynis** and **debsecan** vulnerability audits and logs the results for review. |
 | **Logging and Reporting** | Logs all actions and generates a detailed report of setup and cleanup in `/var/log` and backup directories. Saves timestamped backups of modified configuration files in `/root/setup_harden_backup_*`. |

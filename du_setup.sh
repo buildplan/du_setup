@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.4 | 2025-11-27
+# Version: 0.78.5 | 2025-12-31
 # Changelog:
+# - v0.78.5: Switched to using nano as the default editor in .bashrc.
 # - v0.78.4: Improved configure_swap to detect swap partitions vs files.
 #            Prevents 'fallocate' crashes on physical partitions by offering to disable them or skip.
 # - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
@@ -95,7 +96,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.4"
+CURRENT_VERSION="0.78.5"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -251,7 +252,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.4 | 2025-11-27                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.78.5 | 2025-12-31                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
