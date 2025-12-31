@@ -1101,8 +1101,8 @@ configure_custom_bashrc() {
     if ! cat > "$temp_source_bashrc" <<'EOF'
 # shellcheck shell=bash
 # ===================================================================
-#   Universal Portable .bashrc for Modern Terminals
-#   Optimized for Debian/Ubuntu servers with multi-terminal support
+#   Universal Portable .bashrc
+#   For Debian/Ubuntu servers with multi-terminal support
 # ===================================================================
 
 # If not running interactively, don't do anything.
@@ -1260,12 +1260,12 @@ __bash_prompt_command() {
 PROMPT_COMMAND=__bash_prompt_command
 
 # --- Editor Configuration ---
-if command -v vim &>/dev/null; then
-    export EDITOR=vim
-    export VISUAL=vim
-elif command -v nano &>/dev/null; then
+if command -v nano &>/dev/null; then
     export EDITOR=nano
     export VISUAL=nano
+elif command -v vim &>/dev/null; then
+    export EDITOR=vim
+    export VISUAL=vim
 else
     export EDITOR=vi
     export VISUAL=vi
@@ -1671,13 +1671,14 @@ alias ltr='ls -alFhtr'     # Sort by modification time, oldest first
 alias lS='ls -alFhS'       # Sort by size, largest first
 
 # Last command with sudo
-alias please='sudo $(history -p !!)'
+alias please='eval sudo "$(history -p !!)"'
 
 # Safety aliases to prompt before overwriting.
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
 alias ln='ln -i'
+alias mkdir='mkdir -p'
 
 # Convenience & Navigation aliases.
 alias ..='cd ..'
@@ -1727,7 +1728,10 @@ alias pscpu='ps auxf | sort -nr -k 3 | head -10'
 alias top10='ps aux --sort=-%mem | head -n 11'
 
 # Quick network info.
-alias myip='curl -s ifconfig.me || curl -s icanhazip.com' # Alternatives: api.ipify.org, icanhazip.co
+# Get public IP with timeouts (3s), fallbacks, and newline formatting
+alias myip='curl -s --connect-timeout 3 ip.me || curl -s --connect-timeout 3 icanhazip.com || curl -s --connect-timeout 3 ifconfig.me; echo'
+alias myip4='curl -4 -s --connect-timeout 3 ip.me || curl -4 -s --connect-timeout 3 icanhazip.com || curl -4 -s --connect-timeout 3 ifconfig.me; echo'
+alias myip6='curl -6 -s --connect-timeout 3 ip.me || curl -6 -s --connect-timeout 3 icanhazip.com || curl -6 -s --connect-timeout 3 ifconfig.me; echo'
 # Show local IP address(es), excluding loopback.
 localip() {
     ip -4 addr | awk '/inet/ {print $2}' | cut -d/ -f1 | grep -v '127.0.0.1'
@@ -1765,6 +1769,7 @@ if command -v docker &>/dev/null; then
     alias d='docker'
     alias dps='docker ps'
     alias dpsa='docker ps -a'
+    alias dpsn="docker ps --format '{{.Names}}'"
     alias dpsq='docker ps -q'
     alias di='docker images'
     alias dv='docker volume ls'
