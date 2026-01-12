@@ -1,14 +1,15 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.78.5 | 2025-12-31
+# Version: 0.79.0 | 2026-01-14
 # Changelog:
+# - v0.79.0: Added CrowdSec, now you can choose between fail2ban and CrowdSec for system level firewall.
 # - v0.78.5: Switched to using nano as the default editor in .bashrc.
 # - v0.78.4: Improved configure_swap to detect swap partitions vs files.
 #            Prevents 'fallocate' crashes on physical partitions by offering to disable them or skip.
 # - v0.78.3: Update the summary to try to show the right environment detection based on finding personal VMs and cloud VPS.
 #            Run update & upgrade in the final step to ensure system is fully updated after restart.
-# - v0.78.2: In configure_system set choosen hostname from collect_config in the /etc/hosts
+# - v0.78.2: In configure_system set chosen hostname from collect_config in the /etc/hosts
 # - v0.78.1: Collect config failure fixed on IPv6 only VPS.
 # - v0.78: Script tries to handles different environments: Direct Public IP, NAT/Router and Local VM only
 #          The configure_ssh function provides context-aware instructions based on different environments.
@@ -34,7 +35,7 @@
 # - v0.68: Enable UFW IPv6 support if available
 # - v0.67: Do not log taiscale auth key in log file
 # - v0.66: While configuring and in the summary, display both IPv6 and IPv4.
-# - v0.65: If reconfigure locales - appy newly configured locale to the current environment.
+# - v0.65: If reconfigure locales - apply newly configured locale to the current environment.
 # - v0.64: Tested at Debian 13 to confirm it works as expected
 # - v0.63: Added ssh install in key packages
 # - v0.62: Added fix for fail2ban by creating empty ufw log file
@@ -96,7 +97,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.78.5"
+CURRENT_VERSION="0.79.0"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -154,6 +155,8 @@ SSH_SERVICE=""
 ID="" # This will be populated from /etc/os-release
 FAILED_SERVICES=()
 PREVIOUS_SSH_PORT=""
+
+IDS_INSTALLED=""
 
 # --- --help ---
 show_usage() {
@@ -252,7 +255,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.78.5 | 2025-12-31                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.79.0 | 2026-01-14                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2912,10 +2915,10 @@ install_packages() {
     fi
     print_info "Installing essential packages..."
     if ! apt-get install -y -qq \
-        ufw fail2ban unattended-upgrades chrony \
-        rsync wget vim htop iotop nethogs netcat-traditional ncdu \
+        ufw unattended-upgrades chrony rsync wget \
+        vim htop iotop nethogs netcat-traditional ncdu \
         tree rsyslog cron jq gawk coreutils perl skopeo git \
-        apt-listchanges ca-certificates gnupg logrotate \
+        apt-listchanges ca-certificates gnupg logrotate make \
         ssh openssh-client openssh-server; then
         print_error "Failed to install one or more essential packages."
         exit 1
@@ -3801,6 +3804,15 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
+    # Install Fail2Ban if not present
+    if ! dpkg -l fail2ban | grep -q ^ii; then
+        print_info "Installing Fail2Ban..."
+        if ! apt-get install -y -qq fail2ban; then
+            print_error "Failed to install Fail2Ban."
+            return 1
+        fi
+    fi
+
     # --- Collect User IPs to Ignore ---
     local -a IGNORE_IPS=("127.0.0.1/8" "::1") # Array for easier dedup.
     local -a INVALID_IPS=()
@@ -3985,6 +3997,73 @@ EOF
         FAILED_SERVICES+=("fail2ban")
     fi
     log "Fail2Ban configuration completed."
+}
+
+configure_crowdsec() {
+    print_section "CrowdSec Configuration"
+
+    # Check if already installed
+    if command -v crowdsec >/dev/null 2>&1; then
+        print_info "CrowdSec is already installed."
+    else
+        print_info "Setting up CrowdSec repository..."
+        if ! curl -s https://install.crowdsec.net | sh >> "$LOG_FILE" 2>&1; then
+             print_error "Failed to setup CrowdSec repository."
+             return 1
+        fi
+
+        print_info "Installing CrowdSec agent..."
+        if ! apt-get update -qq || ! apt-get install -y -qq crowdsec; then
+            print_error "Failed to install CrowdSec."
+            return 1
+        fi
+        print_success "CrowdSec agent installed."
+    fi
+
+    # Install Firewall Bouncer
+    if ! dpkg -l crowdsec-firewall-bouncer-iptables | grep -q ^ii; then
+        print_info "Installing CrowdSec Firewall Bouncer (iptables/UFW support)..."
+        if ! apt-get install -y -qq crowdsec-firewall-bouncer-iptables; then
+             print_warning "Failed to install firewall bouncer. CrowdSec will detect but NOT block attacks."
+        else
+             print_success "CrowdSec Firewall Bouncer installed."
+        fi
+    else
+        print_info "CrowdSec Firewall Bouncer already installed."
+    fi
+
+    # Enrollment
+    if confirm "Enroll this instance in the CrowdSec Console (optional)?" "n"; then
+        local ENROLL_KEY
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter your CrowdSec Enrollment Key: ${NC}")" ENROLL_KEY
+            if [[ -n "$ENROLL_KEY" ]]; then
+                print_info "Enrolling instance..."
+                if cscli console enroll "$ENROLL_KEY" 2>&1 | tee -a "$LOG_FILE"; then
+                    print_success "Instance enrolled successfully."
+                    break
+                else
+                    print_error "Enrollment failed. Check the key and try again."
+                    if confirm "Skip enrollment?" "n"; then break; fi
+                fi
+            else
+                print_error "Key cannot be empty."
+            fi
+        done
+    fi
+
+    # Reload to ensure everything is active
+    systemctl restart crowdsec
+    print_success "CrowdSec configuration completed."
+
+    # Help Section
+    printf '\n%s\n' "${YELLOW}CrowdSec Quick Reference:${NC}"
+    printf "  %-30s %s\n" "sudo cscli metrics" "View local metrics"
+    printf "  %-30s %s\n" "sudo cscli decisions list" "View active bans/decisions"
+    printf "  %-30s %s\n" "sudo cscli bouncers list" "Check bouncer status"
+    printf "  %-30s %s\n" "sudo cscli hub update && sudo cscli hub upgrade" "Update CrowdSec scenarios"
+    printf '\n'
+    log "CrowdSec configuration completed."
 }
 
 configure_auto_updates() {
@@ -5253,7 +5332,7 @@ generate_summary() {
     printf '\n'
 
     print_separator "Final Service Status Check:"
-    for service in "$SSH_SERVICE" fail2ban chrony; do
+    for service in "$SSH_SERVICE" chrony; do
         if systemctl is-active --quiet "$service"; then
             printf "  %-20s ${GREEN}✓ Active${NC}\n" "$service"
         else
@@ -5261,6 +5340,31 @@ generate_summary() {
             FAILED_SERVICES+=("$service")
         fi
     done
+    if [[ "$IDS_INSTALLED" == "fail2ban" ]] || systemctl is-active --quiet fail2ban; then
+         if systemctl is-active --quiet fail2ban; then
+            printf "  %-20s ${GREEN}✓ Active${NC}\n" "Fail2Ban"
+         else
+            printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "Fail2Ban"
+            FAILED_SERVICES+=("fail2ban")
+         fi
+    fi
+
+    if [[ "$IDS_INSTALLED" == "crowdsec" ]] || systemctl is-active --quiet crowdsec; then
+         if systemctl is-active --quiet crowdsec; then
+            printf "  %-20s ${GREEN}✓ Active${NC}\n" "CrowdSec"
+            # Check bouncer
+            if command -v cscli >/dev/null; then
+                if cscli bouncers list -o json | grep -q "firewall-bouncer"; then
+                     printf "  %-20s ${GREEN}✓ Active${NC}\n" "CrowdSec Firewall"
+                else
+                     printf "  %-20s ${YELLOW}⚠ Bouncer Missing${NC}\n" "CrowdSec Firewall"
+                fi
+            fi
+         else
+            printf "  %-20s ${RED}✗ INACTIVE${NC}\n" "CrowdSec"
+            FAILED_SERVICES+=("crowdsec")
+         fi
+    fi
     if ufw status | grep -q "Status: active"; then
         printf "  %-20s ${GREEN}✓ Active${NC}\n" "ufw (firewall)"
     else
@@ -5455,8 +5559,13 @@ generate_summary() {
     # Other verification commands
     printf "  %-28s ${CYAN}%s${NC}\n" "- Firewall rules:" "sudo ufw status verbose"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Time sync:" "chronyc tracking"
-    printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
-    printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban ufw jail:" "sudo fail2ban-client status ufw-probes"
+    # Adjust verification commands based on selection
+    if [[ "$IDS_INSTALLED" == "fail2ban" ]]; then
+        printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
+    elif [[ "$IDS_INSTALLED" == "crowdsec" ]]; then
+        printf "  %-28s ${CYAN}%s${NC}\n" "- CrowdSec status:" "sudo cscli metrics"
+        printf "  %-28s ${CYAN}%s${NC}\n" "- CrowdSec bans:" "sudo cscli decisions list"
+    fi
     printf "  %-28s ${CYAN}%s${NC}\n" "- Swap status:" "sudo swapon --show && free -h"
     printf "  %-28s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
     if command -v docker >/dev/null 2>&1; then
@@ -5562,7 +5671,31 @@ main() {
     setup_user
     configure_system
     configure_firewall
-    configure_fail2ban
+    # --- Choose Firewall fail2ban/CrowdSec ---
+    print_section "Intrusion Detection System (IDS)"
+    printf '%s\n' "${CYAN}Choose an Intrusion Detection/Prevention System:${NC}"
+    printf '  1) Fail2Ban (Classic, simple log parsing, standalone)\n'
+    printf '  2) CrowdSec (Modern, collaborative reputation database, highly recommended)\n'
+    printf '  3) Skip IDS setup\n'
+
+    local IDS_CHOICE
+    read -rp "$(printf '%s' "${CYAN}Enter choice [1]: ${NC}")" IDS_CHOICE
+    IDS_CHOICE=${IDS_CHOICE:-1}
+
+    case "$IDS_CHOICE" in
+        1)
+            configure_fail2ban
+            IDS_INSTALLED="fail2ban"
+            ;;
+        2)
+            configure_crowdsec
+            IDS_INSTALLED="crowdsec"
+            ;;
+        *)
+            print_info "Skipping Intrusion Detection System setup."
+            IDS_INSTALLED="none"
+            ;;
+    esac
     configure_ssh
     configure_auto_updates
     configure_time_sync
