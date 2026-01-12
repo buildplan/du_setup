@@ -7,9 +7,9 @@
 
 -----
 
-**Version:** v0.78.5
+**Version:** v0.79.0
 
-**Last Updated:** 2025-12-31
+**Last Updated:** 2026-01-13
 
 **Compatible With:**
 
@@ -87,12 +87,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`efd2359032942499d8f59551ded16b0a9e45bda1c8748e0e17db0bc32c0a013b`
+`8f0af0da824395de5a2fac26144ec0d255209ba84c60ea1a9a72f8e6c8f6c039`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo efd2359032942499d8f59551ded16b0a9e45bda1c8748e0e17db0bc32c0a013b du_setup.sh | sha256sum --check
+echo 8f0af0da824395de5a2fac26144ec0d255209ba84c60ea1a9a72f8e6c8f6c039 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -362,6 +362,7 @@ This setup script leverages the following excellent open-source projects and too
 
 * **Git** - Version control system
 * **jq** - JSON query processor for data manipulation
+* **make** - Utility for building and maintaining programmes from source code
 * **rsync** - Efficient file synchronization
 * **curl** - Data transfer tool
 * **wget** - File download utility
