@@ -4031,6 +4031,21 @@ configure_crowdsec() {
     else
         print_info "CrowdSec Firewall Bouncer already installed."
     fi
+    # UFW Log Acquisition (Parity with Fail2Ban)
+    if [[ -d /etc/crowdsec/acquis.d ]]; then
+        print_info "Configuring UFW log acquisition..."
+        if [[ ! -f /var/log/ufw.log ]]; then
+            touch /var/log/ufw.log
+            print_info "Created empty /var/log/ufw.log for monitoring."
+        fi
+        cat <<EOF > /etc/crowdsec/acquis.d/ufw.yaml
+filenames:
+  - /var/log/ufw.log
+labels:
+  type: syslog
+EOF
+        print_success "Added /var/log/ufw.log to CrowdSec acquisition."
+    fi
 
     # Enrollment
     if confirm "Enroll this instance in the CrowdSec Console (optional)?" "n"; then
