@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.79.0 | 2026-01-14
+# Version: 0.79.0 | 2026-01-13
 # Changelog:
 # - v0.79.0: Added CrowdSec, now you can choose between fail2ban and CrowdSec for system level firewall.
 # - v0.78.5: Switched to using nano as the default editor in .bashrc.
@@ -255,7 +255,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.79.0 | 2026-01-14                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.79.0 | 2026-01-13                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4076,6 +4076,10 @@ EOF
     printf "  %-30s %s\n" "sudo cscli metrics" "View local metrics"
     printf "  %-30s %s\n" "sudo cscli decisions list" "View active bans/decisions"
     printf "  %-30s %s\n" "sudo cscli bouncers list" "Check bouncer status"
+    printf "  %-30s %s\n" "sudo cscli collections list" "View installed collections"
+    printf "  %-30s %s\n" "sudo cscli parsers list" "View installed parsers"
+    printf "  %-30s %s\n" "sudo cscli scenarios list" "View active scenarios"
+    printf "  %-30s %s\n" "sudo cscli alerts list" "View recent alerts"
     printf "  %-30s %s\n" "sudo cscli hub update && sudo cscli hub upgrade" "Update CrowdSec scenarios"
     printf '\n'
     log "CrowdSec configuration completed."
