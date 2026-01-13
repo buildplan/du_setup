@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.79.0 | 2026-01-13
+# Version: 0.79.1 | 2026-01-13
 # Changelog:
 # - v0.79.0: Added CrowdSec, now you can choose between fail2ban and CrowdSec for system level firewall.
 # - v0.78.5: Switched to using nano as the default editor in .bashrc.
@@ -97,7 +97,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.79.0"
+CURRENT_VERSION="0.79.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -255,7 +255,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.79.0 | 2026-01-13                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.79.1 | 2026-01-13                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4031,20 +4031,75 @@ configure_crowdsec() {
     else
         print_info "CrowdSec Firewall Bouncer already installed."
     fi
+
+    # Core Collections
+    print_info "Installing base collections (Linux & Iptables)..."
+    if cscli collections install crowdsecurity/linux crowdsecurity/iptables 2>&1 | tee -a "$LOG_FILE"; then
+        print_success "Base collections installed."
+    else
+        print_warning "Failed to install base collections. Check logs."
+    fi
+
     # UFW Log Acquisition (Parity with Fail2Ban)
-    if [[ -d /etc/crowdsec/acquis.d ]]; then
-        print_info "Configuring UFW log acquisition..."
-        if [[ ! -f /var/log/ufw.log ]]; then
-            touch /var/log/ufw.log
-            print_info "Created empty /var/log/ufw.log for monitoring."
-        fi
-        cat <<EOF > /etc/crowdsec/acquis.d/ufw.yaml
+    mkdir -p /etc/crowdsec/acquis.d
+    print_info "Configuring UFW log acquisition..."
+    if [[ ! -f /var/log/ufw.log ]]; then
+        touch /var/log/ufw.log
+        print_info "Created empty /var/log/ufw.log for monitoring."
+    fi
+    cat <<EOF > /etc/crowdsec/acquis.d/ufw.yaml
 filenames:
   - /var/log/ufw.log
 labels:
   type: syslog
 EOF
-        print_success "Added /var/log/ufw.log to CrowdSec acquisition."
+    print_success "Added /var/log/ufw.log to CrowdSec acquisition."
+
+    # Optional Additional Collections
+    if confirm "Install additional CrowdSec collections (e.g., Nginx, Apache, HTTP-CVE)?" "n"; then
+        while true; do
+            printf '\n'
+            print_info "Browse collections at: https://app.crowdsec.net/hub/collections"
+            local COLLECTION_NAME
+            read -rp "$(printf '%s' "${CYAN}Enter collection name (e.g. crowdsecurity/nginx) or 'done': ${NC}")" COLLECTION_NAME
+
+            [[ "$COLLECTION_NAME" == "done" || -z "$COLLECTION_NAME" ]] && break
+
+            print_info "Installing $COLLECTION_NAME..."
+            if cscli collections install "$COLLECTION_NAME" 2>&1 | tee -a "$LOG_FILE"; then
+                print_success "Collection $COLLECTION_NAME installed."
+
+                # Interactive Acquisition Setup
+                if confirm "Configure log file monitoring for $COLLECTION_NAME?" "y"; then
+                    local LOG_PATH LOG_TYPE
+                    print_info "Example Log Path: /var/log/nginx/*.log"
+                    read -rp "$(printf '%s' "${CYAN}Enter log file path: ${NC}")" LOG_PATH
+
+                    print_info "Example Label Type: nginx (must match the collection's parser)"
+                    read -rp "$(printf '%s' "${CYAN}Enter label type: ${NC}")" LOG_TYPE
+
+                    if [[ -n "$LOG_PATH" && -n "$LOG_TYPE" ]]; then
+                        # Sanitize filename from the type
+                        local SAFE_NAME=${LOG_TYPE//[^a-zA-Z0-9]/_}
+                        local ACQUIS_FILE="/etc/crowdsec/acquis.d/${SAFE_NAME}.yaml"
+
+                        mkdir -p /etc/crowdsec/acquis.d
+                        cat <<EOF > "$ACQUIS_FILE"
+filenames:
+  - $LOG_PATH
+labels:
+  type: $LOG_TYPE
+EOF
+                        print_success "Acquisition configured: $ACQUIS_FILE"
+                        log "Created custom acquisition for $COLLECTION_NAME at $ACQUIS_FILE"
+                    else
+                        print_warning "Skipped acquisition config due to empty input."
+                    fi
+                fi
+            else
+                print_error "Failed to install $COLLECTION_NAME. Check spelling or connection."
+            fi
+        done
     fi
 
     # Enrollment
@@ -4069,18 +4124,19 @@ EOF
 
     # Reload to ensure everything is active
     systemctl restart crowdsec
+    print_info "Restarted CrowdSec service to apply configurations."
     print_success "CrowdSec configuration completed."
 
     # Help Section
     printf '\n%s\n' "${YELLOW}CrowdSec Quick Reference:${NC}"
-    printf "  %-30s %s\n" "sudo cscli metrics" "View local metrics"
-    printf "  %-30s %s\n" "sudo cscli decisions list" "View active bans/decisions"
-    printf "  %-30s %s\n" "sudo cscli bouncers list" "Check bouncer status"
-    printf "  %-30s %s\n" "sudo cscli collections list" "View installed collections"
-    printf "  %-30s %s\n" "sudo cscli parsers list" "View installed parsers"
-    printf "  %-30s %s\n" "sudo cscli scenarios list" "View active scenarios"
-    printf "  %-30s %s\n" "sudo cscli alerts list" "View recent alerts"
-    printf "  %-30s %s\n" "sudo cscli hub update && sudo cscli hub upgrade" "Update CrowdSec scenarios"
+    printf "  %-30s %s\n" "sudo cscli metrics" "# View local metrics"
+    printf "  %-30s %s\n" "sudo cscli decisions list" "# View active bans/decisions"
+    printf "  %-30s %s\n" "sudo cscli bouncers list" "# Check bouncer status"
+    printf "  %-30s %s\n" "sudo cscli collections list" "# View installed collections"
+    printf "  %-30s %s\n" "sudo cscli parsers list" "# View installed parsers"
+    printf "  %-30s %s\n" "sudo cscli scenarios list" "# View active scenarios"
+    printf "  %-30s %s\n" "sudo cscli alerts list" "# View recent alerts"
+    printf "  %-30s %s\n" "sudo cscli hub update && sudo cscli hub upgrade" "# Update CrowdSec scenarios"
     printf '\n'
     log "CrowdSec configuration completed."
 }
