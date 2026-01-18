@@ -3718,7 +3718,7 @@ configure_2fa() {
 
     if [[ "$SETUP_SUCCESS" == "false" ]]; then
         print_info "Generating 2FA secret for $USERNAME..."
-        
+
         # Run google-authenticator non-interactively
         # -t: time-based, -d: disallow reuse, -f: force to file, -r 3 -R 30: rate limit, -w 3: window size
         if ! sudo -u "$USERNAME" google-authenticator -t -d -f -r 3 -R 30 -w 3 -q; then
@@ -3730,7 +3730,7 @@ configure_2fa() {
         local SECRET
         SECRET=$(head -n 1 "$GA_FILE")
         local QR_LABEL="${USERNAME}@${SERVER_NAME}"
-        local QR_URL="otpauth://totp/${QR_LABEL}?secret=${SECRET}&issuer=$(hostname)"
+        local QR_URL; QR_URL="otpauth://totp/${QR_LABEL}?secret=${SECRET}&issuer=$(hostname)"
 
         print_section "ACTION REQUIRED: Setup Authenticator App"
         printf '%s\n' "${YELLOW}1. Open your Authenticator App (Google Auth, Authy, etc.)${NC}"
@@ -3812,16 +3812,16 @@ configure_2fa() {
     print_info "Do NOT close this terminal."
     print_info "Open a NEW terminal window and try to SSH in as $USERNAME."
     print_info "You should be asked for your SSH Key passphrase (if set) FOLLOWED by the Verification Code."
-    
+
     if confirm "Was the login successful?"; then
         print_success "2FA setup verified and active."
         TWO_FACTOR_ENABLED=true
         log "2FA enabled for user $USERNAME."
     else
         print_error "Login verification failed. Reverting 2FA changes..."
-        if [[ "$USE_DROPIN" == "true" ]]; then 
+        if [[ "$USE_DROPIN" == "true" ]]; then
             rm -f "$SSH_2FA_CONF"
-        else 
+        else
             # Basic cleanup for non-dropin
             sed -i "/Match User $USERNAME/,+3d" /etc/ssh/sshd_config
         fi
