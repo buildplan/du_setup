@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.79.1 | 2026-01-13
+# Version: 0.80.0 | 2026-01-19
 # Changelog:
+# - v0.80.0: Added 2FA, optionally set 2FA for SSH Login.
+# - v0.79.1: Added CrowdSec collections install to CrowdSec setup.
 # - v0.79.0: Added CrowdSec, now you can choose between fail2ban and CrowdSec for system level firewall.
 # - v0.78.5: Switched to using nano as the default editor in .bashrc.
 # - v0.78.4: Improved configure_swap to detect swap partitions vs files.
@@ -97,7 +99,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.79.1"
+CURRENT_VERSION="0.80.0"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -157,6 +159,7 @@ FAILED_SERVICES=()
 PREVIOUS_SSH_PORT=""
 
 IDS_INSTALLED=""
+TWO_FACTOR_ENABLED="false"
 
 # --- --help ---
 show_usage() {
@@ -255,7 +258,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.79.1 | 2026-01-13                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.0 | 2026-01-19                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3680,6 +3683,154 @@ rollback_ssh_changes() {
     return 0
 }
 
+configure_2fa() {
+    print_section "Two-Factor Authentication (2FA) Setup"
+    print_info "2FA adds an extra layer of security by requiring a time-based code (TOTP) along with your SSH key."
+    print_info "Note: This will be configured specifically for the user '$USERNAME'."
+
+    if ! confirm "Setup 2FA (Google Authenticator) for user '$USERNAME'?"; then
+        print_info "Skipping 2FA setup."
+        return 0
+    fi
+
+    # 1. Install Dependencies
+    print_info "Installing libpam-google-authenticator and qrencode..."
+    if ! apt-get update -qq || ! apt-get install -y -qq libpam-google-authenticator qrencode; then
+        print_error "Failed to install required packages. Aborting 2FA setup."
+        return 1
+    fi
+
+    local USER_HOME
+    USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+    local GA_FILE="$USER_HOME/.google_authenticator"
+    local SETUP_SUCCESS=false
+
+    # 2. Generate Secret
+    if [[ -f "$GA_FILE" ]]; then
+        print_warning "2FA configuration already exists for $USERNAME."
+        if ! confirm "Regenerate secret (this will invalidate old codes)?"; then
+            print_info "Keeping existing 2FA configuration."
+            SETUP_SUCCESS=true
+        else
+            rm -f "$GA_FILE"
+        fi
+    fi
+
+    if [[ "$SETUP_SUCCESS" == "false" ]]; then
+        print_info "Generating 2FA secret for $USERNAME..."
+        
+        # Run google-authenticator non-interactively
+        # -t: time-based, -d: disallow reuse, -f: force to file, -r 3 -R 30: rate limit, -w 3: window size
+        if ! sudo -u "$USERNAME" google-authenticator -t -d -f -r 3 -R 30 -w 3 -q; then
+             print_error "Failed to generate 2FA configuration."
+             return 1
+        fi
+
+        # Extract secret for display
+        local SECRET
+        SECRET=$(head -n 1 "$GA_FILE")
+        local QR_LABEL="${USERNAME}@${SERVER_NAME}"
+        local QR_URL="otpauth://totp/${QR_LABEL}?secret=${SECRET}&issuer=$(hostname)"
+
+        print_section "ACTION REQUIRED: Setup Authenticator App"
+        printf '%s\n' "${YELLOW}1. Open your Authenticator App (Google Auth, Authy, etc.)${NC}"
+        printf '%s\n' "${YELLOW}2. Scan the QR Code below:${NC}"
+        printf '\n'
+
+        # Display QR Code in terminal
+        qrencode -t ANSIUTF8 "$QR_URL"
+
+        printf '\n'
+        printf "   %s: %s\n" "${CYAN}Secret Key (if QR fails)${NC}" "${BOLD}$SECRET${NC}"
+        printf '\n'
+        printf '%s\n' "${RED}SAVE THESE EMERGENCY SCRATCH CODES:${NC}"
+        grep -E '^[0-9]{8}$' "$GA_FILE"
+        printf '\n'
+
+        if ! confirm "Have you saved the secret/codes and set up your app?"; then
+             print_warning "Aborting 2FA setup to prevent lockout."
+             rm -f "$GA_FILE"
+             return 1
+        fi
+        SETUP_SUCCESS=true
+    fi
+
+    # 3. Configure PAM
+    local PAM_FILE="/etc/pam.d/sshd"
+    print_info "Configuring PAM ($PAM_FILE)..."
+    if ! grep -q "pam_google_authenticator.so" "$PAM_FILE"; then
+        cp "$PAM_FILE" "${PAM_FILE}.backup_$(date +%Y%m%d_%H%M%S)"
+        # Prepend to ensure it runs
+        sed -i '1i auth required pam_google_authenticator.so nullok' "$PAM_FILE"
+        print_success "Updated PAM configuration."
+    else
+        print_info "PAM already configured."
+    fi
+
+    # 4. Configure SSH
+    print_info "Configuring SSH to enforce 2FA for '$USERNAME'..."
+    local SSH_DROPIN_DIR="/etc/ssh/sshd_config.d"
+    local SSH_2FA_CONF="$SSH_DROPIN_DIR/95-2fa-${USERNAME}.conf"
+    local USE_DROPIN=false
+
+    # Check if drop-in directory exists and is included (standard on Ubuntu 20.04+/Debian 12)
+    if [[ -d "$SSH_DROPIN_DIR" ]] && grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
+        USE_DROPIN=true
+    fi
+
+    local CONFIG_CONTENT="Match User $USERNAME
+    AuthenticationMethods publickey,keyboard-interactive
+    KbdInteractiveAuthentication yes
+"
+
+    if [[ "$USE_DROPIN" == "true" ]]; then
+        echo "$CONFIG_CONTENT" > "$SSH_2FA_CONF"
+        print_success "Created SSH user config: $SSH_2FA_CONF"
+    else
+        # Fallback for older systems: Append to main config
+        print_warning "Drop-in config not supported. Appending to /etc/ssh/sshd_config."
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup_2fa
+        # Ensure global KbdInteractive is enabled if not already
+        if ! grep -q "^KbdInteractiveAuthentication yes" /etc/ssh/sshd_config && ! grep -q "^ChallengeResponseAuthentication yes" /etc/ssh/sshd_config; then
+             echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
+        fi
+        if ! grep -q "Match User $USERNAME" /etc/ssh/sshd_config; then
+             echo "$CONFIG_CONTENT" >> /etc/ssh/sshd_config
+        fi
+    fi
+
+    # 5. Restart and Verify
+    print_info "Restarting SSH service..."
+    if ! systemctl restart "$SSH_SERVICE"; then
+        print_error "Failed to restart SSH service. Reverting 2FA changes..."
+        if [[ "$USE_DROPIN" == "true" ]]; then rm -f "$SSH_2FA_CONF"; else cp /etc/ssh/sshd_config.backup_2fa /etc/ssh/sshd_config; fi
+        sed -i '/pam_google_authenticator.so/d' "$PAM_FILE"
+        return 1
+    fi
+
+    print_warning "CRITICAL VERIFICATION STEP"
+    print_info "Do NOT close this terminal."
+    print_info "Open a NEW terminal window and try to SSH in as $USERNAME."
+    print_info "You should be asked for your SSH Key passphrase (if set) FOLLOWED by the Verification Code."
+    
+    if confirm "Was the login successful?"; then
+        print_success "2FA setup verified and active."
+        TWO_FACTOR_ENABLED=true
+        log "2FA enabled for user $USERNAME."
+    else
+        print_error "Login verification failed. Reverting 2FA changes..."
+        if [[ "$USE_DROPIN" == "true" ]]; then 
+            rm -f "$SSH_2FA_CONF"
+        else 
+            # Basic cleanup for non-dropin
+            sed -i "/Match User $USERNAME/,+3d" /etc/ssh/sshd_config
+        fi
+        sed -i '/pam_google_authenticator.so/d' "$PAM_FILE"
+        systemctl restart "$SSH_SERVICE"
+        print_info "2FA changes reverted. Your SSH access should be standard."
+    fi
+}
+
 configure_firewall() {
     print_section "Firewall Configuration (UFW)"
     if ufw status | grep -q "Status: active"; then
@@ -5489,6 +5640,13 @@ generate_summary() {
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
+    # --- 2FA Status ---
+    if [[ "$TWO_FACTOR_ENABLED" == "true" ]]; then
+        printf "  %-20s ${GREEN}Enabled (SSH Key + TOTP)${NC}\n" "2FA/MFA:"
+    else
+        printf "  %-20s ${YELLOW}Disabled${NC}\n" "2FA/MFA:"
+    fi
+
     # --- Kernel Hardening Status ---
     if [[ -f /etc/sysctl.d/99-du-hardening.conf ]]; then
         printf "  %-20s${GREEN}Applied${NC}\n" "Kernel Hardening:"
@@ -5772,6 +5930,7 @@ main() {
             ;;
     esac
     configure_ssh
+    configure_2fa
     configure_auto_updates
     configure_time_sync
     configure_kernel_hardening
