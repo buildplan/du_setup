@@ -3266,6 +3266,53 @@ cleanup_and_exit() {
     exit $exit_code
 }
 
+show_connection_options() {
+    local port="$1"
+    local public_ip="$2"
+
+    local TS_IP=""
+    if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
+        TS_IP=$(tailscale ip -4 2>/dev/null)
+    fi
+
+    printf "\n"
+
+    # 1. Public IP (Internet)
+    if [[ -n "$public_ip" && "$public_ip" != "Unknown" ]]; then
+         printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$port" "$USERNAME" "$public_ip"
+    fi
+
+    # 2. Internal/LAN IPs
+    local found_internal=false
+    while read -r ip_addr; do
+        local clean_ip="${ip_addr%/*}"
+        if [[ -n "$clean_ip" && "$clean_ip" != "127.0.0.1" && "$clean_ip" != "$public_ip" ]]; then
+             printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Internal/Private:" "$port" "$USERNAME" "$clean_ip"
+             found_internal=true
+        fi
+    done < <(ip -4 -o addr show scope global | awk '{print $4}')
+
+    # show the detected local IP from route (Home VM scenario)
+    if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
+         local fallback_ip
+         fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+         if [[ -n "$fallback_ip" ]]; then
+            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$port" "$USERNAME" "$fallback_ip"
+         fi
+    fi
+
+    # 3. IPv6
+    if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "Not available" ]]; then
+        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "IPv6:" "$port" "$USERNAME" "$SERVER_IP_V6"
+    fi
+
+    # 4. Tailscale IP (VPN)
+    if [[ -n "$TS_IP" ]]; then
+        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$port" "$USERNAME" "$TS_IP"
+    fi
+    printf "\n"
+}
+
 configure_ssh() {
     trap cleanup_and_exit ERR
 
@@ -3325,60 +3372,6 @@ configure_ssh() {
 
     print_warning "SSH Key Authentication Required for Next Steps!"
     printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
-
-    # --- Connection Display Function ---
-    show_connection_options() {
-        local port="$1"
-        local public_ip="$2"
-
-        local TS_IP=""
-        if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
-            TS_IP=$(tailscale ip -4 2>/dev/null)
-        fi
-
-        printf "\n"
-
-        # 1. Public IP (Internet)
-        # Only show if valid and not "Unknown"
-        if [[ -n "$public_ip" && "$public_ip" != "Unknown" ]]; then
-             printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Public (Internet):" "$port" "$USERNAME" "$public_ip"
-        fi
-
-        # 2. Internal/LAN IPs
-        # scan all interfaces. exclude the Public IP (already shown) and Loopback.
-        local found_internal=false
-        while read -r ip_addr; do
-            # Remove subnet mask if present
-            local clean_ip="${ip_addr%/*}"
-
-            # Skip if empty, loopback, or matches the Public IP we just displayed
-            if [[ -n "$clean_ip" && "$clean_ip" != "127.0.0.1" && "$clean_ip" != "$public_ip" ]]; then
-                 printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Internal/Private:" "$port" "$USERNAME" "$clean_ip"
-                 found_internal=true
-            fi
-        done < <(ip -4 -o addr show scope global | awk '{print $4}')
-
-        # Fallback: If we found NO internal IPs and NO Public IP (local VM offline?),
-        # show the detected local IP from route (Home VM scenario)
-        if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
-             local fallback_ip
-             fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
-             if [[ -n "$fallback_ip" ]]; then
-                printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$port" "$USERNAME" "$fallback_ip"
-             fi
-        fi
-
-        # 3. IPv6
-        if [[ -n "$SERVER_IP_V6" && "$SERVER_IP_V6" != "Not available" ]]; then
-            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "IPv6:" "$port" "$USERNAME" "$SERVER_IP_V6"
-        fi
-
-        # 4. Tailscale IP (VPN)
-        if [[ -n "$TS_IP" ]]; then
-            printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$port" "$USERNAME" "$TS_IP"
-        fi
-        printf "\n"
-    }
 
     # Show options for CURRENT port
     show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
@@ -3812,6 +3805,9 @@ configure_2fa() {
     print_info "Do NOT close this terminal."
     print_info "Open a NEW terminal window and try to SSH in as $USERNAME."
     print_info "You should be asked for your SSH Key passphrase (if set) FOLLOWED by the Verification Code."
+    print_info "With default PAM settings, you may ALSO be asked for $USERNAME password."
+
+    show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
     if confirm "Was the login successful?"; then
         print_success "2FA setup verified and active."
