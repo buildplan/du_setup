@@ -7,9 +7,9 @@
 
 -----
 
-**Version:** v0.79.1
+**Version:** v0.80.0
 
-**Last Updated:** 2026-01-13
+**Last Updated:** 2026-01-19
 
 **Compatible With:**
 
@@ -27,6 +27,7 @@ This script automates the initial setup and security hardening of a fresh Debian
 * **Secure User Management**: Creates a new `sudo` user and disables root SSH access. Optionally installs a custom .bashrc for enhanced terminal experience.
 * **SSH Hardening**: Configures a custom SSH port, enforces key-based authentication, and applies security best practices.
 * **Firewall Configuration**: Sets up UFW with secure defaults and customizable rules.
+* **2FA Configuration**: Optionally enhance server security with 2FA, Sets up 2FA and shows QR code to add to any TOTP authenticator.
 * **Intrusion Prevention**: Installs and configures **Fail2Ban** to block malicious IPs.
 * **Kernel Hardening**: Optionally applies a set of recommended `sysctl` security settings to harden the kernel against common network and memory-related threats.
 * **Automated Security Updates**: Enables `unattended-upgrades` for automatic security patches.
@@ -87,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`3d9a348574eb6165fd24048a2b7981f897da9c75db5758e89a92451ed262e830`
+`82c297bc94d295320132fe9630fe085d67bb0f2978bc2c21154810f75337fd73`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo 3d9a348574eb6165fd24048a2b7981f897da9c75db5758e89a92451ed262e830 du_setup.sh | sha256sum --check
+echo 82c297bc94d295320132fe9630fe085d67bb0f2978bc2c21154810f75337fd73 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -133,7 +134,8 @@ sudo -E ./du_setup.sh --quiet
 | **Setup User Creation & Management** | Creates or uses an existing admin user with optional SSH key setup and strong password enforcement. Includes marker file for cleanup exclusion. |
 | **SSH Hardening and Rollback** | Disables root login, configures key-based authentication, sets custom SSH port, and supports rollback of SSH configuration if connectivity fails. |
 | **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific user-defined ports. |
-| **Fail2Ban Setup** | Configures Fail2Ban to monitor SSH and UFW logs, blocking suspicious IPs. |
+| **Fail2Ban/CrowdSec Setup** | Configures Fail2Ban or CrowdSec to monitor SSH and UFW logs, blocking suspicious IPs. |
+| **2FA Setup** | Configures TOTP, shows QR code in the terminal to be scanned with any OTP app and inculdes rollback in case it any issues with setup. |
 | **Auto-Updates Setup** | Enables and configures `unattended-upgrades` for automatic security patches. |
 | **Time Sync Setup** | Ensures `chrony` is active for accurate network time synchronization. |
 | **Kernel and Sysctl Hardening** | Optional improvements to kernel parameters to mitigate common network attacks and improve system hardening. |
