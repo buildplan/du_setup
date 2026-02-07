@@ -11,7 +11,7 @@ name: Codacy Security Scan
 on:
   push:
     branches: [ "main" ]
-    paths: [ "container-monitor.sh", "README.me" ]
+    paths: [ "container-monitor.sh", "README.me", ".github/workflows/codacy.yml" ]
   pull_request:
     # The branches below must be a subset of the branches above
     branches: [ "main" ]
