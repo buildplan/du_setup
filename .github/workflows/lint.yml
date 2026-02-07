@@ -6,10 +6,10 @@ permissions:
 on:
   push:
     branches: [ "main", "test", "dev"]
-    paths: [ "du_setup.sh", "README.me" ]
+    paths: [ "du_setup.sh", "README.me", ".github/workflows/lint.yml" ]
   pull_request:
     branches: [ "main" ]
-    paths: [ "du_setup.sh", "README.me" ]
+    paths: [ "du_setup.sh", "README.me", ".github/workflows/lint.yml" ]
 
 jobs:
   shellcheck:
