@@ -39,7 +39,7 @@ jobs:
         run: |
           find . -name .git -prune -o -type f -exec file --mime {} + | grep -v -e 'charset=utf-8' -e 'charset=us-ascii' -e 'charset=binary' || echo "All files OK"
 
-      # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
+      # Execute Codacy Analysis CLI and generate a SARIF output
       - name: Run Codacy Analysis CLI
         uses: codacy/codacy-analysis-cli-action@30783d03e758713bb5ed7b79292cfb14b9dd9a4a
         with:
@@ -52,11 +52,13 @@ jobs:
           # Adjust severity of non-security issues
           gh-code-scanning-compat: true
           # Force 0 exit code to allow SARIF file generation
-          # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
-      # Upload the SARIF file generated in the previous step
+      - name: Sanitize SARIF for GitHub
+        run: |
+          jq '(.runs |= unique_by(.tool.driver.name))' results.sarif > codacy_cleaned.sarif
+
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: results.sarif
+          sarif_file: codacy_cleaned.sarif
