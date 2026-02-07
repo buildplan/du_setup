@@ -59,6 +59,6 @@ jobs:
           jq '(.runs |= unique_by(.tool.driver.name))' results.sarif > codacy_cleaned.sarif
 
       - name: Upload SARIF results file
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: codacy_cleaned.sarif
