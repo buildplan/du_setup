@@ -6,8 +6,10 @@ permissions:
 on:
   push:
     branches: [ "main", "test", "dev"]
+    paths: [ "du_setup.sh", "README.me" ]
   pull_request:
     branches: [ "main" ]
+    paths: [ "du_setup.sh", "README.me" ]
 
 jobs:
   shellcheck:
