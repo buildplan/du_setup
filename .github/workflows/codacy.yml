@@ -1,21 +1,15 @@
-# This workflow checks out code, performs a Codacy security scan
-# and integrates the results with the
-# GitHub Advanced Security code scanning feature.  For more information on
-# the Codacy security scan action usage and parameters, see
-# https://github.com/codacy/codacy-analysis-cli-action.
-# For more information on Codacy Analysis CLI in general, see
-# https://github.com/codacy/codacy-analysis-cli.
-
 name: Codacy Security Scan
 
 on:
   push:
     branches: [ "main" ]
-    paths: [ "container-monitor.sh", "README.me", ".github/workflows/codacy.yml" ]
+    paths: 
+      - "du_setup.sh"
+      - ".github/workflows/codacy.yml"
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [ "main" ]
-    paths: [ "container-monitor.sh", "README.me" ]
+    paths: 
+      - "du_setup.sh"
   schedule:
     - cron: '44 7 * * 0'
 
@@ -25,33 +19,22 @@ permissions:
 jobs:
   codacy-security-scan:
     permissions:
-      contents: read # for actions/checkout to fetch code
-      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
-      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
+      contents: read 
+      security-events: write 
+      actions: read 
     name: Codacy Security Scan
     runs-on: ubuntu-latest
     steps:
-      # Checkout the repository to the GitHub Actions runner
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Check for non-UTF-8 files
-        run: |
-          find . -name .git -prune -o -type f -exec file --mime {} + | grep -v -e 'charset=utf-8' -e 'charset=us-ascii' -e 'charset=binary' || echo "All files OK"
-
-      # Execute Codacy Analysis CLI and generate a SARIF output
       - name: Run Codacy Analysis CLI
         uses: codacy/codacy-analysis-cli-action@30783d03e758713bb5ed7b79292cfb14b9dd9a4a
         with:
-          # Check https://github.com/codacy/codacy-analysis-cli#project-token to get your project token from your Codacy repository
-          # You can also omit the token and run the tools that support default configurations
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           verbose: true
           output: results.sarif
           format: sarif
-          # Adjust severity of non-security issues
           gh-code-scanning-compat: true
-          # Force 0 exit code to allow SARIF file generation
           max-allowed-issues: 2147483647
 
       - name: Sanitize SARIF for GitHub
