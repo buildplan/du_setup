@@ -2522,16 +2522,15 @@ confirm() {
 
     [[ $VERBOSE == false ]] && return 0
 
+    if [[ -n "$timeout_secs" ]]; then
+        prompt="$prompt (Auto-No in ${timeout_secs}s)"
+    fi
+
     if [[ $default == "y" ]]; then
         prompt="$prompt [Y/n]: "
     else
         prompt="$prompt [y/N]: "
     fi
-
-    if [[ -n "$timeout_secs" ]]; then
-        prompt="$prompt (Auto-No in ${timeout_secs}s)"
-    fi
-    prompt="$prompt: "
 
     while true; do
         if [[ -n "$timeout_secs" ]]; then
