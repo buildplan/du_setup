@@ -3410,22 +3410,22 @@ configure_ssh() {
     fi
 
     # Apply port override
-    if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
-        print_info "Updating SSH port in /etc/ssh/sshd_config for Ubuntu 24.04+..."
-        if ! grep -q "^Port" /etc/ssh/sshd_config; then echo "Port $SSH_PORT" >> /etc/ssh/sshd_config; else sed -i "s/^Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config; fi
-    elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
+    # Apply systemd socket/service port overrides if applicable (older Ubuntu)
+    if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
         printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
-    else
-        print_info "Configuring SSH service to listen on port $SSH_PORT..."
+    elif [[ $ID != "ubuntu" ]] || dpkg --compare-versions "$(lsb_release -rs)" lt "24.04"; then
+        print_info "Configuring SSH service to listen on port $SSH_PORT via systemd..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
         printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
-    # Apply additional hardening
+    # Apply port override and hardening to a single drop-in config file
+    print_info "Applying SSH hardening and port configuration to drop-in file..."
     mkdir -p /etc/ssh/sshd_config.d
     tee /etc/ssh/sshd_config.d/10-hardening.conf > /dev/null <<EOF
+Port $SSH_PORT
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
