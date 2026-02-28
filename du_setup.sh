@@ -2863,7 +2863,7 @@ collect_config() {
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     # --- SSH Port Detection ---
-    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1)
     local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
