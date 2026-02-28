@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.0 | 2026-01-19
+# Version: 0.80.1 | 2026-02-28
 # Changelog:
+# - v0.80.1: Added a safety check to trigger the SSH rollback function if user is disconnected during SSH port change, preventing lockout.
+#            Implement a check for a validated ssh key for the sudo user before revoking root access.
+#            Perform changes to sshd config in a low-lexical-order file (10-hardening.conf) to minimize risk of conflicts with existing provider configs.
 # - v0.80.0: Added 2FA, optionally set 2FA for SSH Login.
 # - v0.79.1: Added CrowdSec collections install to CrowdSec setup.
 # - v0.79.0: Added CrowdSec, now you can choose between fail2ban and CrowdSec for system level firewall.
@@ -99,7 +102,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.0"
+CURRENT_VERSION="0.80.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -258,7 +261,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.0 | 2026-01-19                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.1 | 2026-02-28                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2514,6 +2517,7 @@ EOF
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
+    local timeout_secs="${3:-}" # Optional timeout
     local response
 
     [[ $VERBOSE == false ]] && return 0
@@ -2524,8 +2528,21 @@ confirm() {
         prompt="$prompt [y/N]: "
     fi
 
+    if [[ -n "$timeout_secs" ]]; then
+        prompt="$prompt (Auto-No in ${timeout_secs}s)"
+    fi
+    prompt="$prompt: "
+
     while true; do
-        read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
+        if [[ -n "$timeout_secs" ]]; then
+            if ! read -t "$timeout_secs" -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response; then
+                printf '\n%s\n' "${RED}Timeout reached. Assuming NO.${NC}"
+                return 1
+            fi
+        else
+            read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
+        fi
+
         response=${response,,}
 
         if [[ -z $response ]]; then
@@ -2846,7 +2863,7 @@ collect_config() {
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
     [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
     # --- SSH Port Detection ---
-    PREVIOUS_SSH_PORT=$(ss -tlpn | grep sshd | grep -oP ':\K\d+' | head -n 1)
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1)
     local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
@@ -2930,9 +2947,114 @@ install_packages() {
     log "Package installation completed."
 }
 
+setup_ssh_keys() {
+    local USER_HOME="$1"
+    local SSH_DIR="$USER_HOME/.ssh"
+    local AUTH_KEYS="$SSH_DIR/authorized_keys"
+
+    if confirm "Add SSH public key(s) from your local machine now?"; then
+        while true; do
+            local SSH_PUBLIC_KEY
+            read -rp "$(printf '%s' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+
+            if validate_ssh_key "$SSH_PUBLIC_KEY"; then
+                mkdir -p "$SSH_DIR"
+                chmod 700 "$SSH_DIR"
+                chown "$USERNAME:$USERNAME" "$SSH_DIR"
+                echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
+                awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
+                chmod 600 "$AUTH_KEYS"
+                chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+                print_success "SSH public key added."
+                log "Added SSH public key for '$USERNAME'."
+                LOCAL_KEY_ADDED=true
+            else
+                print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
+            fi
+
+            if ! confirm "Do you have another SSH public key to add?" "n"; then
+                print_info "Finished adding SSH keys."
+                break
+            fi
+        done
+    else
+        print_info "No local SSH key provided. Generating a new key pair for '$USERNAME'."
+        log "User opted not to provide a local SSH key. Generating a new one."
+
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            print_error "ssh-keygen not found. Please install openssh-client."
+            exit 1
+        fi
+        if [[ ! -w /tmp ]]; then
+            print_error "Cannot write to /tmp. Unable to create temporary key file."
+            exit 1
+        fi
+
+        mkdir -p "$SSH_DIR"
+        chmod 700 "$SSH_DIR"
+        chown "$USERNAME:$USERNAME" "$SSH_DIR"
+
+        # Generate user key pair for login
+        if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_user" -N "" -q; then
+            print_error "Failed to generate user SSH key for '$USERNAME'."
+            exit 1
+        fi
+        cat "$SSH_DIR/id_ed25519_user.pub" >> "$AUTH_KEYS"
+        chmod 600 "$AUTH_KEYS"
+        chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+        print_success "SSH key generated and added to authorized_keys."
+        log "Generated and added user SSH key for '$USERNAME'."
+
+        if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_server" -N "" -q; then
+            print_error "Failed to generate server SSH key for '$USERNAME'."
+            exit 1
+        fi
+        print_success "Server SSH key generated (not shared)."
+        log "Generated server SSH key for '$USERNAME'."
+
+        TEMP_KEY_FILE="/tmp/${USERNAME}_ssh_key_$(date +%s)"
+        trap 'rm -f "$TEMP_KEY_FILE" 2>/dev/null' EXIT
+        cp "$SSH_DIR/id_ed25519_user" "$TEMP_KEY_FILE"
+        chmod 600 "$TEMP_KEY_FILE"
+        chown root:root "$TEMP_KEY_FILE"
+
+        printf '\n'
+        printf '%s\n' "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
+        printf '%s\n' "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
+        printf '\n'
+        printf '%s\n' "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
+        printf '%s\n' "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
+        printf '%s\n' "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
+        cat "$TEMP_KEY_FILE"
+        printf '%s\n' "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
+        printf '\n'
+        printf '%s\n' "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
+        printf '====SSH PUBLIC KEY BELOW THIS LINE====\n'
+        cat "$SSH_DIR/id_ed25519_user.pub"
+        printf '====SSH PUBLIC KEY END====\n'
+        printf '\n'
+        printf '%s\n' "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
+        printf '%s\n' "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
+        printf '%s\n' "${CYAN}4. Connect to the server using:${NC}"
+        if [[ "$SERVER_IP_V4" != "unknown" && "$SERVER_IP_V4" != "Unknown" ]]; then
+            printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
+        fi
+        if [[ "$SERVER_IP_V6" != "not available" && "$SERVER_IP_V6" != "Not available" ]]; then
+            printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
+        fi
+        printf '\n'
+        printf '%s\n' "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
+        read -rp "$(printf '%s' "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
+        rm -f "$TEMP_KEY_FILE" 2>/dev/null
+        print_info "Temporary key file deleted."
+        LOCAL_KEY_ADDED=true
+        trap - EXIT
+    fi
+}
+
 setup_user() {
     print_section "User Management"
-    local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2 SSH_PUBLIC_KEY TEMP_KEY_FILE
+    local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2
 
     if [[ -z "$USERNAME" ]]; then
         print_error "USERNAME variable is not set. Cannot proceed with user setup."
@@ -2983,8 +3105,6 @@ setup_user() {
         done
 
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
-        SSH_DIR="$USER_HOME/.ssh"
-        AUTH_KEYS="$SSH_DIR/authorized_keys"
 
         # Check if home directory is writable
         if [[ ! -w "$USER_HOME" ]]; then
@@ -2999,104 +3119,8 @@ setup_user() {
             log "Fixed permissions for $USER_HOME."
         fi
 
-        if confirm "Add SSH public key(s) from your local machine now?"; then
-            while true; do
-                local SSH_PUBLIC_KEY
-                read -rp "$(printf '%s' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
+        setup_ssh_keys "$USER_HOME"
 
-                if validate_ssh_key "$SSH_PUBLIC_KEY"; then
-                    mkdir -p "$SSH_DIR"
-                    chmod 700 "$SSH_DIR"
-                    chown "$USERNAME:$USERNAME" "$SSH_DIR"
-                    echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
-                    awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
-                    chmod 600 "$AUTH_KEYS"
-                    chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
-                    print_success "SSH public key added."
-                    log "Added SSH public key for '$USERNAME'."
-                    LOCAL_KEY_ADDED=true
-                else
-                    print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
-                fi
-
-                if ! confirm "Do you have another SSH public key to add?" "n"; then
-                    print_info "Finished adding SSH keys."
-                    break
-                fi
-            done
-        else
-            print_info "No local SSH key provided. Generating a new key pair for '$USERNAME'."
-            log "User opted not to provide a local SSH key. Generating a new one."
-
-            if ! command -v ssh-keygen >/dev/null 2>&1; then
-                print_error "ssh-keygen not found. Please install openssh-client."
-                exit 1
-            fi
-            if [[ ! -w /tmp ]]; then
-                print_error "Cannot write to /tmp. Unable to create temporary key file."
-                exit 1
-            fi
-
-            mkdir -p "$SSH_DIR"
-            chmod 700 "$SSH_DIR"
-            chown "$USERNAME:$USERNAME" "$SSH_DIR"
-
-            # Generate user key pair for login
-            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_user" -N "" -q; then
-                print_error "Failed to generate user SSH key for '$USERNAME'."
-                exit 1
-            fi
-            cat "$SSH_DIR/id_ed25519_user.pub" >> "$AUTH_KEYS"
-            chmod 600 "$AUTH_KEYS"
-            chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
-            print_success "SSH key generated and added to authorized_keys."
-            log "Generated and added user SSH key for '$USERNAME'."
-
-            if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_server" -N "" -q; then
-                print_error "Failed to generate server SSH key for '$USERNAME'."
-                exit 1
-            fi
-            print_success "Server SSH key generated (not shared)."
-            log "Generated server SSH key for '$USERNAME'."
-
-            TEMP_KEY_FILE="/tmp/${USERNAME}_ssh_key_$(date +%s)"
-            trap 'rm -f "$TEMP_KEY_FILE" 2>/dev/null' EXIT
-            cp "$SSH_DIR/id_ed25519_user" "$TEMP_KEY_FILE"
-            chmod 600 "$TEMP_KEY_FILE"
-            chown root:root "$TEMP_KEY_FILE"
-
-            printf '\n'
-            printf '%s\n' "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
-            printf '%s\n' "${YELLOW}⚠ Anyone with the private key can access your server. Secure it immediately.${NC}"
-            printf '\n'
-            printf '%s\n' "${PURPLE}ℹ ACTION REQUIRED: Save the keys to your local machine:${NC}"
-            printf '%s\n' "${CYAN}1. Save the PRIVATE key to ~/.ssh/${USERNAME}_key:${NC}"
-            printf '%s\n' "${RED} vvvv PRIVATE KEY BELOW THIS LINE vvvv  ${NC}"
-            cat "$TEMP_KEY_FILE"
-            printf '%s\n' "${RED} ^^^^ PRIVATE KEY ABOVE THIS LINE ^^^^^ ${NC}"
-            printf '\n'
-            printf '%s\n' "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
-            printf '====SSH PUBLIC KEY BELOW THIS LINE====\n'
-            cat "$SSH_DIR/id_ed25519_user.pub"
-            printf '====SSH PUBLIC KEY END====\n'
-            printf '\n'
-            printf '%s\n' "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
-            printf '%s\n' "${CYAN}   chmod 600 ~/.ssh/${USERNAME}_key${NC}"
-            printf '%s\n' "${CYAN}4. Connect to the server using:${NC}"
-            if [[ "$SERVER_IP_V4" != "unknown" ]]; then
-                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V4${NC}"
-            fi
-            if [[ "$SERVER_IP_V6" != "not available" ]]; then
-                printf '%s\n' "${CYAN}   ssh -i ~/.ssh/${USERNAME}_key -p $SSH_PORT $USERNAME@$SERVER_IP_V6${NC}"
-            fi
-            printf '\n'
-            printf '%s\n' "${PURPLE}ℹ The private key file ($TEMP_KEY_FILE) will be deleted after this step.${NC}"
-            read -rp "$(printf '%s' "${CYAN}Press Enter after you have saved the keys securely...${NC}")"
-            rm -f "$TEMP_KEY_FILE" 2>/dev/null
-            print_info "Temporary key file deleted."
-            LOCAL_KEY_ADDED=true
-            trap - EXIT
-        fi
         print_success "User '$USERNAME' created."
         echo "$USERNAME" > /root/.du_setup_managed_user
         chmod 600 /root/.du_setup_managed_user
@@ -3113,8 +3137,12 @@ setup_user() {
         AUTH_KEYS="$SSH_DIR/authorized_keys"
         if [[ ! -s "$AUTH_KEYS" ]] || ! grep -qE '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null; then
             print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
-            print_info "You must manually add a public key to $AUTH_KEYS to enable SSH access."
-            log "No valid SSH keys found for existing user '$USERNAME'."
+            print_info "You must add or generate a key now to prevent lockout."
+
+            setup_ssh_keys "$USER_HOME"
+        else
+            LOCAL_KEY_ADDED=true
+            print_success "Valid SSH keys found for existing user '$USERNAME'."
         fi
     fi
 
@@ -3376,28 +3404,28 @@ configure_ssh() {
     # Show options for CURRENT port
     show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
 
-    if ! confirm "Can you successfully log in using your SSH key?"; then
+    if ! confirm "Can you successfully log in using your SSH key?" "n" 300; then
         print_error "SSH key authentication is mandatory to proceed."
         return 1
     fi
 
     # Apply port override
-    if [[ $ID == "ubuntu" ]] && dpkg --compare-versions "$(lsb_release -rs)" ge "24.04"; then
-        print_info "Updating SSH port in /etc/ssh/sshd_config for Ubuntu 24.04+..."
-        if ! grep -q "^Port" /etc/ssh/sshd_config; then echo "Port $SSH_PORT" >> /etc/ssh/sshd_config; else sed -i "s/^Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config; fi
-    elif [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
+    # Apply systemd socket/service port overrides if applicable (older Ubuntu)
+    if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
-        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
-    else
-        print_info "Configuring SSH service to listen on port $SSH_PORT..."
+        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=0.0.0.0:$SSH_PORT" "ListenStream=[::]:$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+    elif [[ $ID != "ubuntu" ]] || dpkg --compare-versions "$(lsb_release -rs)" lt "24.04"; then
+        print_info "Configuring SSH service to listen on port $SSH_PORT via systemd..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
         printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
     fi
 
-    # Apply additional hardening
+    # Apply port override and hardening to a single drop-in config file
+    print_info "Applying SSH hardening and port configuration to drop-in file..."
     mkdir -p /etc/ssh/sshd_config.d
-    tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<EOF
+    tee /etc/ssh/sshd_config.d/10-hardening.conf > /dev/null <<EOF
+Port $SSH_PORT
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -3419,7 +3447,7 @@ EOF
         print_info "This may be due to existing configuration files on the system."
         if ! confirm "Continue despite configuration warnings?"; then
             print_error "Aborting SSH configuration."
-            rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+            rm -f /etc/ssh/sshd_config.d/10-hardening.conf
             rm -f /etc/issue.net
             rm -f /etc/systemd/system/ssh.socket.d/override.conf
             rm -f /etc/systemd/system/ssh.service.d/override.conf
@@ -3458,7 +3486,7 @@ EOF
     local retry_count=0
     local max_retries=3
     while (( retry_count < max_retries )); do
-        if confirm "Was the new SSH connection successful?"; then
+        if confirm "Was the new SSH connection successful?" "n" 300; then
             print_success "SSH hardening confirmed and finalized."
             # Remove temporary UFW rule
             if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
@@ -3523,11 +3551,11 @@ rollback_ssh_changes() {
     fi
 
     # Remove custom SSH configuration
-    if ! rm -f /etc/ssh/sshd_config.d/99-hardening.conf 2>/dev/null; then
-        print_warning "Failed to remove /etc/ssh/sshd_config.d/99-hardening.conf."
-        log "Rollback warning: Failed to remove /etc/ssh/sshd_config.d/99-hardening.conf."
+    if ! rm -f /etc/ssh/sshd_config.d/10-hardening.conf 2>/dev/null; then
+        print_warning "Failed to remove /etc/ssh/sshd_config.d/10-hardening.conf."
+        log "Rollback warning: Failed to remove /etc/ssh/sshd_config.d/10-hardening.conf."
     else
-        log "Removed /etc/ssh/sshd_config.d/99-hardening.conf"
+        log "Removed /etc/ssh/sshd_config.d/10-hardening.conf"
     fi
 
     # Restore original sshd_config
@@ -3545,7 +3573,7 @@ rollback_ssh_changes() {
         log "Rollback: Creating override to enforce port $PREVIOUS_SSH_PORT."
         if [[ "$USE_SOCKET" == true ]]; then
             mkdir -p /etc/systemd/system/ssh.socket.d
-            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=0.0.0.0:$PREVIOUS_SSH_PORT" "ListenStream=[::]:$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
         else
             local service_for_rollback="ssh.service"
             if systemctl list-units --full -all --no-pager | grep -qE "[[:space:]]sshd.service[[:space:]]"; then
@@ -3809,7 +3837,7 @@ configure_2fa() {
 
     show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
-    if confirm "Was the login successful?"; then
+    if confirm "Was the login successful?" "n" 300; then
         print_success "2FA setup verified and active."
         TWO_FACTOR_ENABLED=true
         log "2FA enabled for user $USERNAME."
