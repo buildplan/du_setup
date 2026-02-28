@@ -2514,6 +2514,7 @@ EOF
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
+    local timeout_secs="${3:-}" # Optional timeout
     local response
 
     [[ $VERBOSE == false ]] && return 0
@@ -2524,8 +2525,21 @@ confirm() {
         prompt="$prompt [y/N]: "
     fi
 
+    if [[ -n "$timeout_secs" ]]; then
+        prompt="$prompt (Auto-No in ${timeout_secs}s)"
+    fi
+    prompt="$prompt: "
+
     while true; do
-        read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
+        if [[ -n "$timeout_secs" ]]; then
+            if ! read -t "$timeout_secs" -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response; then
+                printf '\n%s\n' "${RED}Timeout reached. Assuming NO.${NC}"
+                return 1
+            fi
+        else
+            read -rp "$(printf '%s' "${CYAN}$prompt${NC}")" response
+        fi
+
         response=${response,,}
 
         if [[ -z $response ]]; then
@@ -3376,7 +3390,7 @@ configure_ssh() {
     # Show options for CURRENT port
     show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
 
-    if ! confirm "Can you successfully log in using your SSH key?"; then
+    if ! confirm "Can you successfully log in using your SSH key?" "n" 300; then
         print_error "SSH key authentication is mandatory to proceed."
         return 1
     fi
@@ -3458,7 +3472,7 @@ EOF
     local retry_count=0
     local max_retries=3
     while (( retry_count < max_retries )); do
-        if confirm "Was the new SSH connection successful?"; then
+        if confirm "Was the new SSH connection successful?" "n" 300; then
             print_success "SSH hardening confirmed and finalized."
             # Remove temporary UFW rule
             if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
@@ -3809,7 +3823,7 @@ configure_2fa() {
 
     show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
-    if confirm "Was the login successful?"; then
+    if confirm "Was the login successful?" "n" 300; then
         print_success "2FA setup verified and active."
         TWO_FACTOR_ENABLED=true
         log "2FA enabled for user $USERNAME."
