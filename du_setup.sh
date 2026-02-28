@@ -2570,7 +2570,18 @@ validate_hostname() {
 
 validate_port() {
     local port="$1"
-    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]]
+    if [[ -n "$PREVIOUS_SSH_PORT" && "$port" == "$PREVIOUS_SSH_PORT" ]]; then
+        return 0
+    fi
+    if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
+        print_error "Invalid port. Choose a port between 1024-65535."
+        return 1
+    fi
+    if ss -tuln | awk '{print $5}' | grep -oP ':\K\d+' | grep -qx "$port"; then
+        print_error "Port $port is already in use by another service."
+        return 1
+    fi
+    return 0
 }
 
 validate_backup_port() {
@@ -2867,8 +2878,9 @@ collect_config() {
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
         SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
-        if validate_port "$SSH_PORT" || [[ -n "$PREVIOUS_SSH_PORT" && "$SSH_PORT" == "$PREVIOUS_SSH_PORT" ]]; then
-            break; else print_error "Invalid port. Choose a port between 1024-65535."; fi
+        if validate_port "$SSH_PORT"; then
+            break
+        fi
     done
     # --- IP Detection ---
     print_info "Detecting network configuration..."
