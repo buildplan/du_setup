@@ -3414,7 +3414,7 @@ configure_ssh() {
     if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
-        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+        printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=0.0.0.0:$SSH_PORT" "ListenStream=[::]:$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
     elif [[ $ID != "ubuntu" ]] || dpkg --compare-versions "$(lsb_release -rs)" lt "24.04"; then
         print_info "Configuring SSH service to listen on port $SSH_PORT via systemd..."
         mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
@@ -3573,7 +3573,7 @@ rollback_ssh_changes() {
         log "Rollback: Creating override to enforce port $PREVIOUS_SSH_PORT."
         if [[ "$USE_SOCKET" == true ]]; then
             mkdir -p /etc/systemd/system/ssh.socket.d
-            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
+            printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=0.0.0.0:$PREVIOUS_SSH_PORT" "ListenStream=[::]:$PREVIOUS_SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
         else
             local service_for_rollback="ssh.service"
             if systemctl list-units --full -all --no-pager | grep -qE "[[:space:]]sshd.service[[:space:]]"; then
