@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.1 | 2026-02-28
+# Version: 0.80.2 | 2026-02-29
 # Changelog:
+# - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
 # - v0.80.1: Added a safety check to trigger the SSH rollback function if user is disconnected during SSH port change, preventing lockout.
 #            Implement a check for a validated ssh key for the sudo user before revoking root access.
 #            Perform changes to sshd config in a low-lexical-order file (10-hardening.conf) to minimize risk of conflicts with existing provider configs.
@@ -102,7 +103,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.1"
+CURRENT_VERSION="0.80.2"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -261,7 +262,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.1 | 2026-02-28                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.2 | 2026-02-29                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3314,6 +3315,11 @@ show_connection_options() {
         TS_IP=$(tailscale ip -4 2>/dev/null)
     fi
 
+    local NB_IP=""
+    if command -v netbird >/dev/null 2>&1 && netbird status 2>/dev/null | grep -q "Connected"; then
+        NB_IP=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+    fi
+
     printf "\n"
 
     # 1. Public IP (Internet)
@@ -3349,6 +3355,12 @@ show_connection_options() {
     if [[ -n "$TS_IP" ]]; then
         printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Tailscale (VPN):" "$port" "$USERNAME" "$TS_IP"
     fi
+
+    # 5. NetBird IP (VPN)
+    if [[ -n "$NB_IP" ]]; then
+        printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "NetBird (VPN):" "$port" "$USERNAME" "$NB_IP"
+    fi
+
     printf "\n"
 }
 
@@ -4792,6 +4804,111 @@ install_tailscale() {
     log "Tailscale setup completed."
 }
 
+install_netbird() {
+    if ! confirm "Install and configure NetBird VPN (Optional)?"; then
+        print_info "Skipping NetBird installation."
+        log "NetBird installation skipped by user."
+        return 0
+    fi
+    print_section "NetBird VPN Installation and Configuration"
+
+    # Check if NetBird is already installed
+    if command -v netbird >/dev/null 2>&1; then
+        if systemctl is-active --quiet netbird && netbird status 2>/dev/null | grep -q "Connected"; then
+            local NB_IPV4
+            NB_IPV4=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1 || echo "Unknown")
+            print_success "NetBird is active and connected. Node IPv4: $NB_IPV4"
+            echo "$NB_IPV4" > /tmp/netbird_ips.txt
+            return 0
+        else
+            print_warning "NetBird is installed but not active or connected."
+        fi
+    else
+        print_info "Adding NetBird repository and installing package..."
+        if ! apt-get update -qq || ! apt-get install -y -qq ca-certificates curl gnupg; then
+            print_error "Failed to install dependencies for NetBird."
+            return 1
+        fi
+
+        curl -sSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --output /usr/share/keyrings/netbird-archive-keyring.gpg 2>/dev/null
+        echo 'deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main' | tee /etc/apt/sources.list.d/netbird.list >/dev/null
+
+        if ! apt-get update -qq || ! apt-get install -y -qq netbird; then
+            print_error "Failed to install NetBird package."
+            log "NetBird installation failed."
+            return 1
+        fi
+        print_success "NetBird installation complete."
+        log "NetBird installation completed."
+    fi
+
+    if ! confirm "Configure NetBird now?"; then
+        print_info "You can configure NetBird later by running: sudo netbird up"
+        return 0
+    fi
+
+    print_info "Configuring NetBird connection..."
+    printf '%s\n' "${CYAN}Choose NetBird connection method:${NC}"
+    printf '  1) Standard NetBird Cloud (requires setup key from https://app.netbird.io/setup-keys)\n'
+    printf '  2) Custom/Self-hosted NetBird server (requires server URL and setup key)\n'
+
+    local NB_CONNECTION
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" NB_CONNECTION
+    NB_CONNECTION=${NB_CONNECTION:-1}
+
+    local SETUP_KEY MANAGEMENT_URL=""
+    if [[ "$NB_CONNECTION" == "2" ]]; then
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter NetBird management URL (e.g., https://netbird.mydomain.com:33073): ${NC}")" MANAGEMENT_URL
+            if [[ "$MANAGEMENT_URL" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Try again."; fi
+        done
+    fi
+
+    while true; do
+        read -rsp "$(printf '%s' "${CYAN}Enter NetBird setup key: ${NC}")" SETUP_KEY
+        printf '\n'
+        if [[ -n "$SETUP_KEY" ]]; then break; else print_error "Setup key cannot be empty."; fi
+    done
+
+    local NB_COMMAND="netbird up --setup-key $SETUP_KEY"
+    if [[ "$NB_CONNECTION" == "2" ]]; then
+        NB_COMMAND="$NB_COMMAND --management-url $MANAGEMENT_URL"
+    fi
+
+    local NB_COMMAND_SAFE
+    NB_COMMAND_SAFE=$(echo "$NB_COMMAND" | sed -E 's/--setup-key [^[:space:]]+/--setup-key REDACTED/g')
+    print_info "Connecting to NetBird with: $NB_COMMAND_SAFE"
+
+    if ! $NB_COMMAND; then
+        print_warning "Failed to connect to NetBird. Check setup key or network."
+        log "NetBird connection failed: $NB_COMMAND_SAFE"
+    else
+        # Verify connection
+        local RETRIES=3 DELAY=5 CONNECTED=false NB_IPV4=""
+        for ((i=1; i<=RETRIES; i++)); do
+            if netbird status 2>/dev/null | grep -q "Connected"; then
+                NB_IPV4=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1 || echo "Unknown")
+                if [[ -n "$NB_IPV4" && "$NB_IPV4" != "Unknown" ]]; then
+                    CONNECTED=true
+                    break
+                fi
+            fi
+            print_info "Waiting for NetBird to connect ($i/$RETRIES)..."
+            sleep $DELAY
+        done
+
+        if $CONNECTED; then
+            print_success "NetBird connected successfully. Node IPv4 in VPN: $NB_IPV4"
+            log "NetBird connected: $NB_COMMAND_SAFE"
+            echo "${MANAGEMENT_URL:-https://api.netbird.io}" > /tmp/netbird_server
+            echo "$NB_IPV4" > /tmp/netbird_ips.txt
+        else
+            print_warning "NetBird connection attempt finished, but could not verify IP."
+            log "NetBird connection not verified: $NB_COMMAND_SAFE"
+        fi
+    fi
+}
+
 setup_backup() {
     print_section "Backup Configuration (rsync over SSH)"
 
@@ -5656,6 +5773,13 @@ generate_summary() {
             fi
         fi
     fi
+    if command -v netbird >/dev/null 2>&1; then
+        if systemctl is-active --quiet netbird && netbird status 2>/dev/null | grep -q "Connected"; then
+            printf "  %-20s ${GREEN}✓ Active & Connected${NC}\n" "netbird"
+        else
+            printf "  %-20s ${YELLOW}⚠ Installed but not connected${NC}\n" "netbird"
+        fi
+    fi
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
         printf "  %-20s ${GREEN}✓ Performed${NC}\n" "Security Audit"
     else
@@ -5743,6 +5867,26 @@ generate_summary() {
         printf '%s\n' "  Tailscale:          ${RED}Not installed${NC}"
     fi
 
+    # --- NetBird Summary ---
+    if command -v netbird >/dev/null 2>&1; then
+        local NB_CONFIGURED=false
+        if [[ -f /tmp/netbird_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/netbird_ips.txt 2>/dev/null; then
+            NB_CONFIGURED=true
+        fi
+        if $NB_CONFIGURED; then
+            local NB_SERVER NB_IPS
+            NB_SERVER=$(cat /tmp/netbird_server 2>/dev/null || echo "https://api.netbird.io")
+            NB_IPS=$(cat /tmp/netbird_ips.txt 2>/dev/null || echo "Not connected")
+            printf '%s\n' "  NetBird:            ${GREEN}Configured and connected${NC}"
+            printf "    %-17s%s\n" "- Server:" "${NB_SERVER}"
+            printf "    %-17s%s\n" "- NetBird IPv4:" "${NB_IPS}"
+        else
+            printf '%s\n' "  NetBird:            ${YELLOW}Installed but not configured${NC}"
+        fi
+    else
+        printf '%s\n' "  NetBird:            ${RED}Not installed${NC}"
+    fi
+
     # --- Security Audit Summary ---
     if [[ "${AUDIT_RAN:-false}" == true ]]; then
         printf '%s\n' "  Security Audit:     ${GREEN}Performed${NC}"
@@ -5819,6 +5963,15 @@ generate_summary() {
         fi
     fi
 
+    # 3.1. NetBird Access
+    if [[ -f /tmp/netbird_ips.txt ]]; then
+        local NB_SUMMARY_IP
+        NB_SUMMARY_IP=$(cat /tmp/netbird_ips.txt | head -n 1)
+        if [[ -n "$NB_SUMMARY_IP" ]]; then
+            printf "    %-26s ${CYAN}%s${NC}\n" "- NetBird (VPN):" "ssh -p $SSH_PORT $USERNAME@$NB_SUMMARY_IP"
+        fi
+    fi
+
     # 4. IPv6 Access
     if [[ "${SERVER_IP_V6:-}" != "not available" && "${SERVER_IP_V6:-}" != "Not available" ]]; then
         printf "    %-26s ${CYAN}%s${NC}\n" "- IPv6:" "ssh -p $SSH_PORT $USERNAME@$SERVER_IP_V6"
@@ -5841,6 +5994,9 @@ generate_summary() {
     fi
     if command -v tailscale >/dev/null 2>&1; then
         printf "  %-28s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
+    fi
+    if command -v netbird >/dev/null 2>&1; then
+        printf "  %-28s ${CYAN}%s${NC}\n" "- NetBird status:" "netbird status"
     fi
     if [[ -f /root/run_backup.sh ]]; then
         printf '  Remote Backup:\n'
@@ -5971,6 +6127,7 @@ main() {
     configure_kernel_hardening
     install_docker
     install_tailscale
+    install_netbird
     setup_backup
     configure_swap
     configure_security_audit
