@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.2 | 2026-02-29
+# Version: 0.80.2 | 2026-03-01
 # Changelog:
 # - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
 # - v0.80.1: Added a safety check to trigger the SSH rollback function if user is disconnected during SSH port change, preventing lockout.
@@ -262,7 +262,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.2 | 2026-02-29                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.2 | 2026-03-01                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
