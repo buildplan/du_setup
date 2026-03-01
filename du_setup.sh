@@ -1460,14 +1460,16 @@ sysinfo() {
     local ip_addr public_ipv4 public_ipv6
 
     # Try to get public IPv4 first
-    public_ipv4=$(curl -4 -s -m 2 --connect-timeout 1 https://checkip.amazonaws.com 2>/dev/null || \
-                  curl -4 -s -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
-                  curl -4 -s -m 2 --connect-timeout 1 https://api.ipify.org 2>/dev/null)
+    public_ipv4=$(curl -4 -sf -m 2 --connect-timeout 1 https://ip.wiredalter.com 2>/dev/null || \
+                  curl -4 -sf -m 2 --connect-timeout 1 https://checkip.amazonaws.com 2>/dev/null || \
+                  curl -4 -sf -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
+                  curl -4 -sf -m 2 --connect-timeout 1 https://api.ipify.org 2>/dev/null)
     # If no IPv4, try IPv6
     if [ -z "$public_ipv4" ]; then
-        public_ipv6=$(curl -6 -s -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
-                      curl -6 -s -m 2 --connect-timeout 1 https://icanhazip.co 2>/dev/null || \
-                      curl -6 -s -m 2 --connect-timeout 1 https://api64.ipify.org 2>/dev/null)
+        public_ipv6=$(curl -6 -sf -m 2 --connect-timeout 1 https://ip.wiredalter.com 2>/dev/null || \
+                      curl -6 -sf -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
+                      curl -6 -sf -m 2 --connect-timeout 1 https://icanhazip.co 2>/dev/null || \
+                      curl -6 -sf -m 2 --connect-timeout 1 https://api64.ipify.org 2>/dev/null)
     fi
     # Get local/internal IP as fallback
     for iface in eth0 ens3 enp0s3 enp0s6 wlan0 ens33 eno1; do
@@ -1740,9 +1742,9 @@ alias top10='ps aux --sort=-%mem | head -n 11'
 
 # Quick network info.
 # Get public IP with timeouts (3s), fallbacks, and newline formatting
-alias myip='curl -s --connect-timeout 3 ip.me || curl -s --connect-timeout 3 icanhazip.com || curl -s --connect-timeout 3 ifconfig.me; echo'
-alias myip4='curl -4 -s --connect-timeout 3 ip.me || curl -4 -s --connect-timeout 3 icanhazip.com || curl -4 -s --connect-timeout 3 ifconfig.me; echo'
-alias myip6='curl -6 -s --connect-timeout 3 ip.me || curl -6 -s --connect-timeout 3 icanhazip.com || curl -6 -s --connect-timeout 3 ifconfig.me; echo'
+alias myip='curl -sf --connect-timeout 3 ip.me || curl -sf --connect-timeout 3 icanhazip.com || curl -sf --connect-timeout 3 ifconfig.me; echo'
+alias myip4='curl -4 -sf --connect-timeout 3 ip.me || curl -4 -sf --connect-timeout 3 icanhazip.com || curl -4 -sf --connect-timeout 3 ifconfig.me; echo'
+alias myip6='curl -6 -sf --connect-timeout 3 ip.me || curl -6 -sf --connect-timeout 3 icanhazip.com || curl -6 -sf --connect-timeout 3 ifconfig.me; echo'
 # Show local IP address(es), excluding loopback.
 localip() {
     ip -4 addr | awk '/inet/ {print $2}' | cut -d/ -f1 | grep -v '127.0.0.1'
@@ -2893,14 +2895,16 @@ collect_config() {
         LOCAL_IP_V4=""
     fi
     # 2. Get Public IPs with timeouts
-    SERVER_IP_V4=$(curl -4 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
-                   curl -4 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
-                   curl -4 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+    SERVER_IP_V4=$(curl -4 -sf --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -4 -sf --connect-timeout 4 --max-time 5 https://ip.wiredalter.com 2>/dev/null || \
+                   curl -4 -sf --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -4 -sf --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
                    echo "Unknown")
 
-    SERVER_IP_V6=$(curl -6 -s --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
-                   curl -6 -s --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
-                   curl -6 -s --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
+    SERVER_IP_V6=$(curl -6 -sf --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
+                   curl -6 -sf --connect-timeout 4 --max-time 5 https://ip.wiredalter.com 2>/dev/null || \
+                   curl -6 -sf --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
+                   curl -6 -sf --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
                    echo "Not available")
 
     # --- Display Summary ---
