@@ -5966,7 +5966,7 @@ generate_summary() {
     # 3.1. NetBird Access
     if [[ -f /tmp/netbird_ips.txt ]]; then
         local NB_SUMMARY_IP
-        NB_SUMMARY_IP=$(cat /tmp/netbird_ips.txt | head -n 1)
+        NB_SUMMARY_IP=$(head -n 1 /tmp/netbird_ips.txt)
         if [[ -n "$NB_SUMMARY_IP" ]]; then
             printf "    %-26s ${CYAN}%s${NC}\n" "- NetBird (VPN):" "ssh -p $SSH_PORT $USERNAME@$NB_SUMMARY_IP"
         fi
