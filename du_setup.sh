@@ -4654,7 +4654,7 @@ install_tailscale() {
 
     print_info "Configuring Tailscale connection..."
     printf '%s\n' "${CYAN}Choose Tailscale connection method:${NC}"
-    printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin)\n'
+    printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin )\n'
     printf '  2) Custom Tailscale server (requires server URL and pre-auth key)\n'
     read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
     TS_CONNECTION=${TS_CONNECTION:-1}
@@ -4849,7 +4849,7 @@ install_netbird() {
 
     print_info "Configuring NetBird connection..."
     printf '%s\n' "${CYAN}Choose NetBird connection method:${NC}"
-    printf '  1) Standard NetBird Cloud (requires setup key from https://app.netbird.io/setup-keys)\n'
+    printf '  1) Standard NetBird Cloud (requires setup key from https://app.netbird.io/setup-keys )\n'
     printf '  2) Custom/Self-hosted NetBird server (requires server URL and setup key)\n'
 
     local NB_CONNECTION
