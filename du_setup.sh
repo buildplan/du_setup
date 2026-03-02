@@ -3102,6 +3102,7 @@ setup_user() {
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
                 log "Password setting skipped for '$USERNAME'."
+				echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME
                 break
             elif [[ "$PASS1" == "$PASS2" ]]; then
                 if echo "$USERNAME:$PASS1" | chpasswd >/dev/null 2>&1; then
