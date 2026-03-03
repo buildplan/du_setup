@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.2 | 2026-03-01
+# Version: 0.80.3 | 2026-03-03
 # Changelog:
+# - v0.80.3: Warn about password-less sudo and offer to generate password for the user if they choose to do so.
+#            Improve SSH service detection for Debian systems.
 # - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
 # - v0.80.1: Added a safety check to trigger the SSH rollback function if user is disconnected during SSH port change, preventing lockout.
 #            Implement a check for a validated ssh key for the sudo user before revoking root access.
@@ -103,7 +105,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.2"
+CURRENT_VERSION="0.80.3"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -262,7 +264,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.2 | 2026-03-01                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.3 | 2026-03-03                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3101,8 +3103,34 @@ setup_user() {
             printf '\n'
             if [[ -z "$PASS1" && -z "$PASS2" ]]; then
                 print_warning "Password skipped. Relying on SSH key authentication."
-                log "Password setting skipped for '$USERNAME'."
-                break
+                print_warning "Without a password, you will NOT be able to use 'sudo' for administrative tasks."
+                if confirm "Generate a secure random password for you? (Recommended)" "y"; then
+                    local RAND_PASS
+                    RAND_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 24)
+                    if echo "$USERNAME:$RAND_PASS" | chpasswd >/dev/null 2>&1; then
+                        print_success "Generated random password for '$USERNAME'."
+                        printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS:${NC}"
+                        printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
+                        log "Generated random password for '$USERNAME'."
+                        break
+                    else
+                        print_error "Failed to set random password. Please try again."
+                        continue
+                    fi
+                elif confirm "Enable passwordless sudo? (WARNING: Security Risk)" "n"; then
+                    echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/99-$USERNAME-nopasswd"
+                    chmod 0440 "/etc/sudoers.d/99-$USERNAME-nopasswd"
+                    print_warning "Passwordless sudo enabled for '$USERNAME'."
+                    log "Passwordless sudo explicitly enabled for '$USERNAME'."
+                    break
+                elif confirm "Would you like to manually type a password instead?" "y"; then
+                    print_info "Returning to password prompt..."
+                    continue
+                else
+                    print_warning "Proceeding with NO password and NO sudo rights for '$USERNAME'."
+                    log "Password setting skipped, no sudo rights for '$USERNAME'."
+                    break
+                fi
             elif [[ "$PASS1" == "$PASS2" ]]; then
                 if echo "$USERNAME:$PASS1" | chpasswd >/dev/null 2>&1; then
                     print_success "Password for '$USERNAME' updated."
@@ -3381,12 +3409,12 @@ configure_ssh() {
     fi
 
     # Detect SSH service name
-    if [[ $ID == "ubuntu" ]] && systemctl is-active ssh.socket >/dev/null 2>&1; then
+    if systemctl is-active ssh.socket >/dev/null 2>&1 || systemctl is-enabled ssh.socket >/dev/null 2>&1; then
         SSH_SERVICE="ssh.socket"
         print_info "Using SSH socket activation: $SSH_SERVICE"
-    elif [[ $ID == "ubuntu" ]] && { systemctl is-enabled ssh.service >/dev/null 2>&1 || systemctl is-active ssh.service >/dev/null 2>&1; }; then
+    elif systemctl is-active ssh.service >/dev/null 2>&1 || systemctl is-enabled ssh.service >/dev/null 2>&1; then
         SSH_SERVICE="ssh.service"
-    elif systemctl is-enabled sshd.service >/dev/null 2>&1 || systemctl is-active sshd.service >/dev/null 2>&1; then
+    elif systemctl is-active sshd.service >/dev/null 2>&1 || systemctl is-enabled sshd.service >/dev/null 2>&1; then
         SSH_SERVICE="sshd.service"
     else
         print_error "No SSH service or daemon detected."
@@ -3437,15 +3465,15 @@ configure_ssh() {
     fi
 
     # Apply port override
-    # Apply systemd socket/service port overrides if applicable (older Ubuntu)
+    # Apply systemd socket/service port overrides
     if [[ "$SSH_SERVICE" == "ssh.socket" ]]; then
         print_info "Configuring SSH socket to listen on port $SSH_PORT..."
         mkdir -p /etc/systemd/system/ssh.socket.d
         printf '%s\n' "[Socket]" "ListenStream=" "ListenStream=0.0.0.0:$SSH_PORT" "ListenStream=[::]:$SSH_PORT" > /etc/systemd/system/ssh.socket.d/override.conf
-    elif [[ $ID != "ubuntu" ]] || dpkg --compare-versions "$(lsb_release -rs)" lt "24.04"; then
+    else
         print_info "Configuring SSH service to listen on port $SSH_PORT via systemd..."
-        mkdir -p /etc/systemd/system/${SSH_SERVICE}.d
-        printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > /etc/systemd/system/${SSH_SERVICE}.d/override.conf
+        mkdir -p "/etc/systemd/system/${SSH_SERVICE}.d"
+        printf '%s\n' "[Service]" "ExecStart=" "ExecStart=/usr/sbin/sshd -D -p $SSH_PORT" > "/etc/systemd/system/${SSH_SERVICE}.d/override.conf"
     fi
 
     # Apply port override and hardening to a single drop-in config file
