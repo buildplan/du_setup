@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.3 | 2026-03-03
+# Version: 0.80.4 | 2026-03-09
 # Changelog:
+# - v0.80.4: Warn and finish the script if Docker, Tailscale and Netbird fail to install properly. 
 # - v0.80.3: Warn about password-less sudo and offer to generate password for the user if they choose to do so.
 #            Improve SSH service detection for Debian systems.
 # - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
@@ -105,7 +106,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.3"
+CURRENT_VERSION="0.80.4"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -166,6 +167,11 @@ PREVIOUS_SSH_PORT=""
 
 IDS_INSTALLED=""
 TWO_FACTOR_ENABLED="false"
+
+DOCKER_INSTALL_WARN=false
+DOCKER_SANITY_WARN=false
+TAILSCALE_INSTALL_WARN=false
+NETBIRD_INSTALL_WARN=false
 
 # --- --help ---
 show_usage() {
@@ -264,7 +270,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.3 | 2026-03-03                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.4 | 2026-03-09                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4492,8 +4498,9 @@ install_docker() {
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     print_info "Installing Docker packages..."
     if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-        print_error "Failed to install Docker packages."
-        exit 1
+        print_error "Docker package installation failed. Once the script is complete, manually check and install it."
+        DOCKER_INSTALL_WARN=true
+        return 0
     fi
     print_info "Adding '$USERNAME' to docker group..."
     getent group docker >/dev/null || groupadd docker
@@ -4553,8 +4560,9 @@ DAEMONFILE
     if sudo -u "$USERNAME" docker run --rm hello-world 2>&1 | tee -a "$LOG_FILE" | grep -q "Hello from Docker"; then
         print_success "Docker sanity check passed."
     else
-        print_error "Docker hello-world test failed. Please verify installation."
-        exit 1
+        print_error "Docker hello-world test failed. Please verify installation once the script is complete."
+        DOCKER_SANITY_WARN=true
+        return 0
     fi
     print_warning "NOTE: '$USERNAME' must log out and back in to use Docker without sudo."
     log "Docker installation completed."
@@ -4653,6 +4661,7 @@ install_tailscale() {
             print_error "Failed to download the Tailscale installation script."
             print_info "After setup completes, please try installing it manually: curl -fsSL https://tailscale.com/install.sh | sh"
             rm -f /tmp/tailscale_install.sh # Clean up partial download
+            TAILSCALE_INSTALL_WARN=true
             return 0 # Exit the function without exiting the main script
         fi
 
@@ -4661,6 +4670,7 @@ install_tailscale() {
             print_error "Tailscale installation script failed to execute."
             log "Tailscale installation failed."
             rm -f /tmp/tailscale_install.sh # Clean up
+            TAILSCALE_INSTALL_WARN=true
             return 0 # Exit the function gracefully
         fi
 
@@ -4859,7 +4869,8 @@ install_netbird() {
         print_info "Adding NetBird repository and installing package..."
         if ! apt-get update -qq || ! apt-get install -y -qq ca-certificates curl gnupg; then
             print_error "Failed to install dependencies for NetBird."
-            return 1
+            NETBIRD_INSTALL_WARN=true
+            return 0
         fi
 
         curl -sSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --output /usr/share/keyrings/netbird-archive-keyring.gpg 2>/dev/null
@@ -4868,7 +4879,8 @@ install_netbird() {
         if ! apt-get update -qq || ! apt-get install -y -qq netbird; then
             print_error "Failed to install NetBird package."
             log "NetBird installation failed."
-            return 1
+            NETBIRD_INSTALL_WARN=true
+            return 0
         fi
         print_success "NetBird installation complete."
         log "NetBird installation completed."
@@ -6044,6 +6056,18 @@ generate_summary() {
     # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
         print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
+    fi
+    if [[ "${DOCKER_INSTALL_WARN:-false}" == true ]]; then
+        print_warning "ACTION REQUIRED: Docker packages failed to install. Review '$LOG_FILE' and reinstall Docker manually."
+    fi
+    if [[ "${DOCKER_SANITY_WARN:-false}" == true ]]; then
+        print_warning "ACTION REQUIRED: Docker sanity check failed. Run 'docker run --rm hello-world' after reboot to verify."
+    fi
+    if [[ "${TAILSCALE_INSTALL_WARN:-false}" == true ]]; then
+        print_warning "ACTION REQUIRED: Tailscale installation failed. Re-run the official installer and configure Tailscale manually."
+    fi
+    if [[ "${NETBIRD_INSTALL_WARN:-false}" == true ]]; then
+        print_warning "ACTION REQUIRED: NetBird installation failed. Reinstall NetBird and run 'netbird up' manually."
     fi
     if [[ -n "${TS_COMMAND:-}" ]]; then
         print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
