@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.3 | 2026-03-03
+# Version: 0.80.4 | 2026-03-09
 # Changelog:
+# - v0.80.4: Script now warns on Docker sanity check failure instead of exiting.
 # - v0.80.3: Warn about password-less sudo and offer to generate password for the user if they choose to do so.
 #            Improve SSH service detection for Debian systems.
 # - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
@@ -105,7 +106,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.3"
+CURRENT_VERSION="0.80.4"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -264,7 +265,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.3 | 2026-03-03                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.4 | 2026-03-09                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
