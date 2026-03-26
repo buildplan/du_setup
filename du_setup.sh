@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.4 | 2026-03-09
+# Version: 0.80.5 | 2026-03-26
 # Changelog:
+# - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
+#            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
 # - v0.80.4: Warn and finish the script if Docker, Tailscale and Netbird fail to install properly. 
 # - v0.80.3: Warn about password-less sudo and offer to generate password for the user if they choose to do so.
 #            Improve SSH service detection for Debian systems.
@@ -106,7 +108,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.4"
+CURRENT_VERSION="0.80.5"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -270,7 +272,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.4 | 2026-03-09                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.5 | 2026-03-26                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2607,7 +2609,7 @@ validate_ssh_key() {
 
 validate_timezone() {
     local tz="$1"
-    [[ -e "/usr/share/zoneinfo/$tz" ]]
+    [[ -f "/usr/share/zoneinfo/$tz" ]]
 }
 
 validate_ufw_port() {
@@ -2882,9 +2884,9 @@ collect_config() {
         if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
     done
     read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
-    [[ -z "$PRETTY_NAME" ]] && PRETTY_NAME="$SERVER_NAME"
+    PRETTY_NAME="${PRETTY_NAME:-$SERVER_NAME}"
     # --- SSH Port Detection ---
-    PREVIOUS_SSH_PORT=$(ss -tlpn | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1)
+    PREVIOUS_SSH_PORT=$(ss -tlpn | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1 || true)
     local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
     while true; do
         read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
