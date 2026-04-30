@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.5 | 2026-03-26
+# Version: 0.80.6 | 2026-04-30
 # Changelog:
 # - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
 #            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
-# - v0.80.4: Warn and finish the script if Docker, Tailscale and Netbird fail to install properly. 
+# - v0.80.4: Warn and finish the script if Docker, Tailscale and Netbird fail to install properly.
 # - v0.80.3: Warn about password-less sudo and offer to generate password for the user if they choose to do so.
 #            Improve SSH service detection for Debian systems.
 # - v0.80.2: Added an optional install of netbird (https://netbird.io/) as an alternative to tailscale.
