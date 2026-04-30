@@ -3,6 +3,7 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.80.5 | 2026-03-26
 # Changelog:
+# - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
 #            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
 # - v0.80.4: Warn and finish the script if Docker, Tailscale and Netbird fail to install properly. 
@@ -108,7 +109,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.5"
+CURRENT_VERSION="0.80.6"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -272,7 +273,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.5 | 2026-03-26                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.6 | 2026-04-30                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4531,7 +4532,7 @@ install_docker() {
     ],
     "default-address-pools": [
         {
-            "base": "172.80.0.0/16",
+            "base": "172.20.0.0/16",
             "size": 24
         }
     ],
