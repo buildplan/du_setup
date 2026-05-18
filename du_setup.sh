@@ -3,7 +3,7 @@
 # Debian and Ubuntu Server Hardening Interactive Script
 # Version: 0.80.7 | 2026-05-18
 # Changelog:
-# - v0.80.7: Choose between tailscale/netbird or both.
+# - v0.80.7: Choose between tailscale/netbird or both. Improve SSH hardening flow to skip redundant checks if port is unchanged.
 # - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
 #            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
@@ -4695,11 +4695,9 @@ install_tailscale() {
             TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
             print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
+            return 0
         else
             print_warning "Service tailscaled is installed but not active or connected."
-            FAILED_SERVICES+=("tailscaled")
-            TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-""}
         fi
     else
         print_info "Installing Tailscale..."
