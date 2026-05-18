@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.6 | 2026-04-30
+# Version: 0.80.7 | 2026-05-18
 # Changelog:
+# - v0.80.7: Choose between tailscale/netbird or both. Improve SSH hardening flow to skip redundant checks if port is unchanged.
 # - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
 #            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
@@ -273,7 +274,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.6 | 2026-04-30                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.7 | 2026-05-18                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3540,41 +3541,52 @@ EOF
         print_success "Confirmed: Root SSH login is disabled."
     fi
 
-    print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
+    if [[ "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
+        print_warning "CRITICAL: Test new SSH connection on port $SSH_PORT in a SEPARATE terminal NOW!"
+        print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
 
-    # Show options for NEW port
-    show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
+        # Show options for NEW port
+        show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
-    # Retry loop for SSH connection test
-    local retry_count=0
-    local max_retries=3
-    while (( retry_count < max_retries )); do
-        if confirm "Was the new SSH connection successful?" "n" 300; then
-            print_success "SSH hardening confirmed and finalized."
-            # Remove temporary UFW rule
-            if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
+        # Retry loop for SSH connection test
+        local retry_count=0
+        local max_retries=3
+        while (( retry_count < max_retries )); do
+            if confirm "Was the new SSH connection successful?" "n" 300; then
+                print_success "SSH port change and hardening confirmed."
+                # Remove temporary UFW rule
                 print_info "Removing temporary UFW rule for old SSH port $PREVIOUS_SSH_PORT..."
                 ufw delete allow "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
-            fi
-            break
-        else
-            (( retry_count++ ))
-            if (( retry_count < max_retries )); then
-                print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
-                sleep 5
+                break
             else
-                print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
-                rollback_ssh_changes
-                if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
-                    print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
+                (( retry_count++ ))
+                if (( retry_count < max_retries )); then
+                    print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
+                    sleep 5
                 else
-                    print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
+                    print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
+                    rollback_ssh_changes
+                    if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
+                        print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
+                    else
+                        print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
+                    fi
+                    return 1
                 fi
-                return 1
             fi
+        done
+    else
+        print_success "SSH hardening applied successfully on existing port $SSH_PORT."
+        print_warning "Verify you can still connect via SSH key in a separate terminal."
+
+        if confirm "Is your SSH connection still working?" "y" 300; then
+            print_success "SSH hardening confirmed and finalized."
+        else
+            print_error "Connection failed. Initiating rollback..."
+            rollback_ssh_changes
+            return 1
         fi
-    done
+    fi
 
     trap - ERR
     log "SSH hardening completed."
@@ -4635,12 +4647,44 @@ install_dtop_optional() {
     fi
 }
 
-install_tailscale() {
-    if ! confirm "Install and configure Tailscale VPN (Optional)?"; then
-        print_info "Skipping Tailscale installation."
-        log "Tailscale installation skipped by user."
+configure_mesh_vpn() {
+    # Bypass for automated runs
+    if [[ "$VERBOSE" == "false" ]]; then
+        print_info "Quiet mode enabled. Skipping interactive Mesh VPN setup."
+        log "Mesh VPN setup skipped due to quiet mode."
         return 0
     fi
+
+    print_section "Mesh VPN Configuration"
+    printf '%s\n' "${CYAN}Choose a Mesh VPN to install and configure (Optional):${NC}"
+    printf '  1) Tailscale (Recommended, widely used)\n'
+    printf '  2) NetBird (Open-source WireGuard alternative)\n'
+    printf '  3) Both Tailscale and NetBird\n'
+    printf '  4) Skip VPN setup\n'
+
+    local VPN_CHOICE
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-4) [4]: ${NC}")" VPN_CHOICE
+    VPN_CHOICE=${VPN_CHOICE:-4}
+
+    case "$VPN_CHOICE" in
+        1)
+            install_tailscale
+            ;;
+        2)
+            install_netbird
+            ;;
+        3)
+            install_tailscale
+            install_netbird
+            ;;
+        *)
+            print_info "Skipping Mesh VPN installation."
+            log "Mesh VPN installation skipped by user."
+            ;;
+    esac
+}
+
+install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
 
     # Check if Tailscale is already installed and active
@@ -4651,11 +4695,9 @@ install_tailscale() {
             TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
             print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
             echo "$TS_IPS" > /tmp/tailscale_ips.txt
+            return 0
         else
             print_warning "Service tailscaled is installed but not active or connected."
-            FAILED_SERVICES+=("tailscaled")
-            TS_COMMAND=$(grep "Tailscale connection failed: tailscale up" "$LOG_FILE" | tail -1 | sed 's/.*Tailscale connection failed: //')
-            TS_COMMAND=${TS_COMMAND:-""}
         fi
     else
         print_info "Installing Tailscale..."
@@ -4850,11 +4892,6 @@ install_tailscale() {
 }
 
 install_netbird() {
-    if ! confirm "Install and configure NetBird VPN (Optional)?"; then
-        print_info "Skipping NetBird installation."
-        log "NetBird installation skipped by user."
-        return 0
-    fi
     print_section "NetBird VPN Installation and Configuration"
 
     # Check if NetBird is already installed
@@ -6185,8 +6222,7 @@ main() {
     configure_time_sync
     configure_kernel_hardening
     install_docker
-    install_tailscale
-    install_netbird
+    configure_mesh_vpn
     setup_backup
     configure_swap
     configure_security_audit
