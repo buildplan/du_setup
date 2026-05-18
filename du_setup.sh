@@ -3541,41 +3541,52 @@ EOF
         print_success "Confirmed: Root SSH login is disabled."
     fi
 
-    print_warning "CRITICAL: Test new SSH connection in a SEPARATE terminal NOW!"
-    print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
+    if [[ "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
+        print_warning "CRITICAL: Test new SSH connection on port $SSH_PORT in a SEPARATE terminal NOW!"
+        print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
 
-    # Show options for NEW port
-    show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
+        # Show options for NEW port
+        show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
-    # Retry loop for SSH connection test
-    local retry_count=0
-    local max_retries=3
-    while (( retry_count < max_retries )); do
-        if confirm "Was the new SSH connection successful?" "n" 300; then
-            print_success "SSH hardening confirmed and finalized."
-            # Remove temporary UFW rule
-            if [[ -n "$PREVIOUS_SSH_PORT" && "$PREVIOUS_SSH_PORT" != "$SSH_PORT" ]]; then
+        # Retry loop for SSH connection test
+        local retry_count=0
+        local max_retries=3
+        while (( retry_count < max_retries )); do
+            if confirm "Was the new SSH connection successful?" "n" 300; then
+                print_success "SSH port change and hardening confirmed."
+                # Remove temporary UFW rule
                 print_info "Removing temporary UFW rule for old SSH port $PREVIOUS_SSH_PORT..."
                 ufw delete allow "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
-            fi
-            break
-        else
-            (( retry_count++ ))
-            if (( retry_count < max_retries )); then
-                print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
-                sleep 5
+                break
             else
-                print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
-                rollback_ssh_changes
-                if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
-                    print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
+                (( retry_count++ ))
+                if (( retry_count < max_retries )); then
+                    print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
+                    sleep 5
                 else
-                    print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
+                    print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
+                    rollback_ssh_changes
+                    if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
+                        print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
+                    else
+                        print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
+                    fi
+                    return 1
                 fi
-                return 1
             fi
+        done
+    else
+        print_success "SSH hardening applied successfully on existing port $SSH_PORT."
+        print_warning "Verify you can still connect via SSH key in a separate terminal."
+
+        if confirm "Is your SSH connection still working?" "y" 300; then
+            print_success "SSH hardening confirmed and finalized."
+        else
+            print_error "Connection failed. Initiating rollback..."
+            rollback_ssh_changes
+            return 1
         fi
-    done
+    fi
 
     trap - ERR
     log "SSH hardening completed."
