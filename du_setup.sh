@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.6 | 2026-04-30
+# Version: 0.80.7 | 2026-05-18
 # Changelog:
+# - v0.80.7: Choose between tailscale/netbird or both.
 # - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
 #            Resolved unexpected set -e terminations during 'pretty hostname' assignment and SSH port detection.
@@ -273,7 +274,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.6 | 2026-04-30                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.7 | 2026-05-18                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4635,12 +4636,44 @@ install_dtop_optional() {
     fi
 }
 
-install_tailscale() {
-    if ! confirm "Install and configure Tailscale VPN (Optional)?"; then
-        print_info "Skipping Tailscale installation."
-        log "Tailscale installation skipped by user."
+configure_mesh_vpn() {
+    # Bypass for automated runs
+    if [[ "$VERBOSE" == "false" ]]; then
+        print_info "Quiet mode enabled. Skipping interactive Mesh VPN setup."
+        log "Mesh VPN setup skipped due to quiet mode."
         return 0
     fi
+
+    print_section "Mesh VPN Configuration"
+    printf '%s\n' "${CYAN}Choose a Mesh VPN to install and configure (Optional):${NC}"
+    printf '  1) Tailscale (Recommended, widely used)\n'
+    printf '  2) NetBird (Open-source WireGuard alternative)\n'
+    printf '  3) Both Tailscale and NetBird\n'
+    printf '  4) Skip VPN setup\n'
+
+    local VPN_CHOICE
+    read -rp "$(printf '%s' "${CYAN}Enter choice (1-4) [4]: ${NC}")" VPN_CHOICE
+    VPN_CHOICE=${VPN_CHOICE:-4}
+
+    case "$VPN_CHOICE" in
+        1)
+            install_tailscale
+            ;;
+        2)
+            install_netbird
+            ;;
+        3)
+            install_tailscale
+            install_netbird
+            ;;
+        *)
+            print_info "Skipping Mesh VPN installation."
+            log "Mesh VPN installation skipped by user."
+            ;;
+    esac
+}
+
+install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
 
     # Check if Tailscale is already installed and active
@@ -4850,11 +4883,6 @@ install_tailscale() {
 }
 
 install_netbird() {
-    if ! confirm "Install and configure NetBird VPN (Optional)?"; then
-        print_info "Skipping NetBird installation."
-        log "NetBird installation skipped by user."
-        return 0
-    fi
     print_section "NetBird VPN Installation and Configuration"
 
     # Check if NetBird is already installed
@@ -6185,8 +6213,7 @@ main() {
     configure_time_sync
     configure_kernel_hardening
     install_docker
-    install_tailscale
-    install_netbird
+    configure_mesh_vpn
     setup_backup
     configure_swap
     configure_security_audit
