@@ -1,20 +1,20 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
 [![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&labelColor=555&logo=debian&logoColor=white)](https://www.debian.org/releases/)
-[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04-%23E95420?style=flat&labelColor=555&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)  
+[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04%7C26.04-%23E95420?style=flat&labelColor=555&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)  
 [![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
 [![Codacy Security Scan](https://github.com/buildplan/du_setup/actions/workflows/codacy.yml/badge.svg?branch=main)](https://github.com/buildplan/du_setup/actions/workflows/codacy.yml)
 
 -----
 
-**Version:** v0.80.7
+**Version:** v0.80.8
 
-**Last Updated:** 2026-05-18
+**Last Updated:** 2026-06-18
 
 **Compatible With:**
 
 * Debian 12, 13
-* Ubuntu 20.04, 22.04, 24.04 (24.10 & 25.04 experimental)
+* Ubuntu 20.04, 22.04, 24.04, 26.04 (24.10, 25.04 & 25.10 experimental)
 
 ## Overview
 
@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`637bd1835738deb5f525ed98f07566dc55331275139c7778fe79eb2f375c2091`
+`a8d1c0e63c6a37ce103d4520312c9404f3bee713cfdca9aab06086494cb9c09a`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo 637bd1835738deb5f525ed98f07566dc55331275139c7778fe79eb2f375c2091 du_setup.sh | sha256sum --check
+echo a8d1c0e63c6a37ce103d4520312c9404f3bee713cfdca9aab06086494cb9c09a du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -135,7 +135,7 @@ sudo -E ./du_setup.sh --quiet
 | **SSH Hardening and Rollback** | Disables root login, configures key-based authentication, sets custom SSH port, and supports rollback of SSH configuration if connectivity fails. |
 | **Firewall Setup** | Configures UFW to deny incoming traffic by default, allowing specific user-defined ports. |
 | **Fail2Ban/CrowdSec Setup** | Configures Fail2Ban or CrowdSec to monitor SSH and UFW logs, blocking suspicious IPs. |
-| **2FA Setup** | Configures TOTP, shows QR code in the terminal to be scanned with any OTP app and inculdes rollback in case it any issues with setup. |
+| **2FA Setup** | Configures TOTP, shows QR code in the terminal to be scanned with any OTP app and includes rollback in case it any issues with setup. |
 | **Auto-Updates Setup** | Enables and configures `unattended-upgrades` for automatic security patches. |
 | **Time Sync Setup** | Ensures `chrony` is active for accurate network time synchronization. |
 | **Kernel and Sysctl Hardening** | Optional improvements to kernel parameters to mitigate common network attacks and improve system hardening. |
@@ -184,7 +184,7 @@ After rebooting, verify the setup:
 * **Fail2Ban Status**: `sudo fail2ban-client status sshd`
 * **Swap Status**: `sudo swapon --show && free -h`
 * **Hostname**: `hostnamectl`
-* **Kernal Hardening** (if configured):
+* **Kernel Hardening** (if configured):
   * Check the conf file: `sudo cat /etc/sysctl.d/99-du-hardening.conf`
   * Checks the live value of a few key parameters that script sets: `sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope net.ipv4.tcp_syncookies`
 * **Docker Status** (if installed): `docker ps`
@@ -209,7 +209,7 @@ After rebooting, verify the setup:
 ## Tested On
 
 * Debian 12, 13
-* Ubuntu 22.04, 24.04 - 24.10 & 25.04 (experimental)
+* Ubuntu 22.04, 24.04, 26.04 - 24.10, 25.04 & 25.10 (experimental)
 * Cloud providers: DigitalOcean, Oracle Cloud, OVH Cloud, Hetzner, Netcup
 * Backup destinations: Hetzner Storage Box (SSH, port 23), custom SSH servers
 * Tailscale: Standard network, custom self-hosted servers
