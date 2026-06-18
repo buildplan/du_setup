@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.7 | 2026-05-18
+# Version: 0.80.8 | 2026-06-18
 # Changelog:
+# - v0.80.8: Tested and verified compatibility with Ubuntu 26.04 LTS.
+#            Gracefully handle swap creation failures to prevent script aborts, ensuring setup carries on.
 # - v0.80.7: Choose between tailscale/netbird or both. Improve SSH hardening flow to skip redundant checks if port is unchanged.
 # - v0.80.6: Fix Docker config, private Docker network to use a private ip range.
 # - v0.80.5: Fixed a crash in timezone validation by checking for files (-f) instead of directories.
@@ -274,7 +276,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.7 | 2026-05-18                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.80.8 | 2026-06-18                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -2807,10 +2809,10 @@ check_system() {
         source /etc/os-release
         ID=${ID:-unknown} # Populate global ID variable
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
-           [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04)$ ]]; then
+           [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04|24.10|25.04|25.10|26.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
         else
-            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12/13 or Ubuntu 20.04/22.04/24.04 LTS."
+            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12/13 or Ubuntu 20.04-26.04."
             if ! confirm "Continue anyway?"; then exit 1; fi
         fi
     else
@@ -5513,9 +5515,10 @@ configure_swap() {
                 done
 
                 print_info "Disabling existing swap file..."
-                swapoff "$existing_swap" || { print_error "Failed to disable swap file."; exit 1; }
+                swapoff "$existing_swap" || { print_error "Failed to disable swap file. Continuing without resizing."; return 0; }
 
                 print_info "Resizing swap file to $SWAP_SIZE..."
+                rm -f "$existing_swap"
                 # Try fallocate, fallback to dd
                 if ! fallocate -l "$SWAP_SIZE" "$existing_swap" 2>/dev/null; then
                     print_warning "fallocate failed. Using dd (slower)..."
@@ -5525,14 +5528,14 @@ configure_swap() {
                     if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
 
                     if ! dd if=/dev/zero of="$existing_swap" bs=1M count="$REQUIRED_MB" $dd_status; then
-                        print_error "Failed to create swap file with dd."
-                        exit 1
+                        print_error "Failed to create swap file with dd. Swap creation aborted."
+                        return 0
                     fi
                 fi
 
                 if ! chmod 600 "$existing_swap" || ! mkswap "$existing_swap" >/dev/null || ! swapon "$existing_swap"; then
-                    print_error "Failed to configure swap file."
-                    exit 1
+                    print_error "Failed to configure swap file. Swap configuration aborted."
+                    return 0
                 fi
                 print_success "Swap file resized to $SWAP_SIZE."
             else
@@ -5586,15 +5589,15 @@ configure_swap() {
             local dd_status=""
             if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
             if ! dd if=/dev/zero of=/swapfile bs=1M count="$REQUIRED_MB" $dd_status; then
-                print_error "Failed to create swap file."
+                print_error "Failed to create swap file. Swap creation aborted."
                 rm -f /swapfile || true
-                exit 1
+                return 0
             fi
         fi
         if ! chmod 600 /swapfile || ! mkswap /swapfile >/dev/null || ! swapon /swapfile; then
-            print_error "Failed to enable swap file."
+            print_error "Failed to enable swap file. Swap configuration aborted."
             rm -f /swapfile || true
-            exit 1
+            return 0
         fi
         if ! grep -q '^/swapfile ' /etc/fstab; then
             echo '/swapfile none swap sw 0 0' >> /etc/fstab
