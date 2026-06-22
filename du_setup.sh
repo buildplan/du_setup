@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.80.8 | 2026-06-18
+# Version: 0.81.0 | 2026-06-21
 # Changelog:
+# - v0.81.0: Added optional encrypted DNS (DoT) setup using Quad9 and Cloudflare.
+#            Includes automatic installation of systemd-resolved if needed and configuration to block tracking protocols.
 # - v0.80.8: Tested and verified compatibility with Ubuntu 26.04 LTS.
 #            Gracefully handle swap creation failures to prevent script aborts, ensuring setup carries on.
 # - v0.80.7: Choose between tailscale/netbird or both. Improve SSH hardening flow to skip redundant checks if port is unchanged.
@@ -112,7 +114,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.80.6"
+CURRENT_VERSION="0.81.0"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -276,7 +278,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.80.8 | 2026-06-18                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.81.0 | 2026-06-21                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4415,6 +4417,66 @@ configure_auto_updates() {
     log "Automatic updates configuration completed."
 }
 
+configure_secure_dns() {
+    print_section "Secure DNS Configuration (DNS-over-TLS)"
+
+    if ! confirm "Configure secure, encrypted DNS (Quad9 + Cloudflare fallback) and disable local tracking protocols?"; then
+        print_info "Skipping secure DNS configuration."
+        log "Secure DNS skipped by user."
+        return 0
+    fi
+
+    # Ensure systemd-resolved is installed and active
+    if ! command -v systemd-resolve >/dev/null 2>&1 && ! command -v resolvectl >/dev/null 2>&1; then
+         print_warning "systemd-resolved is not installed on this system."
+         if confirm "Install and enable systemd-resolved to handle encrypted DNS?"; then
+             if ! apt-get update -qq || ! apt-get install -y -qq systemd-resolved; then
+                 print_error "Failed to install systemd-resolved."
+                 log "Failed to install systemd-resolved for secure DNS."
+                 return 0
+             fi
+         else
+             print_info "Skipping secure DNS setup."
+             log "Secure DNS skipped (systemd-resolved not installed)."
+             return 0
+         fi
+    fi
+
+    print_info "Backing up current resolved config (if exists)..."
+    if [[ -f /etc/systemd/resolved.conf ]]; then
+        cp /etc/systemd/resolved.conf "$BACKUP_DIR/resolved.conf.backup"
+        log "Backed up /etc/systemd/resolved.conf"
+    fi
+
+    print_info "Applying secure DNS settings (Quad9 with Cloudflare Fallback)..."
+    # Using Domains=~. forces global DNS to override DHCP interface-specific DNS safely
+    mkdir -p /etc/systemd/resolved.conf.d
+    tee /etc/systemd/resolved.conf.d/99-secure-dns.conf > /dev/null <<EOF
+[Resolve]
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
+FallbackDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com 2606:4700:4700::1001#cloudflare-dns.com
+Domains=~.
+DNSSEC=allow-downgrade
+DNSOverTLS=opportunistic
+MulticastDNS=no
+LLMNR=no
+EOF
+
+    print_info "Enabling and restarting systemd-resolved..."
+    systemctl enable --now systemd-resolved
+    systemctl restart systemd-resolved
+
+    # Ensure the OS is actually pointing to systemd-resolved for DNS queries
+    if [[ ! -L /etc/resolv.conf ]] || [[ "$(readlink /etc/resolv.conf)" != "../run/systemd/resolve/stub-resolv.conf" && "$(readlink /etc/resolv.conf)" != "/run/systemd/resolve/stub-resolv.conf" ]]; then
+        print_info "Symlinking /etc/resolv.conf to the secure stub resolver..."
+        rm -f /etc/resolv.conf
+        ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    fi
+
+    print_success "Secure DNS configured and activated."
+    log "Secure DNS (Quad9+Cloudflare DoT) successfully configured with Domains=~. override."
+}
+
 configure_kernel_hardening() {
     print_section "Kernel Parameter Hardening (sysctl)"
     if ! confirm "Apply recommended kernel security settings (sysctl)?"; then
@@ -5886,6 +5948,13 @@ generate_summary() {
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
 
+    # --- DNS Status ---
+    if grep -q "Domains=~." /etc/systemd/resolved.conf 2>/dev/null || grep -q "Domains=~." /etc/systemd/resolved.conf.d/*.conf 2>/dev/null; then
+        printf "  %-20s ${GREEN}Encrypted (Quad9 + Cloudflare)${NC}\n" "DNS Resolution:"
+    else
+        printf "  %-20s ${YELLOW}Standard/Provider Default${NC}\n" "DNS Resolution:"
+    fi
+
     # --- 2FA Status ---
     if [[ "$TWO_FACTOR_ENABLED" == "true" ]]; then
         printf "  %-20s ${GREEN}Enabled (SSH Key + TOTP)${NC}\n" "2FA/MFA:"
@@ -6223,6 +6292,7 @@ main() {
     configure_2fa
     configure_auto_updates
     configure_time_sync
+    configure_secure_dns
     configure_kernel_hardening
     install_docker
     configure_mesh_vpn
