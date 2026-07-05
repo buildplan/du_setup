@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.81.0 | 2026-06-21
+# Version: 0.81.1 | 2026-07-05
 # Changelog:
+# - v0.81.1: Fix IPv6 connectivity issues with Secure DNS. 
+#            Implement Docker-compatible IPv6 SLAAC sysctl configuration and enable native IPv6 networking in Docker daemon.
 # - v0.81.0: Added optional encrypted DNS (DoT) setup using Quad9 and Cloudflare.
 #            Includes automatic installation of systemd-resolved if needed and configuration to block tracking protocols.
 # - v0.80.8: Tested and verified compatibility with Ubuntu 26.04 LTS.
@@ -114,7 +116,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.81.0"
+CURRENT_VERSION="0.81.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -278,7 +280,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.81.0 | 2026-06-21                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.81.1 | 2026-07-05                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4451,7 +4453,7 @@ configure_secure_dns() {
     print_info "Applying secure DNS settings (Quad9 with Cloudflare Fallback)..."
     # Using Domains=~. forces global DNS to override DHCP interface-specific DNS safely
     mkdir -p /etc/systemd/resolved.conf.d
-    tee /etc/systemd/resolved.conf.d/99-secure-dns.conf > /dev/null <<EOF
+    tee /etc/systemd/resolved.conf.d/99-secure-dns.conf > /dev/null <<SECURE_DNS_CONFIG
 [Resolve]
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
 FallbackDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com 2606:4700:4700::1001#cloudflare-dns.com
@@ -4460,7 +4462,7 @@ DNSSEC=allow-downgrade
 DNSOverTLS=opportunistic
 MulticastDNS=no
 LLMNR=no
-EOF
+SECURE_DNS_CONFIG
 
     print_info "Enabling and restarting systemd-resolved..."
     systemctl enable --now systemd-resolved
@@ -4485,10 +4487,24 @@ configure_kernel_hardening() {
         return 0
     fi
 
+    # Detect the main network interface
+    local MAIN_IFACE
+    MAIN_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -1)
+
+    # Fallback to IPv6 default route if IPv4 is missing
+    if [[ -z "$MAIN_IFACE" ]]; then
+        MAIN_IFACE=$(ip -6 route show default | awk '/default/ {print $5}' | head -1)
+    fi
+
+    # Fallback just in case
+    MAIN_IFACE=${MAIN_IFACE:-eth0}
+
+    log "Detected main interface for sysctl SLAAC fix: $MAIN_IFACE"
+
     local KERNEL_HARDENING_CONFIG
     KERNEL_HARDENING_CONFIG=$(mktemp)
     # create the config in a temporary file
-    tee "$KERNEL_HARDENING_CONFIG" > /dev/null <<'EOF'
+    tee "$KERNEL_HARDENING_CONFIG" > /dev/null <<KERNEL_HARDENING_CONFIG
 # Recommended Security Settings managed by du_setup.sh
 # For details, see: https://www.kernel.org/doc/Documentation/sysctl/
 
@@ -4516,6 +4532,12 @@ net.ipv6.conf.default.accept_redirects=0
 net.ipv6.conf.all.accept_source_route=0
 net.ipv6.conf.default.accept_source_route=0
 
+# --- IPv6 SLAAC Fix for Docker ---
+# Allow IPv6 SLAAC to function while Docker forwarding is enabled
+net.ipv6.conf.all.accept_ra=2
+net.ipv6.conf.default.accept_ra=2
+net.ipv6.conf.${MAIN_IFACE}.accept_ra=2
+
 # --- Kernel Security ---
 # Enable ASLR (Address Space Layout Randomization) for better security
 kernel.randomize_va_space=2
@@ -4530,7 +4552,7 @@ kernel.yama.ptrace_scope=1
 # Protect against TOCTOU (Time-of-Check to Time-of-Use) race conditions
 fs.protected_hardlinks=1
 fs.protected_symlinks=1
-EOF
+KERNEL_HARDENING_CONFIG
 
     local SYSCTL_CONF_FILE="/etc/sysctl.d/99-du-hardening.conf"
 
@@ -4601,15 +4623,23 @@ install_docker() {
         "compress": "true"
     },
     "live-restore": true,
+    "ipv6": true,
+    "ip6tables": true,
+    "experimental": true,
     "dns": [
         "9.9.9.9",
         "1.1.1.1",
-        "208.67.222.222"
+        "2620:fe::fe",
+        "2606:4700:4700::1111"
     ],
     "default-address-pools": [
         {
             "base": "172.20.0.0/16",
             "size": 24
+        },
+        {
+            "base": "fd00::/80",
+            "size": 96
         }
     ],
     "userland-proxy": false,
