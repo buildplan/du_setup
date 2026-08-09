@@ -4179,6 +4179,16 @@ ignoreregex =
 EOF
 )
 
+    local NFTABLES_COMMON_LOCAL
+    NFTABLES_COMMON_LOCAL=$(cat <<'EOF'
+[Init]
+# Ensure Fail2Ban silently drops packets
+blocktype = drop
+# Drop all protocols for a banned IP to mimic UFW's blanket deny
+nftables_match =
+EOF
+)
+
     local JAIL_LOCAL_CONFIG
     JAIL_LOCAL_CONFIG=$(cat <<EOF
 [DEFAULT]
@@ -4204,11 +4214,13 @@ EOF
 
     local UFW_FILTER_PATH="/etc/fail2ban/filter.d/ufw-probes.conf"
     local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
+    local NFTABLES_COMMON_PATH="/etc/fail2ban/action.d/nftables-common.local"
 
     # --- Idempotency Check ---
-    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" ]] && \
+    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" && -f "$NFTABLES_COMMON_PATH" ]] && \
        cmp -s "$UFW_FILTER_PATH" <<<"$UFW_PROBES_CONFIG" && \
-       cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG"; then
+       cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG" && \
+       cmp -s "$NFTABLES_COMMON_PATH" <<<"$NFTABLES_COMMON_LOCAL"; then
         print_info "Fail2Ban is already configured correctly. Skipping."
         log "Fail2Ban configuration is already correct."
         return 0
@@ -4216,9 +4228,10 @@ EOF
 
     # --- Apply Configuration ---
     print_info "Applying new Fail2Ban configuration..."
-    mkdir -p /etc/fail2ban/filter.d
+    mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d
     echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
     echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
+    echo "$NFTABLES_COMMON_LOCAL" > "$NFTABLES_COMMON_PATH"
 
     # --- Ensure the log file exists BEFORE restarting the service ---
     if [[ ! -f /var/log/ufw.log ]]; then
