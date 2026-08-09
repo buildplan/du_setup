@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.81.2 | 2026-08-08
+# Version: 0.81.3 | 2026-08-09
 # Changelog:
+# - v0.81.3: Switch Fail2Ban UFW banaction to native nftables (nftables-allports) for maximum performance and modern standard compliance.
+#            Ensure 'nftables' package is installed for minimal server compatibility.
 # - v0.81.2: Switch Fail2Ban UFW banaction to ipset for improved performance when handling large ban lists.
 #            Update UFW SSH rule from allow to limit to provide native brute-force protection.
-# - v0.81.1: Fix IPv6 connectivity issues with Secure DNS. 
+# - v0.81.1: Fix IPv6 connectivity issues with Secure DNS.
 #            Implement Docker-compatible IPv6 SLAAC sysctl configuration and enable native IPv6 networking in Docker daemon.
 # - v0.81.0: Added optional encrypted DNS (DoT) setup using Quad9 and Cloudflare.
 #            Includes automatic installation of systemd-resolved if needed and configuration to block tracking protocols.
@@ -282,7 +284,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.81.2 | 2026-08-08                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.81.3 | 2026-08-09                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -4065,11 +4067,10 @@ configure_firewall() {
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
-    # Install Fail2Ban if not present
-    if ! dpkg -l fail2ban | grep -q ^ii || ! dpkg -l ipset | grep -q ^ii; then
-        print_info "Installing Fail2Ban and ipset..."
-        if ! apt-get install -y -qq fail2ban ipset; then
-            print_error "Failed to install Fail2Ban or ipset."
+    if ! dpkg -l fail2ban | grep -q ^ii || ! dpkg -l nftables | grep -q ^ii; then
+        print_info "Installing Fail2Ban and nftables..."
+        if ! apt-get install -y -qq fail2ban nftables; then
+            print_error "Failed to install Fail2Ban or nftables."
             return 1
         fi
     fi
@@ -4185,7 +4186,7 @@ ignoreip = ${IGNORE_IPS[*]}
 bantime = 1d
 findtime = 10m
 maxretry = 5
-banaction = iptables-ipset-proto6-allports
+banaction = nftables-allports
 
 [sshd]
 enabled = true
@@ -6173,7 +6174,7 @@ generate_summary() {
     # Adjust verification commands based on selection
     if [[ "$IDS_INSTALLED" == "fail2ban" ]]; then
         printf "  %-28s ${CYAN}%s${NC}\n" "- Fail2Ban sshd jail:" "sudo fail2ban-client status sshd"
-        printf "  %-28s ${CYAN}%s${NC}\n" "- IPSet banned IPs:" "sudo ipset list"
+        printf "  %-28s ${CYAN}%s${NC}\n" "- nftables drop counters:" "sudo nft list table inet f2b-table"
     elif [[ "$IDS_INSTALLED" == "crowdsec" ]]; then
         printf "  %-28s ${CYAN}%s${NC}\n" "- CrowdSec status:" "sudo cscli metrics"
         printf "  %-28s ${CYAN}%s${NC}\n" "- CrowdSec bans:" "sudo cscli decisions list"
