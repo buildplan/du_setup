@@ -4179,13 +4179,17 @@ ignoreregex =
 EOF
 )
 
-    local NFTABLES_COMMON_LOCAL
-    NFTABLES_COMMON_LOCAL=$(cat <<'EOF'
+    local NFTABLES_ALLPORTS_LOCAL
+    NFTABLES_ALLPORTS_LOCAL=$(cat <<'EOF'
 [Init]
 # Ensure Fail2Ban silently drops packets
 blocktype = drop
-# Drop all protocols for a banned IP to mimic UFW's blanket deny
+# Drop all protocols for a banned IP (older Fail2Ban versions)
 nftables_match =
+
+[Definition]
+# Drop all protocols for a banned IP (newer Fail2Ban versions)
+rule_match-allports =
 EOF
 )
 
