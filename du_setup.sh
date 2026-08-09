@@ -4214,13 +4214,13 @@ EOF
 
     local UFW_FILTER_PATH="/etc/fail2ban/filter.d/ufw-probes.conf"
     local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
-    local NFTABLES_COMMON_PATH="/etc/fail2ban/action.d/nftables-common.local"
+    local NFTABLES_LOCAL_PATH="/etc/fail2ban/action.d/nftables-allports.local"
 
     # --- Idempotency Check ---
-    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" && -f "$NFTABLES_COMMON_PATH" ]] && \
+    if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" && -f "$NFTABLES_LOCAL_PATH" ]] && \
        cmp -s "$UFW_FILTER_PATH" <<<"$UFW_PROBES_CONFIG" && \
        cmp -s "$JAIL_LOCAL_PATH" <<<"$JAIL_LOCAL_CONFIG" && \
-       cmp -s "$NFTABLES_COMMON_PATH" <<<"$NFTABLES_COMMON_LOCAL"; then
+       cmp -s "$NFTABLES_LOCAL_PATH" <<<"$NFTABLES_ALLPORTS_LOCAL"; then
         print_info "Fail2Ban is already configured correctly. Skipping."
         log "Fail2Ban configuration is already correct."
         return 0
@@ -4229,9 +4229,10 @@ EOF
     # --- Apply Configuration ---
     print_info "Applying new Fail2Ban configuration..."
     mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d
+    rm -f /etc/fail2ban/action.d/nftables-common.local 2>/dev/null || true
     echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
     echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
-    echo "$NFTABLES_COMMON_LOCAL" > "$NFTABLES_COMMON_PATH"
+    echo "$NFTABLES_ALLPORTS_LOCAL" > "$NFTABLES_LOCAL_PATH"
 
     # --- Ensure the log file exists BEFORE restarting the service ---
     if [[ ! -f /var/log/ufw.log ]]; then
