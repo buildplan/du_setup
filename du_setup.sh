@@ -4,6 +4,7 @@
 # Version: 0.81.4 | 2026-08-12
 # Changelog:
 # - v0.81.4: Fix silent script abort on IPv6-only servers, improve local IP detection and IPv6 route fallbacks.
+#            Safely handle immutable/locked /etc/resolv.conf files (common on VPS providers) to prevent aborts during Secure DNS setup.
 # - v0.81.3: Switch Fail2Ban UFW banaction to native nftables (nftables-allports) for maximum performance and modern standard compliance.
 #            Ensure 'nftables' package is installed for minimal server compatibility.
 # - v0.81.2: Switch Fail2Ban UFW banaction to ipset for improved performance when handling large ban lists.
@@ -4498,8 +4499,14 @@ SECURE_DNS_CONFIG
     # Ensure the OS is actually pointing to systemd-resolved for DNS queries
     if [[ ! -L /etc/resolv.conf ]] || [[ "$(readlink /etc/resolv.conf)" != "../run/systemd/resolve/stub-resolv.conf" && "$(readlink /etc/resolv.conf)" != "/run/systemd/resolve/stub-resolv.conf" ]]; then
         print_info "Symlinking /etc/resolv.conf to the secure stub resolver..."
-        rm -f /etc/resolv.conf
-        ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+        # Attempt to unlock the file if it's protected (common on VPS providers)
+        chattr -i /etc/resolv.conf 2>/dev/null || true
+
+        if rm -f /etc/resolv.conf 2>/dev/null; then
+            ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf || true
+        else
+            print_warning "Could not modify /etc/resolv.conf (locked by provider). Secure DNS may not apply locally."
+        fi
     fi
 
     print_success "Secure DNS configured and activated."
