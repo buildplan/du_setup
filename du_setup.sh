@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.81.3 | 2026-08-09
+# Version: 0.81.4 | 2026-08-12
 # Changelog:
+# - v0.81.4: Fix silent script abort on IPv6-only servers, improve local IP detection and IPv6 route fallbacks.
 # - v0.81.3: Switch Fail2Ban UFW banaction to native nftables (nftables-allports) for maximum performance and modern standard compliance.
 #            Ensure 'nftables' package is installed for minimal server compatibility.
 # - v0.81.2: Switch Fail2Ban UFW banaction to ipset for improved performance when handling large ban lists.
@@ -120,7 +121,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.81.1"
+CURRENT_VERSION="0.81.4"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -284,7 +285,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.81.3 | 2026-08-09                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.81.4 | 2026-08-12                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -1485,13 +1486,13 @@ sysinfo() {
     public_ipv4=$(curl -4 -sf -m 2 --connect-timeout 1 https://ip.wiredalter.com 2>/dev/null || \
                   curl -4 -sf -m 2 --connect-timeout 1 https://checkip.amazonaws.com 2>/dev/null || \
                   curl -4 -sf -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
-                  curl -4 -sf -m 2 --connect-timeout 1 https://api.ipify.org 2>/dev/null)
+                  curl -4 -sf -m 2 --connect-timeout 1 https://api.ipify.org 2>/dev/null || true)
     # If no IPv4, try IPv6
     if [ -z "$public_ipv4" ]; then
         public_ipv6=$(curl -6 -sf -m 2 --connect-timeout 1 https://ip.wiredalter.com 2>/dev/null || \
                       curl -6 -sf -m 2 --connect-timeout 1 https://ipconfig.io 2>/dev/null || \
                       curl -6 -sf -m 2 --connect-timeout 1 https://icanhazip.co 2>/dev/null || \
-                      curl -6 -sf -m 2 --connect-timeout 1 https://api64.ipify.org 2>/dev/null)
+                      curl -6 -sf -m 2 --connect-timeout 1 https://api64.ipify.org 2>/dev/null || true)
     fi
     # Get local/internal IP as fallback
     for iface in eth0 ens3 enp0s3 enp0s6 wlan0 ens33 eno1; do
@@ -2912,7 +2913,7 @@ collect_config() {
     # 1. Get the Local LAN IP (Explicit Check)
     # This prevents crashing on IPv6-only servers
     if ip -4 route get 8.8.8.8 >/dev/null 2>&1; then
-        LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 | head -1 | awk '{print $7}')
+        LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 | head -1 | awk -F'src ' '{print $2}' | awk '{print $1}')
     else
         LOCAL_IP_V4=""
     fi
@@ -3365,12 +3366,12 @@ show_connection_options() {
 
     local TS_IP=""
     if command -v tailscale >/dev/null 2>&1 && tailscale ip >/dev/null 2>&1; then
-        TS_IP=$(tailscale ip -4 2>/dev/null)
+        TS_IP=$(tailscale ip -4 2>/dev/null || true)
     fi
 
     local NB_IP=""
     if command -v netbird >/dev/null 2>&1 && netbird status 2>/dev/null | grep -q "Connected"; then
-        NB_IP=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+        NB_IP=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1 || true)
     fi
 
     printf "\n"
@@ -3393,7 +3394,10 @@ show_connection_options() {
     # show the detected local IP from route (Home VM scenario)
     if [[ "$found_internal" == false && "$public_ip" == "Unknown" ]]; then
          local fallback_ip
-         fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk '{print $7}')
+         fallback_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | head -1 | awk -F'src ' '{print $2}' | awk '{print $1}' || true)
+         if [[ -z "$fallback_ip" ]]; then
+             fallback_ip=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | head -1 | awk -F'src ' '{print $2}' | awk '{print $1}' || true)
+         fi
          if [[ -n "$fallback_ip" ]]; then
             printf "  %-20s ${CYAN}ssh -p %s %s@%s${NC}\n" "Local (LAN):" "$port" "$USERNAME" "$fallback_ip"
          fi
