@@ -4900,8 +4900,26 @@ SECURE_DNS_CONFIG
         fi
     fi
 
-    print_success "Secure DNS configured and activated."
-    log "Secure DNS (Quad9+Cloudflare DoT) successfully configured with Domains=~. override."
+    print_info "Verifying name resolution through the new resolvers..."
+    local DNS_OK=false
+    for _ in 1 2 3; do
+        if timeout 10 resolvectl query archlinux.org >/dev/null 2>&1 || timeout 10 getent hosts archlinux.org >/dev/null 2>&1; then
+            DNS_OK=true
+            break
+        fi
+        sleep 2
+    done
+    if [[ "$DNS_OK" == true ]]; then
+        print_success "Secure DNS configured and activated."
+        log "Secure DNS (Quad9+Cloudflare DoT) successfully configured with Domains=~. override."
+    else
+        print_error "Name resolution FAILED with the encrypted resolvers (this network probably blocks external DNS/DoT)."
+        print_warning "Rolling back to the previous DNS configuration so the rest of the setup keeps working."
+        rm -f /etc/systemd/resolved.conf.d/99-secure-dns.conf
+        systemctl restart systemd-resolved
+        resolvectl flush-caches 2>/dev/null || true
+        log "Secure DNS rolled back: resolution failed after applying Quad9/Cloudflare DoT."
+    fi
 }
 
 configure_kernel_hardening() {
@@ -6172,10 +6190,31 @@ configure_time_sync() {
     sleep 2
     if systemctl is-active --quiet chronyd; then
         print_success "Chrony (chronyd) is active for time synchronization."
-        chronyc tracking | tee -a "$LOG_FILE"
     else
         print_error "chronyd service failed to start."
         exit 1
+    fi
+
+    # Lockout guard. systemd-time-wait-sync.service is built around systemd-timesyncd: it only
+    # completes on timesyncd's signal or on a clock *step*. With chronyd it can hang forever even
+    # when the clock is synchronized, and time-sync.target is never reached. On the official Arch
+    # cloud image pacman-init (and therefore sshd) plus cron/timers are ordered after that target,
+    # so the machine would come back from a reboot without SSH. Verified in a VM.
+    if systemctl is-enabled --quiet systemd-time-wait-sync.service 2>/dev/null; then
+        print_warning "systemd-time-wait-sync.service is enabled but only works with systemd-timesyncd."
+        print_info "Disabling it so units ordered after time-sync.target (sshd on cloud images, cron, timers) start at boot."
+        systemctl disable --now systemd-time-wait-sync.service >/dev/null 2>&1 || true
+        log "Disabled systemd-time-wait-sync.service (incompatible with chronyd; blocks sshd at boot on the Arch cloud image)."
+    fi
+
+    print_info "Waiting for chrony to synchronize the clock (up to 30s)..."
+    if chronyc waitsync 6 0 0 5 >/dev/null 2>&1; then
+        print_success "Clock synchronized."
+        chronyc tracking | tee -a "$LOG_FILE"
+    else
+        print_warning "chrony has not synchronized yet (NTP servers unreachable or DNS not working). It will keep trying."
+        chronyc sources 2>&1 | tee -a "$LOG_FILE" || true
+        log "chrony not synchronized at the end of configure_time_sync."
     fi
     log "Time synchronization completed."
 }
@@ -6206,8 +6245,10 @@ configure_security_audit() {
         if lynis audit system --quick >> "$AUDIT_LOG" 2>&1; then
             print_success "Lynis audit completed. Check $AUDIT_LOG for details."
             log "Lynis audit completed successfully."
-            # Extract hardening index
-            HARDENING_INDEX=$(grep -oP "Hardening index : \K\d+" "$AUDIT_LOG" || echo "Unknown")
+            # Extract hardening index (Lynis colours its log output, so prefer the machine-readable report)
+            HARDENING_INDEX=$(grep -oP '^hardening_index=\K\d+' /var/log/lynis-report.dat 2>/dev/null \
+                || sed 's/\x1b\[[0-9;]*m//g' "$AUDIT_LOG" | grep -oP "Hardening index\s*:\s*\K\d+" \
+                || echo "Unknown")
             #Extract top suggestions
             grep "Suggestion:" /var/log/lynis-report.dat | head -n 5 > /tmp/lynis_suggestions.txt 2>/dev/null || true
             # Append Lynis system log for persistence
@@ -6225,14 +6266,19 @@ configure_security_audit() {
             log "arch-audit installation failed."
         else
             print_info "Running arch-audit..."
-            {
-                printf '\n=== arch-audit (%s) ===\n' "$(date)"
-                arch-audit
-            } >> "$AUDIT_LOG" 2>&1 || true
-            DEBSECAN_VULNS=$(arch-audit 2>/dev/null | grep -c 'CVE-' || true)
-            DEBSECAN_VULNS=${DEBSECAN_VULNS:-0}
-            print_success "arch-audit completed. Found $DEBSECAN_VULNS affected package(s)."
-            log "arch-audit completed with $DEBSECAN_VULNS affected packages."
+            local AUDIT_OUT
+            if AUDIT_OUT=$(arch-audit 2>&1); then
+                printf '\n=== arch-audit (%s) ===\n%s\n' "$(date)" "$AUDIT_OUT" >> "$AUDIT_LOG"
+                DEBSECAN_VULNS=$(grep -c 'CVE-' <<<"$AUDIT_OUT" || true)
+                DEBSECAN_VULNS=${DEBSECAN_VULNS:-0}
+                print_success "arch-audit completed. Found $DEBSECAN_VULNS affected package(s)."
+                log "arch-audit completed with $DEBSECAN_VULNS affected packages."
+            else
+                printf '\n=== arch-audit FAILED (%s) ===\n%s\n' "$(date)" "$AUDIT_OUT" >> "$AUDIT_LOG"
+                DEBSECAN_VULNS="Unknown (arch-audit failed)"
+                print_warning "arch-audit failed (it needs access to security.archlinux.org). See $AUDIT_LOG."
+                log "arch-audit failed."
+            fi
         fi
     else
         print_info "arch-audit skipped."

@@ -64,6 +64,17 @@ if you do not trust the AUR.
 block in `95-2fa-*.conf` would swallow the global directives in Arch's `99-archlinux.conf`
 (`UsePAM yes`) and `sshd -t` would fail. The port therefore names the file `zz-2fa-<user>.conf`.
 
+**chronyd and `systemd-time-wait-sync`.** The official Arch cloud image enables
+`systemd-time-wait-sync.service`, and its `pacman-init.service` is ordered after `time-sync.target`
+and before `sshd.service`. `systemd-time-wait-sync` only completes on systemd-timesyncd's signal or
+on a clock step, so once chronyd replaces timesyncd it can hang forever even with a synchronized
+clock, and sshd, cron and all timers never start after a reboot (verified in a VM: SSH lockout).
+The port therefore disables `systemd-time-wait-sync.service` when it enables chronyd.
+
+**Secure DNS is verified.** After switching systemd-resolved to Quad9/Cloudflare over TLS the port
+checks that names still resolve. On networks that block external resolvers (ports 53/853) it rolls
+the change back instead of leaving pacman, Docker and Lynis without DNS for the rest of the run.
+
 **Automatic updates.** Arch has no security-only channel and expects you to read
 <https://archlinux.org/news/> before upgrading. The default timer only reports pending updates
 and known vulnerabilities. Enable full unattended upgrades only on disposable machines.
@@ -80,9 +91,23 @@ AUR: `crowdsec`, `crowdsec-firewall-bouncer-iptables`, `netbird`.
 
 ## Testing status
 
-The port was produced by an auditable transformation script (function replacements and
-exact-string substitutions on `du_setup.sh`), passes `bash -n` and ShellCheck 0.11 with zero
-warnings, and its new regexes and helpers were unit-tested in isolation. It has **not yet
-been run end-to-end on a fresh Arch server**; test it in a VM before using it in production,
-exactly as upstream recommends. The transformation script is kept in `tools/port_to_arch.py`
-(`python3 tools/port_to_arch.py du_setup.sh arch_setup.sh`).
+The port is produced by an auditable transformation script, `tools/port_to_arch.py`
+(`python3 tools/port_to_arch.py du_setup.sh arch_setup.sh`): whole-function replacements and
+exact-string substitutions on `du_setup.sh`, each of which must match exactly once. The result
+passes `bash -n` and ShellCheck 0.11 with zero warnings.
+
+It was run end-to-end on the official **Arch Linux cloud image** (`Arch-Linux-x86_64-cloudimg`,
+kernel 7.2.x) in a QEMU/KVM VM, driven by `expect` over SSH, with these choices: new admin user,
+SSH moved to port 2222 with a real key-login test from the host, UFW (HTTP/HTTPS), Fail2Ban,
+2FA skipped, check-only update timer, chronyd, secure DNS, sysctl hardening, Docker (hello-world
+passed), no mesh VPN, no remote backup, swap, Lynis + arch-audit, no provider cleanup. Verified:
+
+- the kernel-upgrade guard fired (7.2.2 to 7.2.3), rebooted, and the re-run continued;
+- a second full run on the already-hardened box as the admin user via sudo (idempotency);
+- after a final reboot SSH was back unattended on the new port with sshd, ufw, fail2ban, chronyd,
+  cronie, docker and the update timer active, root login denied and the old port closed.
+
+Two lockout-class bugs were found and fixed during that test (see the `systemd-time-wait-sync`
+and secure-DNS notes above). CrowdSec, NetBird, 2FA and the rsync backup were **not** exercised
+in the VM (they need AUR builds, auth keys, a TOTP app or a remote host); their code paths were
+only reviewed and linted. Test in a VM before production use, as upstream recommends.
