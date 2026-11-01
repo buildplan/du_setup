@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`efc6de7602e528cffdb4a3c461d474db9064e7e575e685fbbe8dd38e75795652`
+`92a4e3607a04d25e6d46764072af141554987d6723c2585e9db71b91d9e64bb0`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo efc6de7602e528cffdb4a3c461d474db9064e7e575e685fbbe8dd38e75795652 du_setup.sh | sha256sum --check
+echo 92a4e3607a04d25e6d46764072af141554987d6723c2585e9db71b91d9e64bb0 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -131,7 +131,7 @@ sudo -E ./du_setup.sh --config ./du_setup.env --quiet
 
 * Only `DU_*` variables are accepted by `--config` (parsed safely line-by-line without `eval`/`source`).
 * Pre-flight validation verifies `DU_USERNAME` and `DU_SSH_PUBLIC_KEY` before modifying packages or SSH settings to prevent accidental lockouts.
-* If `DU_USER_PASSWORD` is left empty (and `DU_PASSWORDLESS_SUDO="false"`), a 24-character random sudo password is generated and saved with `0600` permissions (owned by `<username>:<username>`) at `/home/<username>/.du_initial_sudo_password`. On SSH login, a self-clearing reminder prompts `<username>` to save it (or change it with `passwd`) and delete it immediately via `shred -u ~/.du_initial_sudo_password`.
+* If `DU_USER_PASSWORD` is left empty (and `DU_PASSWORDLESS_SUDO="false"`), a 24-character random sudo password is generated and saved with `0600` permissions (owned by `<username>` and their primary group) at `/home/<username>/.du_initial_sudo_password`. On SSH login, a self-clearing reminder prompts `<username>` to save it (or change it with `passwd`) and delete it immediately via `shred -u ~/.du_initial_sudo_password`.
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >
@@ -242,7 +242,7 @@ After rebooting, verify the setup:
 * For security audits, review `/var/log/setup_harden_security_audit_*.log` for Lynis and debsecan recommendations.
 * **Docker + UFW Firewall Protection**:
   * By default on Linux, publishing Docker container ports with `-p 8080:8080` manipulates `iptables`/`ip6tables` directly and **bypasses UFW** incoming rules. Always bind internal services to localhost (`docker run -p 127.0.0.1:8080:8080 ...`) behind a reverse proxy whenever possible.
-  * When installing Docker, `du_setup.sh` offers optional `DOCKER-USER` firewall hardening in `/etc/ufw/after.rules` and `/etc/ufw/after6.rules` (`DU_DOCKER_UFW_HARDEN="true"`). When enabled, external internet traffic to published container ports is blocked by default unless explicitly permitted via UFW route rules:
+  * When installing Docker, `du_setup.sh` offers optional `DOCKER-USER` firewall hardening in `/etc/ufw/after.rules` and `/etc/ufw/after6.rules` (`DU_DOCKER_UFW_HARDEN="true"`). When enabled, external internet traffic to published container ports is blocked by default unless explicitly permitted via UFW route rules matching the **internal container destination port** (e.g., `8080` for `-p 80:8080` or `-p 8080:8080`):
 
     ```bash
     sudo ufw route allow proto tcp from any to any port 8080
@@ -273,9 +273,13 @@ If locked out, use your provider’s out-of-band console:
     ls "$LATEST_BACKUP"/pam_sshd.backup_* >/dev/null 2>&1 && sudo cp "$(ls -t "$LATEST_BACKUP"/pam_sshd.backup_* | head -1)" /etc/pam.d/sshd
     ```
 
-3. **Restart SSH**:
+3. **Restore UFW Allowance & Restart SSH**:
 
     ```bash
+    # Reopen the restored SSH port(s) in UFW (and verify your provider firewall permits it):
+    sudo /usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | while read -r port; do
+        sudo ufw allow "$port/tcp"
+    done
     sudo systemctl restart ssh.socket 2>/dev/null || true
     sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
     ```
