@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`6fb92177574bde58f953f6af8d5064eae120d5970086022c3014cdae5711cfd3`
+`efc6de7602e528cffdb4a3c461d474db9064e7e575e685fbbe8dd38e75795652`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo 6fb92177574bde58f953f6af8d5064eae120d5970086022c3014cdae5711cfd3 du_setup.sh | sha256sum --check
+echo efc6de7602e528cffdb4a3c461d474db9064e7e575e685fbbe8dd38e75795652 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -268,9 +268,9 @@ If locked out, use your provider’s out-of-band console:
 
     ```bash
     LATEST_BACKUP=$(ls -td /root/setup_harden_backup_* | head -1)
-    sudo cp "$LATEST_BACKUP"/sshd_config.backup_* /etc/ssh/sshd_config
+    sudo cp "$(ls -t "$LATEST_BACKUP"/sshd_config.backup_* | head -1)" /etc/ssh/sshd_config
     # If 2FA was enabled, also restore PAM:
-    ls "$LATEST_BACKUP"/pam_sshd.backup_* >/dev/null 2>&1 && sudo cp "$LATEST_BACKUP"/pam_sshd.backup_* /etc/pam.d/sshd
+    ls "$LATEST_BACKUP"/pam_sshd.backup_* >/dev/null 2>&1 && sudo cp "$(ls -t "$LATEST_BACKUP"/pam_sshd.backup_* | head -1)" /etc/pam.d/sshd
     ```
 
 3. **Restart SSH**:
