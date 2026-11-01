@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.81.4 | 2026-08-12
+# Version: 0.82.0 | 2026-11-01
 # Changelog:
+# - v0.82.0: Add safe unattended automation (--config <file> + --quiet) with strict DU_* parser and pre-flight validation.
+#            Fix SIGPIPE crash in random password generation under pipefail, ERR/EXIT trap clobbering, and Tailscale key log leak.
+#            Prevent SSH/2FA/SUDO_USER lockouts, harden Fail2Ban ufw-probes against spoofed UDP DoS, and add Docker + UFW DOCKER-USER protection.
 # - v0.81.4: Fix silent script abort on IPv6-only servers, improve local IP detection and IPv6 route fallbacks.
 #            Safely handle immutable/locked /etc/resolv.conf files (common on VPS providers) to prevent aborts during Secure DNS setup.
 # - v0.81.3: Switch Fail2Ban UFW banaction to native nftables (nftables-allports) for maximum performance and modern standard compliance.
@@ -100,10 +103,11 @@
 # Usage:
 #   Download: wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh
 #   Make it executable: chmod +x du_setup.sh
-#   Run it: sudo -E ./du_setup.sh [--quiet]
+#   Run it: sudo -E ./du_setup.sh [--config <file>] [--quiet]
 #
 # Options:
-#   --quiet: Suppress non-critical output for automation. (Not recommended always best to review all the options)
+#   --config <file>: Load DU_* configuration variables for automated or pre-filled runs.
+#   --quiet: Suppress interactive prompts using DU_* config/env values and safe defaults.
 #
 # Notes:
 # - The script creates a log file in /var/log/du_setup_*.log.
@@ -122,7 +126,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.81.4"
+CURRENT_VERSION="0.82.0"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -158,14 +162,28 @@ REPORT_FILE="/var/log/du_setup_report_$(date +%Y%m%d_%H%M%S).txt"
 VERBOSE=true
 BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
 ORIGINAL_ARGS="$*"
+CONFIG_FILE=""
+RUN_TMP_DIR=""
+DTOP_TMP_INSTALLER=""
 
 CLEANUP_PREVIEW=false # If true, show what would be cleaned up without making changes
 CLEANUP_ONLY=false # If true, only perform cleanup tasks
 SKIP_CLEANUP=false # If true, skip cleanup tasks
 
+USERNAME=""
+USER_EXISTS=false
+SERVER_NAME=""
+PRETTY_NAME=""
+OS_PRETTY_NAME="Unknown"
+SSH_PORT=""
+TIMEZONE="Etc/UTC"
+GENERATED_SUDO_PASS_FILE=""
+SUDO_PASSWORD_STATUS=""
+
 DETECTED_VIRT_TYPE=""
 DETECTED_MANUFACTURER=""
 DETECTED_PRODUCT=""
+DETECTED_BIOS_VENDOR="unknown"
 IS_CONTAINER=false
 ENVIRONMENT_TYPE="unknown"
 DETECTED_PROVIDER_NAME=""
@@ -186,8 +204,16 @@ TWO_FACTOR_ENABLED="false"
 
 DOCKER_INSTALL_WARN=false
 DOCKER_SANITY_WARN=false
+DOCKER_UFW_HARDENED=false
 TAILSCALE_INSTALL_WARN=false
 NETBIRD_INSTALL_WARN=false
+
+AUDIT_RAN=false
+AUDIT_LOG=""
+HARDENING_INDEX=""
+DEBSECAN_VULNS="Not run"
+KEY_COPY_CHOICE="2"
+TS_COMMAND=""
 
 # --- --help ---
 show_usage() {
@@ -206,8 +232,9 @@ show_usage() {
     printf "  %-22s %s\n" "--cleanup-only" "Run only the provider cleanup function (for existing servers)."
 
     printf "\n%sModifiers:%s\n" "$BOLD" "$NC"
+    printf "  %-22s %s\n" "--config <file>" "Load DU_* automation variables from an environment file."
     printf "  %-22s %s\n" "--skip-cleanup" "Skip provider cleanup entirely during a full setup run."
-    printf "  %-22s %s\n" "--quiet" "Suppress verbose output (intended for automation)."
+    printf "  %-22s %s\n" "--quiet" "Suppress interactive prompts using --config / DU_* env vars and safe defaults."
     printf "  %-22s %s\n" "-h, --help" "Display this help message and exit."
 
     printf "\n%sUsage Examples:%s\n" "$BOLD" "$NC"
@@ -217,31 +244,106 @@ show_usage() {
     printf "  %ssudo -E ./%s --cleanup-preview%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
     printf "  # Run a full setup but skip the provider cleanup step\n"
     printf "  %ssudo -E ./%s --skip-cleanup%s\n\n" "$YELLOW" "$(basename "$0")" "$NC"
-    printf "  # Run in quiet mode for automation\n"
-    printf "  %ssudo -E ./%s --quiet%s\n" "$YELLOW" "$(basename "$0")" "$NC"
+    printf "  # Run unattended in quiet mode with an environment file\n"
+    printf "  %ssudo -E ./%s --config ./du_setup.env --quiet%s\n" "$YELLOW" "$(basename "$0")" "$NC"
 
     printf "\n%sImportant Notes:%s\n" "$BOLD" "$NC"
     printf "  - The -E flag preserves your environment variables (recommended)\n"
+    printf "  - See %sdu_setup.env.example%s for all supported DU_* automation variables\n" "$BOLD" "$NC"
     printf "  - Logs are saved to %s/var/log/du_setup_*.log%s\n" "$BOLD" "$NC"
     printf "  - Backups of modified configs are in %s/root/setup_harden_backup_*%s\n" "$BOLD" "$NC"
     printf "  - For full documentation, see the project repository:\n"
-    printf "    %s%s%s\n" "$CYAN" "https://github.com/buildplan/du-setup" "$NC"
+    printf "    %s%s%s\n" "$CYAN" "https://github.com/buildplan/du_setup" "$NC"
 
     printf "\n"
     exit 0
+}
+
+# --- SAFE ENVIRONMENT CONFIG LOADER ---
+load_config_file() {
+    local cfg_file="$1"
+    if [[ ! -f "$cfg_file" || ! -r "$cfg_file" ]]; then
+        printf '%s\n' "${RED}✗ Configuration file not found or not readable: $cfg_file${NC}" >&2
+        exit 1
+    fi
+
+    local line key val
+    local line_num=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        (( line_num += 1 ))
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        if [[ -z "$line" || "$line" == \#* ]]; then
+            continue
+        fi
+        if [[ "$line" == export[[:space:]]* ]]; then
+            line="${line#export}"
+            line="${line#"${line%%[![:space:]]*}"}"
+        fi
+        if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            printf '%s\n' "${RED}✗ Invalid syntax in $cfg_file on line $line_num (expected DU_VAR=value).${NC}" >&2
+            exit 1
+        fi
+        key="${BASH_REMATCH[1]}"
+        val="${BASH_REMATCH[2]}"
+        if [[ ! "$key" =~ ^DU_[A-Z0-9_]+$ ]]; then
+            printf '%s\n' "${RED}✗ Unsupported variable '$key' in $cfg_file (line $line_num). Only DU_* variables are permitted.${NC}" >&2
+            exit 1
+        fi
+        if [[ "$val" =~ ^\"([^\"]*)\"[[:space:]]*(#.*)?$ ]]; then
+            val="${BASH_REMATCH[1]}"
+        elif [[ "$val" =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then
+            val="${BASH_REMATCH[1]}"
+        else
+            if [[ "$val" =~ ^([^#]*[^[:space:]#])[[:space:]]+#.*$ ]]; then
+                val="${BASH_REMATCH[1]}"
+            elif [[ "$val" =~ ^[[:space:]]*#.*$ ]]; then
+                val=""
+            fi
+            val="${val%"${val##*[![:space:]]}"}"
+        fi
+        # Preserve explicit CLI/environment overrides if already set
+        if ! declare -p "$key" >/dev/null 2>&1; then
+            printf -v "$key" '%s' "$val"
+            export "${key?}"
+        fi
+    done < "$cfg_file"
 }
 
 # --- PARSE ARGUMENTS ---
 while [[ $# -gt 0 ]]; do
     case $1 in
         --quiet) VERBOSE=false; shift ;;
+        --config)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                printf '%s\n' "${RED}✗ Error: --config requires a file path argument.${NC}" >&2
+                exit 1
+            fi
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --config=*)
+            CONFIG_FILE="${1#*=}"
+            if [[ -z "$CONFIG_FILE" ]]; then
+                printf '%s\n' "${RED}✗ Error: --config requires a non-empty file path.${NC}" >&2
+                exit 1
+            fi
+            shift
+            ;;
         --cleanup-preview) CLEANUP_PREVIEW=true; shift ;;
         --cleanup-only) CLEANUP_ONLY=true; shift ;;
         --skip-cleanup) SKIP_CLEANUP=true; shift ;;
         -h|--help) show_usage ;;
-        *) shift ;;
+        *)
+            printf '%s\n' "${RED}✗ Error: Unknown option '$1'. Run '$(basename "$0") --help' for usage.${NC}" >&2
+            exit 1
+            ;;
     esac
 done
+
+if [[ -n "$CONFIG_FILE" ]]; then
+    load_config_file "$CONFIG_FILE"
+fi
 
 # --- Root Check ---
 if [[ $EUID -ne 0 ]]; then
@@ -286,7 +388,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.81.4 | 2026-08-12                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.82.0 | 2026-11-01                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -773,6 +875,12 @@ cleanup_provider_packages() {
         if execute_check id "$user" &>/dev/null && \
            [[ "$user" != "$USERNAME" ]] && \
            [[ "$user" != "$MANAGED_USER" ]]; then
+            if [[ -n "${SUDO_USER:-}" && "$user" == "$SUDO_USER" && "$CLEANUP_PREVIEW" == "false" ]]; then
+                print_warning "Default provisioning user '$user' is running this active sudo session — skipping mid-run removal to avoid disconnecting you."
+                print_info "After rebooting and logging in as '$USERNAME', remove '$user' safely with: sudo ./$(basename "$0") --cleanup-only"
+                log "Skipped active SUDO_USER '$user' during provider cleanup to prevent session disconnect."
+                continue
+            fi
             PROVIDER_USERS+=("$user")
         fi
     done
@@ -1030,7 +1138,7 @@ cleanup_provider_packages() {
                     fi
                     log "[PREVIEW] Would remove provider user: $user"
                 else
-                    if [[ $proc_count -gt 1 ]]; then
+                    if [[ $proc_count -gt 0 ]]; then
                         print_info "Terminating processes owned by $user..."
 
                         execute_command pkill -u "$user" 2>/dev/null || true
@@ -1113,11 +1221,10 @@ configure_custom_bashrc() {
     local USERNAME="$2"
     local BASHRC_PATH="$USER_HOME/.bashrc"
     local temp_source_bashrc=""
-    local keep_temp_source_on_error=false
 
     trap 'rm -f "$temp_source_bashrc" 2>/dev/null' INT TERM
 
-    if ! confirm "Replace default .bashrc for '$USERNAME' with a custom one?" "n"; then
+    if ! confirm_with_env "DU_INSTALL_CUSTOM_BASHRC" "Replace default .bashrc for '$USERNAME' with a custom one?" "n"; then
         print_info "Skipping custom .bashrc configuration."
         log "Skipped custom .bashrc for $USERNAME."
         return 0
@@ -1125,7 +1232,7 @@ configure_custom_bashrc() {
 
     print_info "Preparing custom .bashrc for '$USERNAME'..."
 
-    temp_source_bashrc=$(mktemp "/tmp/custom_bashrc_source.XXXXXX")
+    temp_source_bashrc=$(mktemp "${RUN_TMP_DIR:-/tmp}/custom_bashrc_source.XXXXXX")
     if [[ -z "$temp_source_bashrc" || ! -f "$temp_source_bashrc" ]]; then
         print_error "Failed to create temporary file for .bashrc content."
         log "Error: mktemp failed for bashrc source."
@@ -2485,6 +2592,13 @@ EOF
 
     log "Successfully created temporary .bashrc source at $temp_source_bashrc"
 
+    if [[ -L "$BASHRC_PATH" ]]; then
+        print_warning "$BASHRC_PATH is a symlink; skipping custom .bashrc overwrite to preserve linked dotfiles."
+        log "Skipped custom .bashrc overwrite because $BASHRC_PATH is a symlink."
+        rm -f "$temp_source_bashrc" 2>/dev/null
+        return 0
+    fi
+
     if [[ -f "$BASHRC_PATH" ]] && ! grep -q "generated by /usr/sbin/adduser" "$BASHRC_PATH" 2>/dev/null; then
 	    local BASHRC_BACKUP
         BASHRC_BACKUP="$BASHRC_PATH.backup_$(date +%Y%m%d_%H%M%S)"
@@ -2493,46 +2607,50 @@ EOF
         log "Backed up existing .bashrc to $BASHRC_BACKUP"
     fi
 
-    local temp_fallback_path="/tmp/custom_bashrc_for_${USERNAME}.txt"
-
     if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null
     then
         print_error "Failed to automatically write custom .bashrc to $BASHRC_PATH."
         log "Error writing custom .bashrc for $USERNAME to $BASHRC_PATH (likely permissions issue)."
 
-        if cp "$temp_source_bashrc" "$temp_fallback_path"; then
+        local temp_fallback_path=""
+        temp_fallback_path=$(mktemp "/tmp/custom_bashrc_for_${USERNAME}.XXXXXX" 2>/dev/null || true)
+        if [[ -n "$temp_fallback_path" ]] && cp "$temp_source_bashrc" "$temp_fallback_path"; then
             chmod 644 "$temp_fallback_path"
             print_warning "ACTION REQUIRED: The custom .bashrc content has been saved to:"
             print_warning "  ${temp_fallback_path}"
             print_info "After setup, please manually copy it:"
             print_info "  sudo cp ${temp_fallback_path} ${BASHRC_PATH}"
-            print_info "  sudo chown ${USERNAME}:${USERNAME} ${BASHRC_PATH}"
+            print_info "  sudo chown ${USERNAME}:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME") ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
             log "Saved custom .bashrc content to $temp_fallback_path for manual installation."
-            keep_temp_source_on_error=true
         else
-            print_error "Also failed to save custom .bashrc content to $temp_fallback_path."
-            log "Critical error: Failed both writing to $BASHRC_PATH and copying $temp_source_bashrc to $temp_fallback_path."
+            rm -f "${temp_fallback_path:-}" 2>/dev/null || true
+            print_error "Also failed to save custom .bashrc recovery file in /tmp."
+            log "Critical error: Failed both writing to $BASHRC_PATH and saving recovery copy."
         fi
     else
-        if ! chown "$USERNAME:$USERNAME" "$BASHRC_PATH" || ! chmod 644 "$BASHRC_PATH"; then
+        local user_primary_group
+        user_primary_group=$(id -gn "$USERNAME")
+        if [[ -L "$BASHRC_PATH" ]] || ! chown -h "${USERNAME}:${user_primary_group}" "$BASHRC_PATH" || ! chmod 644 "$BASHRC_PATH"; then
             print_warning "Failed to set correct ownership/permissions on $BASHRC_PATH."
             log "Failed to chown/chmod $BASHRC_PATH"
+            local temp_recovery_path=""
+            temp_recovery_path=$(mktemp "/tmp/custom_bashrc_for_${USERNAME}.XXXXXX" 2>/dev/null || true)
             print_warning "ACTION REQUIRED: Please manually set ownership/permissions:"
-            print_info "  sudo chown ${USERNAME}:${USERNAME} ${BASHRC_PATH}"
+            print_info "  sudo chown ${USERNAME}:${user_primary_group} ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
-            print_info "  (Source content is in ${temp_source_bashrc})"
-            keep_temp_source_on_error=true
+            if [[ -n "$temp_recovery_path" ]] && cp "$temp_source_bashrc" "$temp_recovery_path"; then
+                chmod 644 "$temp_recovery_path"
+                print_info "  (Recovery source content saved to ${temp_recovery_path})"
+                log "Saved custom .bashrc recovery copy to $temp_recovery_path."
+            fi
         else
             print_success "Custom .bashrc created for '$USERNAME'."
             log "Custom .bashrc configuration completed for $USERNAME."
-            rm -f "$temp_fallback_path" 2>/dev/null
         fi
     fi
 
-    if [[ "$keep_temp_source_on_error" == false ]]; then
-        rm -f "$temp_source_bashrc" 2>/dev/null
-    fi
+    rm -f "$temp_source_bashrc" 2>/dev/null
 
     trap - INT TERM
 
@@ -2541,13 +2659,37 @@ EOF
 
 # --- USER INTERACTION ---
 
+# Parse boolean environment variable: returns 0 (true), 1 (false), or 2 (unset/invalid)
+env_bool_status() {
+    local var_name="$1"
+    local raw_val="${!var_name:-}"
+    if [[ -z "$raw_val" ]]; then
+        return 2
+    fi
+    case "${raw_val,,}" in
+        1|y|yes|true|on) return 0 ;;
+        0|n|no|false|off) return 1 ;;
+        *)
+            print_warning "Invalid boolean value '${raw_val}' for ${var_name} (expected true/false). Ignoring override."
+            log "Ignored invalid boolean override ${var_name}=${raw_val}"
+            return 2
+            ;;
+    esac
+}
+
 confirm() {
     local prompt="$1"
     local default="${2:-n}"
     local timeout_secs="${3:-}" # Optional timeout
     local response
 
-    [[ $VERBOSE == false ]] && return 0
+    if [[ $VERBOSE == false ]]; then
+        if [[ "${default,,}" == "y" ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
 
     if [[ -n "$timeout_secs" ]]; then
         prompt="$prompt (Auto-No in ${timeout_secs}s)"
@@ -2583,11 +2725,117 @@ confirm() {
     done
 }
 
+# Check optional DU_* boolean variable first; fall back to confirm()
+confirm_with_env() {
+    local env_var="$1"
+    local prompt="$2"
+    local default="${3:-n}"
+    local timeout_secs="${4:-}"
+    local rc=0
+
+    env_bool_status "$env_var" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log "Auto-confirmed YES via ${env_var}=${!env_var}"
+        return 0
+    elif [[ $rc -eq 1 ]]; then
+        log "Auto-confirmed NO via ${env_var}=${!env_var}"
+        return 1
+    fi
+
+    confirm "$prompt" "$default" "$timeout_secs"
+}
+
 # --- VALIDATION FUNCTIONS ---
 
 validate_username() {
     local username="$1"
-    [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ && ${#username} -le 32 ]]
+    [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ && ${#username} -le 32 ]] || return 1
+    if [[ "$username" == "root" ]] || [[ "$(id -u "$username" 2>/dev/null || true)" == "0" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+ensure_and_validate_ssh_strict_modes() {
+    local username="$1"
+    local user_home="$2"
+    local repair="${3:-true}"
+    local stop_root="${4:-/}"
+    local ssh_dir="${user_home}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    if [[ -z "$user_home" || ! -d "$user_home" || -L "$user_home" ]]; then
+        print_error "SSH StrictModes check failed: Home directory '$user_home' is missing or a symlink."
+        return 1
+    fi
+    if [[ ! -d "$ssh_dir" || -L "$ssh_dir" ]]; then
+        print_error "SSH StrictModes check failed: '$ssh_dir' is missing or a symlink."
+        return 1
+    fi
+    if [[ ! -f "$auth_keys" || -L "$auth_keys" ]]; then
+        print_error "SSH StrictModes check failed: '$auth_keys' is missing or a symlink."
+        return 1
+    fi
+
+    local target_uid target_group
+    target_uid=$(id -u "$username")
+    target_group=$(id -gn "$username")
+
+    if [[ "$repair" == "true" ]]; then
+        chown -h "${username}:${target_group}" "$user_home"
+        chmod go-w "$user_home"
+        chown -h "${username}:${target_group}" "$ssh_dir"
+        chmod 700 "$ssh_dir"
+        chown -h "${username}:${target_group}" "$auth_keys"
+        chmod 600 "$auth_keys"
+    fi
+
+    local check_path stat_out path_uid path_mode
+    for check_path in "$auth_keys" "$ssh_dir" "$user_home"; do
+        stat_out=$(stat -c '%u %a' "$check_path" 2>/dev/null || stat -f '%u %Lp' "$check_path")
+        path_uid="${stat_out%% *}"
+        path_mode="${stat_out##* }"
+        if [[ "$path_uid" != "$target_uid" && "$path_uid" != "0" ]]; then
+            print_error "SSH StrictModes check failed: '$check_path' is owned by UID $path_uid (expected '$username' or root)."
+            return 1
+        fi
+        if (( (8#$path_mode & 8#022) != 0 )); then
+            print_error "SSH StrictModes check failed: '$check_path' has group/world-writable permissions ($path_mode)."
+            return 1
+        fi
+    done
+
+    # Match OpenSSH secure_filename(): resolve canonical ancestor path when walking to '/'
+    # so legitimate root-owned '/home -> /data/home' symlinks on partitioned servers are supported.
+    local parent_dir="$user_home"
+    if [[ "$stop_root" == "/" ]] && command -v realpath >/dev/null 2>&1; then
+        parent_dir=$(realpath "$user_home" 2>/dev/null || printf '%s' "$user_home")
+    fi
+    while [[ "$parent_dir" != "$stop_root" ]]; do
+        local next_parent
+        next_parent=$(dirname "$parent_dir")
+        [[ "$next_parent" == "$parent_dir" ]] && break
+        parent_dir="$next_parent"
+
+        if [[ "$stop_root" != "/" && -L "$parent_dir" ]]; then
+            print_error "SSH StrictModes check failed: Ancestor directory '$parent_dir' is a symlink."
+            return 1
+        fi
+        stat_out=$(stat -c '%u %a' "$parent_dir" 2>/dev/null || stat -f '%u %Lp' "$parent_dir")
+        path_uid="${stat_out%% *}"
+        path_mode="${stat_out##* }"
+        if [[ "$path_uid" != "0" && "$path_uid" != "$target_uid" ]]; then
+            print_error "SSH StrictModes check failed: Ancestor '$parent_dir' is owned by UID $path_uid (expected root)."
+            return 1
+        fi
+        if (( (8#$path_mode & 8#022) != 0 )); then
+            print_error "SSH StrictModes check failed: Ancestor '$parent_dir' has group/world-writable permissions ($path_mode)."
+            return 1
+        fi
+        [[ "$parent_dir" == "/" ]] && break
+    done
+
+    return 0
 }
 
 validate_hostname() {
@@ -2616,9 +2864,729 @@ validate_backup_port() {
     [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
 }
 
+user_has_valid_login_shell() {
+    local username="$1"
+    local passwd_entry=""
+    if command -v getent >/dev/null 2>&1; then
+        passwd_entry=$(getent passwd "$username" 2>/dev/null || true)
+    elif [[ -r /etc/passwd ]]; then
+        passwd_entry=$(awk -F: -v u="$username" '$1 == u { print; exit }' /etc/passwd)
+    fi
+    # If account cannot be looked up via passwd database (e.g. non-existent user), caller handles existence separately
+    [[ -n "$passwd_entry" ]] || return 0
+
+    local user_shell="${passwd_entry##*:}"
+    # Per POSIX/OpenSSH, an empty shell field defaults to /bin/sh
+    if [[ -z "$user_shell" ]]; then
+        [[ -x /bin/sh ]]
+        return $?
+    fi
+    case "$user_shell" in
+        */nologin|*/false|*/sync|*/halt|*/shutdown|/dev/null)
+            return 1
+            ;;
+    esac
+    [[ -x "$user_shell" ]]
+}
+
+validate_authorized_key_option_value() {
+    local opt_name="${1,,}"
+    local opt_val="$2"
+
+    case "$opt_name" in
+        command)
+            [[ -n "$opt_val" ]] || return 1
+            ;;
+        principals)
+            [[ -n "$opt_val" && ! "$opt_val" =~ [[:space:][:cntrl:]] ]] || return 1
+            local -a princs=()
+            local p
+            IFS=',' read -ra princs <<< "$opt_val"
+            (( ${#princs[@]} > 0 )) || return 1
+            for p in "${princs[@]}"; do
+                [[ -n "$p" ]] || return 1
+            done
+            ;;
+        from)
+            [[ -n "$opt_val" && ! "$opt_val" =~ [[:space:][:cntrl:]] && "$opt_val" != *"," ]] || return 1
+            local -a pats=()
+            local pat clean_pat
+            IFS=',' read -ra pats <<< "$opt_val"
+            (( ${#pats[@]} > 0 )) || return 1
+            for pat in "${pats[@]}"; do
+                [[ -n "$pat" ]] || return 1
+                clean_pat="${pat#!}"
+                [[ -n "$clean_pat" ]] || return 1
+                if [[ "$clean_pat" == *"/"* ]]; then
+                    validate_ip_or_cidr "$clean_pat" || return 1
+                fi
+            done
+            ;;
+        expiry-time)
+            local exp_re='^([0-9]{4})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])(([01][0-9]|2[0-3])([0-5][0-9])([0-5][0-9])?)?([Zz])?$'
+            [[ "$opt_val" =~ $exp_re ]] || return 1
+            local yr="${BASH_REMATCH[1]}" mo="${BASH_REMATCH[2]}" dy="${BASH_REMATCH[3]}"
+            local hh="${BASH_REMATCH[5]:-00}" mm="${BASH_REMATCH[6]:-00}" ss="${BASH_REMATCH[7]:-00}"
+            local tz_z="${BASH_REMATCH[8]:-}"
+            local max_day=31
+            case "$mo" in
+                04|06|09|11) max_day=30 ;;
+                02)
+                    if (( 10#$yr % 4 == 0 && (10#$yr % 100 != 0 || 10#$yr % 400 == 0) )); then
+                        max_day=29
+                    else
+                        max_day=28
+                    fi
+                    ;;
+            esac
+            (( 10#$dy <= max_day )) || return 1
+            local exp_ts="${yr}${mo}${dy}${hh}${mm}${ss}"
+            local now_ts
+            if [[ -n "$tz_z" ]]; then
+                now_ts=$(date -u +%Y%m%d%H%M%S)
+            else
+                now_ts=$(date +%Y%m%d%H%M%S)
+            fi
+            [[ "$exp_ts" > "$now_ts" ]] || return 1
+            ;;
+        environment)
+            [[ "$opt_val" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
+            ;;
+        tunnel)
+            if [[ "${opt_val,,}" != "any" ]]; then
+                [[ "$opt_val" =~ ^[0-9]+$ ]] && (( 10#$opt_val <= 2147483647 )) || return 1
+            fi
+            ;;
+        permitopen)
+            local po_host="" po_port=""
+            if [[ "$opt_val" =~ ^\[([^][[:space:]]+)\]:(\*|[0-9]{1,5})$ ]]; then
+                po_host="${BASH_REMATCH[1]}"
+                po_port="${BASH_REMATCH[2]}"
+            elif [[ "$opt_val" =~ ^([^][[:space:]:]+):(\*|[0-9]{1,5})$ ]]; then
+                po_host="${BASH_REMATCH[1]}"
+                po_port="${BASH_REMATCH[2]}"
+            else
+                return 1
+            fi
+            [[ -n "$po_host" ]] || return 1
+            if [[ "$po_port" != "*" ]]; then
+                (( 10#$po_port >= 1 && 10#$po_port <= 65535 )) || return 1
+            fi
+            ;;
+        permitlisten)
+            local pl_port=""
+            if [[ "$opt_val" =~ ^(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[1]}"
+            elif [[ "$opt_val" =~ ^\[([^][[:space:]]+)\]:(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[2]}"
+            elif [[ "$opt_val" =~ ^([^][[:space:]:]+):(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[2]}"
+            else
+                return 1
+            fi
+            if [[ "$pl_port" != "*" ]]; then
+                (( 10#$pl_port >= 1 && 10#$pl_port <= 65535 )) || return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+validate_authorized_keys_options() {
+    local opts="$1"
+    [[ -n "$opts" ]] || return 1
+    local flag_re='^(restrict|cert-authority|no-touch-required|verify-required|(no-)?(port-forwarding|agent-forwarding|x11-forwarding|pty|user-rc))(,(.*))?$'
+    local val_re='^(command|principals|from|expiry-time|environment|permitopen|permitlisten|tunnel)="(([^"\\]|\\.)*)"(,(.*))?$'
+    local rem="$opts"
+    local seen_command=false seen_principals=false seen_from=false
+    local had_nocasematch=false
+    if shopt -q nocasematch; then
+        had_nocasematch=true
+    else
+        shopt -s nocasematch
+    fi
+    local rc=0
+    while [[ -n "$rem" ]]; do
+        if [[ "$rem" =~ $flag_re ]]; then
+            if [[ -n "${BASH_REMATCH[4]}" && -z "${BASH_REMATCH[5]}" ]]; then
+                rc=1
+                break
+            fi
+            rem="${BASH_REMATCH[5]}"
+        elif [[ "$rem" =~ $val_re ]]; then
+            local matched_opt="${BASH_REMATCH[1],,}"
+            local matched_val="${BASH_REMATCH[2]}"
+            local has_comma="${BASH_REMATCH[4]}"
+            local next_rem="${BASH_REMATCH[5]}"
+            if [[ -n "$has_comma" && -z "$next_rem" ]]; then
+                rc=1
+                break
+            fi
+            case "$matched_opt" in
+                command)
+                    [[ "$seen_command" == false ]] || { rc=1; break; }
+                    seen_command=true
+                    ;;
+                principals)
+                    [[ "$seen_principals" == false ]] || { rc=1; break; }
+                    seen_principals=true
+                    ;;
+                from)
+                    [[ "$seen_from" == false ]] || { rc=1; break; }
+                    seen_from=true
+                    ;;
+            esac
+            if ! validate_authorized_key_option_value "$matched_opt" "$matched_val"; then
+                rc=1
+                break
+            fi
+            rem="$next_rem"
+        else
+            rc=1
+            break
+        fi
+    done
+    if [[ "$had_nocasematch" == false ]]; then
+        shopt -u nocasematch
+    fi
+    return "$rc"
+}
+
+validate_ssh_key_wire_blob() {
+    local key_type="$1"
+    local key_blob="$2"
+    if ! command -v base64 >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1 || \
+       ! command -v wc >/dev/null 2>&1 || ! command -v dd >/dev/null 2>&1; then
+        return 1
+    fi
+    local tmp_bin
+    tmp_bin=$(mktemp "${RUN_TMP_DIR:-/tmp}/sshblob_validate.XXXXXX")
+    if ! printf '%s' "$key_blob" | base64 -d > "$tmp_bin" 2>/dev/null; then
+        rm -f "$tmp_bin" 2>/dev/null || true
+        return 1
+    fi
+    local blob_len b1=0 b2=0 b3=0 b4=0 hdr_len embedded_type rc=0
+    blob_len=$(wc -c < "$tmp_bin" | tr -d '[:space:]')
+    if [[ ! "$blob_len" =~ ^[0-9]+$ ]] || (( blob_len < 32 )); then
+        rm -f "$tmp_bin" 2>/dev/null || true
+        return 1
+    fi
+    read -r b1 b2 b3 b4 < <(od -An -tu1 -N4 "$tmp_bin")
+    hdr_len=$(( (b1 << 24) | (b2 << 16) | (b3 << 8) | b4 ))
+    if (( hdr_len != ${#key_type} || blob_len <= 4 + hdr_len )); then
+        rm -f "$tmp_bin" 2>/dev/null || true
+        return 1
+    fi
+    embedded_type=$(dd if="$tmp_bin" bs=1 skip=4 count="$hdr_len" 2>/dev/null)
+    if [[ "$embedded_type" != "$key_type" ]]; then
+        rm -f "$tmp_bin" 2>/dev/null || true
+        return 1
+    fi
+    case "$key_type" in
+        ssh-ed25519)
+            local k1=0 k2=0 k3=0 k4=0 klen
+            read -r k1 k2 k3 k4 < <(dd if="$tmp_bin" bs=1 skip=15 count=4 2>/dev/null | od -An -tu1 -N4)
+            klen=$(( (k1 << 24) | (k2 << 16) | (k3 << 8) | k4 ))
+            (( blob_len == 51 && klen == 32 )) || rc=1
+            ;;
+        sk-ssh-ed25519@openssh.com)
+            local k1=0 k2=0 k3=0 k4=0 klen a1=0 a2=0 a3=0 a4=0 alen
+            read -r k1 k2 k3 k4 < <(dd if="$tmp_bin" bs=1 skip=30 count=4 2>/dev/null | od -An -tu1 -N4)
+            klen=$(( (k1 << 24) | (k2 << 16) | (k3 << 8) | k4 ))
+            if (( blob_len >= 71 && klen == 32 )); then
+                read -r a1 a2 a3 a4 < <(dd if="$tmp_bin" bs=1 skip=66 count=4 2>/dev/null | od -An -tu1 -N4)
+                alen=$(( (a1 << 24) | (a2 << 16) | (a3 << 8) | a4 ))
+                (( alen >= 1 && 70 + alen == blob_len )) || rc=1
+            else
+                rc=1
+            fi
+            ;;
+        ssh-rsa)
+            # Validate both RFC 4253 mpint wire fields (e and n), exact blob length, and >= 1024-bit modulus
+            local e1=0 e2=0 e3=0 e4=0 elen=0
+            read -r e1 e2 e3 e4 < <(dd if="$tmp_bin" bs=1 skip=11 count=4 2>/dev/null | od -An -tu1 -N4)
+            elen=$(( (e1 << 24) | (e2 << 16) | (e3 << 8) | e4 ))
+            if (( elen < 1 || elen > 512 || 19 + elen >= blob_len )); then
+                rc=1
+            else
+                local ef1=0 ef2=0 elast=0
+                read -r ef1 ef2 < <(dd if="$tmp_bin" bs=1 skip=15 count=2 2>/dev/null | od -An -tu1 -N2)
+                read -r elast < <(dd if="$tmp_bin" bs=1 skip=$(( 14 + elen )) count=1 2>/dev/null | od -An -tu1 -N1)
+                if (( ef1 >= 128 )) || (( ef1 == 0 && (elen < 2 || ef2 < 128) )) || \
+                   (( (elast & 1) == 0 )) || (( elen == 1 && ef1 < 3 )); then
+                    rc=1
+                else
+                    local n1=0 n2=0 n3=0 n4=0 nlen=0 n_off=$(( 19 + elen ))
+                    read -r n1 n2 n3 n4 < <(dd if="$tmp_bin" bs=1 skip=$(( 15 + elen )) count=4 2>/dev/null | od -An -tu1 -N4)
+                    nlen=$(( (n1 << 24) | (n2 << 16) | (n3 << 8) | n4 ))
+                    if (( nlen < 128 || n_off + nlen != blob_len )); then
+                        rc=1
+                    else
+                        local nf1=0 nf2=0 sig_bytes=$nlen msb=0
+                        read -r nf1 nf2 < <(dd if="$tmp_bin" bs=1 skip="$n_off" count=2 2>/dev/null | od -An -tu1 -N2)
+                        if (( nf1 >= 128 )) || (( nf1 == 0 && (nlen < 2 || nf2 < 128) )); then
+                            rc=1
+                        else
+                            msb=$nf1
+                            if (( nf1 == 0 )); then
+                                (( sig_bytes -= 1 ))
+                                msb=$nf2
+                            fi
+                            (( sig_bytes > 128 || (sig_bytes == 128 && msb >= 128) )) || rc=1
+                        fi
+                    fi
+                fi
+            fi
+            ;;
+        ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)
+            local expected_curve="${key_type#ecdsa-sha2-}"
+            local c1=0 c2=0 c3=0 c4=0 clen=0 curve q1=0 q2=0 q3=0 q4=0 qlen=0 qfirst=0
+            read -r c1 c2 c3 c4 < <(dd if="$tmp_bin" bs=1 skip=23 count=4 2>/dev/null | od -An -tu1 -N4)
+            clen=$(( (c1 << 24) | (c2 << 16) | (c3 << 8) | c4 ))
+            curve=$(dd if="$tmp_bin" bs=1 skip=27 count=8 2>/dev/null)
+            read -r q1 q2 q3 q4 < <(dd if="$tmp_bin" bs=1 skip=35 count=4 2>/dev/null | od -An -tu1 -N4)
+            qlen=$(( (q1 << 24) | (q2 << 16) | (q3 << 8) | q4 ))
+            read -r qfirst < <(dd if="$tmp_bin" bs=1 skip=39 count=1 2>/dev/null | od -An -tu1 -N1)
+            if (( clen != 8 || 39 + qlen != blob_len )) || [[ "$curve" != "$expected_curve" ]]; then
+                rc=1
+            else
+                case "$expected_curve" in
+                    nistp256) (( (qlen == 65 && qfirst == 4) || (qlen == 33 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                    nistp384) (( (qlen == 97 && qfirst == 4) || (qlen == 49 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                    nistp521) (( (qlen == 133 && qfirst == 4) || (qlen == 67 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                esac
+            fi
+            ;;
+        sk-ecdsa-sha2-nistp256@openssh.com)
+            local c1=0 c2=0 c3=0 c4=0 clen=0 curve q1=0 q2=0 q3=0 q4=0 qlen=0 qfirst=0 a1=0 a2=0 a3=0 a4=0 alen=0
+            read -r c1 c2 c3 c4 < <(dd if="$tmp_bin" bs=1 skip=38 count=4 2>/dev/null | od -An -tu1 -N4)
+            clen=$(( (c1 << 24) | (c2 << 16) | (c3 << 8) | c4 ))
+            curve=$(dd if="$tmp_bin" bs=1 skip=42 count=8 2>/dev/null)
+            read -r q1 q2 q3 q4 < <(dd if="$tmp_bin" bs=1 skip=50 count=4 2>/dev/null | od -An -tu1 -N4)
+            qlen=$(( (q1 << 24) | (q2 << 16) | (q3 << 8) | q4 ))
+            read -r qfirst < <(dd if="$tmp_bin" bs=1 skip=54 count=1 2>/dev/null | od -An -tu1 -N1)
+            if (( clen != 8 || 58 + qlen >= blob_len )) || [[ "$curve" != "nistp256" ]] || \
+               ! (( (qlen == 65 && qfirst == 4) || (qlen == 33 && (qfirst == 2 || qfirst == 3)) )); then
+                rc=1
+            else
+                read -r a1 a2 a3 a4 < <(dd if="$tmp_bin" bs=1 skip=$(( 54 + qlen )) count=4 2>/dev/null | od -An -tu1 -N4)
+                alen=$(( (a1 << 24) | (a2 << 16) | (a3 << 8) | a4 ))
+                (( alen >= 1 && 58 + qlen + alen == blob_len )) || rc=1
+            fi
+            ;;
+        *)
+            rc=1
+            ;;
+    esac
+    rm -f "$tmp_bin" 2>/dev/null || true
+    return "$rc"
+}
+
 validate_ssh_key() {
     local key="$1"
-    [[ -n "$key" && "$key" =~ ^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519)\  ]]
+    local require_keygen="${2:-false}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    if [[ -z "$key" || "$key" == *$'\n'* || "$key" == *$'\r'* || "$key" == \#* ]]; then
+        return 1
+    fi
+    local keytype_re='^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]]+[A-Za-z0-9+/]{32,}={0,3}([[:space:]].*)?$'
+    local key_rest="$key"
+    if [[ ! "$key" =~ $keytype_re ]]; then
+        local i len=${#key} ch in_quote=false escaped=false split_idx=-1
+        for (( i = 0; i < len; i++ )); do
+            ch="${key:i:1}"
+            if [[ "$escaped" == true ]]; then
+                escaped=false
+                continue
+            fi
+            if [[ "$in_quote" == true ]]; then
+                if [[ "$ch" == "\\" ]]; then
+                    escaped=true
+                elif [[ "$ch" == '"' ]]; then
+                    in_quote=false
+                fi
+            else
+                if [[ "$ch" == '"' ]]; then
+                    in_quote=true
+                elif [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
+                    split_idx=$i
+                    break
+                fi
+            fi
+        done
+        if [[ "$in_quote" == true || "$split_idx" -le 0 ]]; then
+            return 1
+        fi
+        local opts_part="${key:0:split_idx}"
+        key_rest="${key:split_idx}"
+        key_rest="${key_rest#"${key_rest%%[![:space:]]*}"}"
+        validate_authorized_keys_options "$opts_part" || return 1
+        [[ "$key_rest" =~ $keytype_re ]] || return 1
+    fi
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        local tmp_key
+        tmp_key=$(mktemp "${RUN_TMP_DIR:-/tmp}/sshkey_validate.XXXXXX")
+        printf '%s\n' "$key_rest" > "$tmp_key"
+        if ! ssh-keygen -lf "$tmp_key" >/dev/null 2>&1; then
+            rm -f "$tmp_key" 2>/dev/null || true
+            return 1
+        fi
+        rm -f "$tmp_key" 2>/dev/null || true
+        return 0
+    fi
+    if [[ "$require_keygen" == "true" ]]; then
+        print_error "SSH key verification requires ssh-keygen (openssh-client)."
+        return 1
+    fi
+    # On minimal netinst/LXC hosts where pre-flight runs before install_packages installs openssh-client,
+    # strictly validate the decoded RFC 4253 binary wire format (failing closed on malformed key blobs).
+    local key_type="" key_blob=""
+    read -r key_type key_blob _ <<< "$key_rest"
+    validate_ssh_key_wire_blob "$key_type" "$key_blob"
+}
+
+has_valid_authorized_keys_file() {
+    local auth_file="$1"
+    local require_keygen="${2:-false}"
+    [[ -f "$auth_file" && ! -L "$auth_file" && -s "$auth_file" ]] || return 1
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if validate_ssh_key "$line" "$require_keygen"; then
+            return 0
+        fi
+    done < "$auth_file"
+    return 1
+}
+
+prepare_user_ssh_dir() {
+    local target_user="$1"
+    local user_home="$2"
+    local ssh_dir="${user_home}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    if [[ -z "$user_home" || ! -d "$user_home" || -L "$user_home" ]]; then
+        print_error "Refusing SSH key setup: Home directory '$user_home' is missing or a symlink."
+        return 1
+    fi
+    if [[ -L "$ssh_dir" ]] || { [[ -e "$ssh_dir" ]] && [[ ! -d "$ssh_dir" ]]; }; then
+        print_error "Refusing SSH key setup: '$ssh_dir' is a symlink or not a directory."
+        return 1
+    fi
+    if [[ -L "$auth_keys" ]] || { [[ -e "$auth_keys" ]] && [[ ! -f "$auth_keys" ]]; }; then
+        print_error "Refusing SSH key setup: '$auth_keys' is a symlink or not a regular file."
+        return 1
+    fi
+
+    local target_group
+    target_group=$(id -gn "$target_user")
+    chown -h "${target_user}:${target_group}" "$user_home"
+    if [[ ! -d "$ssh_dir" ]]; then
+        sudo -u "$target_user" mkdir -m 700 "$ssh_dir" || return 1
+    fi
+    if [[ -L "$ssh_dir" || ! -d "$ssh_dir" ]]; then
+        print_error "Refusing SSH key setup: '$ssh_dir' failed directory verification."
+        return 1
+    fi
+    chown -h "${target_user}:${target_group}" "$ssh_dir"
+    chmod 700 "$ssh_dir"
+    if [[ -e "$auth_keys" ]]; then
+        if [[ -L "$auth_keys" || ! -f "$auth_keys" ]]; then
+            print_error "Refusing SSH key setup: '$auth_keys' failed regular-file verification."
+            return 1
+        fi
+        chown -h "${target_user}:${target_group}" "$auth_keys"
+        chmod 600 "$auth_keys"
+    fi
+    return 0
+}
+
+append_and_dedup_authorized_keys() {
+    local target_user="$1"
+    local user_home="$2"
+    local new_keys="$3"
+    local ssh_dir="${user_home}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    prepare_user_ssh_dir "$target_user" "$user_home" || return 1
+
+    local raw_stage dedup_stage
+    raw_stage=$(mktemp "${RUN_TMP_DIR:-/tmp}/auth_keys_raw.XXXXXX")
+    dedup_stage=$(mktemp "${RUN_TMP_DIR:-/tmp}/auth_keys_dedup.XXXXXX")
+
+    if [[ -f "$auth_keys" && ! -L "$auth_keys" ]]; then
+        if ! sudo -u "$target_user" cat "$auth_keys" | tee "$raw_stage" > /dev/null; then
+            rm -f "$raw_stage" "$dedup_stage" 2>/dev/null || true
+            return 1
+        fi
+        if [[ -s "$raw_stage" ]] && [[ "$(tail -c 1 "$raw_stage" | wc -l | tr -d '[:space:]')" == "0" ]]; then
+            printf '\n' >> "$raw_stage"
+        fi
+    fi
+    printf '%s\n' "$new_keys" >> "$raw_stage"
+    awk 'NF == 0 || !seen[$0]++' "$raw_stage" > "$dedup_stage"
+    rm -f "$raw_stage" 2>/dev/null || true
+
+    # Write and atomically replace authorized_keys with the target user's unprivileged credentials
+    # shellcheck disable=SC2016
+    if ! cat "$dedup_stage" | sudo -u "$target_user" sh -c '
+        umask 077
+        auth="$1"
+        dir=$(dirname "$auth")
+        [ ! -L "$dir" ] && [ -d "$dir" ] || exit 1
+        [ ! -L "$auth" ] || exit 1
+        tmp=$(mktemp "$auth.tmp.XXXXXX") || exit 1
+        if cat > "$tmp" && chmod 600 "$tmp" && [ ! -L "$auth" ] && mv -f "$tmp" "$auth"; then
+            exit 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        exit 1
+    ' _ "$auth_keys"; then
+        rm -f "$dedup_stage" 2>/dev/null || true
+        print_error "Failed to safely update '$auth_keys' as user '$target_user'."
+        return 1
+    fi
+    rm -f "$dedup_stage" 2>/dev/null || true
+    return 0
+}
+
+expand_sshd_auth_keys_token() {
+    local token="$1"
+    local username="$2"
+    local user_home="$3"
+    local user_uid="$4"
+    [[ -n "$token" && "${token,,}" != "none" ]] || return 1
+
+    local out="" i=0 len=${#token} ch next_ch
+    while (( i < len )); do
+        ch="${token:i:1}"
+        if [[ "$ch" == "%" ]] && (( i + 1 < len )); then
+            next_ch="${token:i+1:1}"
+            case "$next_ch" in
+                "%") out+="%" ;;
+                h)   out+="$user_home" ;;
+                u)   out+="$username" ;;
+                U)   out+="$user_uid" ;;
+                *)   out+="%${next_ch}" ;;
+            esac
+            (( i += 2 ))
+        else
+            out+="$ch"
+            (( i += 1 ))
+        fi
+    done
+
+    if [[ "$out" != /* ]]; then
+        out="${user_home%/}/${out}"
+    fi
+    printf '%s\n' "$out"
+}
+
+verify_sshd_effective_pubkey_config() {
+    local username="$1"
+    local user_home="$2"
+    local expected_auth_keys="$3"
+    local target_port="${4:-${SSH_PORT:-22}}"
+    local sshd_bin=""
+    if [[ -x /usr/sbin/sshd ]]; then
+        sshd_bin="/usr/sbin/sshd"
+    elif command -v sshd >/dev/null 2>&1; then
+        sshd_bin=$(command -v sshd)
+    else
+        print_error "sshd binary not found while verifying effective SSH configuration."
+        return 1
+    fi
+
+    # Detect intended client IP/hostname and local server IP/port when connected via SSH,
+    # while preserving full support for local VNC/serial console and cloud-init runs.
+    local client_ip="" local_ip="" client_host=""
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        local sc_client="" sc_local=""
+        read -r sc_client _ sc_local _ <<< "${SSH_CONNECTION}"
+        if validate_ip_or_cidr "$sc_client" && [[ "$sc_client" != *"/"* ]]; then
+            client_ip="$sc_client"
+        fi
+        if validate_ip_or_cidr "$sc_local" && [[ "$sc_local" != *"/"* ]]; then
+            local_ip="$sc_local"
+        fi
+    fi
+    if [[ -z "$client_ip" ]]; then
+        local who_ip=""
+        who_ip=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)
+        if [[ -n "$who_ip" ]] && validate_ip_or_cidr "$who_ip" && [[ "$who_ip" != *"/"* ]]; then
+            client_ip="$who_ip"
+        fi
+    fi
+    if [[ -z "$local_ip" ]]; then
+        if [[ -n "${LOCAL_IP_V4:-}" ]] && validate_ip_or_cidr "${LOCAL_IP_V4}" && [[ "${LOCAL_IP_V4}" != *"/"* ]]; then
+            local_ip="${LOCAL_IP_V4}"
+        elif [[ -n "${SERVER_IP_V4:-}" ]] && validate_ip_or_cidr "${SERVER_IP_V4}" && [[ "${SERVER_IP_V4}" != *"/"* ]]; then
+            local_ip="${SERVER_IP_V4}"
+        else
+            local_ip="127.0.0.1"
+        fi
+    fi
+
+    local -a conn_specs=()
+    if [[ -n "$client_ip" ]]; then
+        if command -v getent >/dev/null 2>&1; then
+            client_host=$(getent hosts "$client_ip" 2>/dev/null | awk '{print $2; exit}' || true)
+        fi
+        client_host="${client_host:-$client_ip}"
+        conn_specs+=("user=${username},host=${client_host},addr=${client_ip},laddr=${local_ip},lport=${target_port}")
+    else
+        # Console / cloud-init run (no active SSH client): verify external public, private LAN/VPN,
+        # and any Match Address subnets configured in sshd_config so remote Match rules cannot lock out SSH.
+        local probe_ip
+        for probe_ip in "198.51.100.1" "10.0.0.1" "192.168.1.1" "100.64.0.1"; do
+            conn_specs+=("user=${username},host=${probe_ip},addr=${probe_ip},laddr=${local_ip},lport=${target_port}")
+        done
+        local -a ssh_cfg_files=("/etc/ssh/sshd_config")
+        local dropin_f
+        for dropin_f in /etc/ssh/sshd_config.d/*.conf; do
+            [[ -f "$dropin_f" ]] && ssh_cfg_files+=("$dropin_f")
+        done
+        local raw_tok cand_ip match_added=0
+        while IFS= read -r raw_tok; do
+            cand_ip="${raw_tok#!}"
+            cand_ip="${cand_ip%%/*}"
+            if [[ -n "$cand_ip" ]] && validate_ip_or_cidr "$cand_ip" && [[ "$cand_ip" != *"/"* ]]; then
+                conn_specs+=("user=${username},host=${cand_ip},addr=${cand_ip},laddr=${local_ip},lport=${target_port}")
+                (( match_added += 1 ))
+                (( match_added >= 8 )) && break
+            fi
+        done < <(awk 'tolower($1) == "match" { for (i = 2; i <= NF; i++) print $i }' "${ssh_cfg_files[@]}" 2>/dev/null | tr ',' '\n')
+    fi
+
+    local user_uid expected_canon="$expected_auth_keys"
+    user_uid=$(id -u "$username")
+    if command -v realpath >/dev/null 2>&1; then
+        expected_canon=$(realpath "$expected_auth_keys" 2>/dev/null || printf '%s' "$expected_auth_keys")
+    fi
+
+    local spec sshd_dump pubkey_auth auth_files_line
+    for spec in "${conn_specs[@]}"; do
+        if ! sshd_dump=$("$sshd_bin" -T -C "$spec" 2>/dev/null); then
+            print_error "Failed to query effective sshd configuration via '$sshd_bin -T -C $spec'."
+            return 1
+        fi
+
+        pubkey_auth=$(awk '$1 == "pubkeyauthentication" { print tolower($2); exit }' <<< "$sshd_dump")
+        if [[ "$pubkey_auth" != "yes" ]]; then
+            print_error "Effective sshd configuration has 'PubkeyAuthentication ${pubkey_auth:-unknown}' for '$spec' (check /etc/ssh/sshd_config.d/ or Match blocks)."
+            return 1
+        fi
+
+        auth_files_line=$(awk '$1 == "authorizedkeysfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' <<< "$sshd_dump")
+        if [[ -z "$auth_files_line" ]]; then
+            print_error "Effective sshd configuration returned an empty AuthorizedKeysFile setting for '$spec'."
+            return 1
+        fi
+
+        local -a tokens=()
+        local tok expanded expanded_canon matched=false
+        read -ra tokens <<< "$auth_files_line"
+        for tok in "${tokens[@]}"; do
+            expanded=$(expand_sshd_auth_keys_token "$tok" "$username" "$user_home" "$user_uid" || true)
+            [[ -z "$expanded" ]] && continue
+            expanded_canon="$expanded"
+            if command -v realpath >/dev/null 2>&1; then
+                expanded_canon=$(realpath "$expanded" 2>/dev/null || printf '%s' "$expanded")
+            fi
+            if [[ "$expanded" == "$expected_auth_keys" || "$expanded_canon" == "$expected_canon" ]]; then
+                matched=true
+                break
+            fi
+        done
+
+        if [[ "$matched" == false ]]; then
+            print_error "Effective sshd AuthorizedKeysFile ('$auth_files_line') for '$spec' does not include '$expected_auth_keys'."
+            print_info "An earlier /etc/ssh/sshd_config.d/*.conf file or Match block may be overriding AuthorizedKeysFile."
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+validate_quiet_mode_config() {
+    [[ $VERBOSE == true ]] && return 0
+
+    if [[ -z "${DU_USERNAME:-}" ]] || ! validate_username "${DU_USERNAME}"; then
+        print_error "Quiet mode requires a valid non-root DU_USERNAME (set via --config <file> or environment)."
+        exit 1
+    fi
+
+    local existing_home=""
+    local has_valid_existing_key=false
+    if id "$DU_USERNAME" &>/dev/null; then
+        local use_existing_rc=0
+        env_bool_status "DU_USE_EXISTING_USER" || use_existing_rc=$?
+        if [[ $use_existing_rc -eq 1 ]]; then
+            print_error "Quiet mode aborted: User '$DU_USERNAME' already exists and DU_USE_EXISTING_USER is false."
+            exit 1
+        fi
+        if ! user_has_valid_login_shell "$DU_USERNAME"; then
+            local bad_shell
+            bad_shell=$(getent passwd "$DU_USERNAME" 2>/dev/null | cut -d: -f7 || true)
+            print_error "Quiet mode aborted: Existing user '$DU_USERNAME' has a non-login shell ('${bad_shell:-unknown}'). Choose a login-capable admin account."
+            exit 1
+        fi
+        existing_home=$(getent passwd "$DU_USERNAME" | cut -d: -f6)
+        if [[ -n "$existing_home" ]] && has_valid_authorized_keys_file "$existing_home/.ssh/authorized_keys"; then
+            has_valid_existing_key=true
+        fi
+    fi
+
+    if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
+        local raw_keys="${DU_SSH_PUBLIC_KEY//|/$'\n'}"
+        local key_line valid_count=0
+        while IFS= read -r key_line || [[ -n "$key_line" ]]; do
+            key_line="${key_line#"${key_line%%[![:space:]]*}"}"
+            key_line="${key_line%"${key_line##*[![:space:]]}"}"
+            [[ -z "$key_line" ]] && continue
+            if ! validate_ssh_key "$key_line"; then
+                print_error "Invalid DU_SSH_PUBLIC_KEY entry detected. Replace any placeholder with a real SSH public key."
+                exit 1
+            fi
+            (( valid_count += 1 ))
+        done <<< "$raw_keys"
+        if (( valid_count == 0 )) && [[ "$has_valid_existing_key" == false ]]; then
+            print_error "Quiet mode requires at least one valid SSH public key in DU_SSH_PUBLIC_KEY."
+            exit 1
+        fi
+    elif [[ "$has_valid_existing_key" == false ]]; then
+        print_error "Quiet mode requires DU_SSH_PUBLIC_KEY (unless existing user '$DU_USERNAME' already has valid authorized_keys) to prevent SSH lockout."
+        exit 1
+    fi
+
+    if [[ -n "${DU_HOSTNAME:-}" ]] && ! validate_hostname "${DU_HOSTNAME}"; then
+        print_error "Invalid DU_HOSTNAME '${DU_HOSTNAME}'."
+        exit 1
+    fi
+
+    if [[ -n "${DU_TIMEZONE:-}" ]] && ! validate_timezone "${DU_TIMEZONE}"; then
+        print_error "Invalid DU_TIMEZONE '${DU_TIMEZONE}'."
+        exit 1
+    fi
+
+    if [[ -n "${DU_SSH_PORT:-}" ]]; then
+        if [[ ! "${DU_SSH_PORT}" =~ ^[0-9]+$ || "${DU_SSH_PORT}" -lt 1024 || "${DU_SSH_PORT}" -gt 65535 ]]; then
+            local detected_port
+            detected_port=$(ss -tlpn 2>/dev/null | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1 || true)
+            if [[ -z "$detected_port" || "${DU_SSH_PORT}" != "$detected_port" ]]; then
+                print_error "Invalid DU_SSH_PORT '${DU_SSH_PORT}'. Must be 1024-65535 (or current active SSH port)."
+                exit 1
+            fi
+        fi
+    fi
+
+    log "Quiet mode pre-flight configuration validated for user '${DU_USERNAME}'."
 }
 
 validate_timezone() {
@@ -2726,11 +3694,10 @@ run_update_check() {
         fi
 
         local temp_dir
-        if ! temp_dir=$(mktemp -d); then
+        if ! temp_dir=$(mktemp -d "${RUN_TMP_DIR:-/tmp}/du_update.XXXXXX"); then
             print_error "Failed to create temporary directory. Update aborted."
             exit 1
         fi
-        trap 'rm -rf -- "$temp_dir"' EXIT
 
         local temp_script="$temp_dir/du_setup.sh"
         local temp_checksum="$temp_dir/checksum.sha256"
@@ -2767,7 +3734,6 @@ run_update_check() {
         fi
         chmod +x "$0"
 
-        trap - EXIT
         rm -rf -- "$temp_dir"
 
         print_success "Update successful. Please run the script again to use the new version."
@@ -2818,6 +3784,7 @@ check_system() {
         # shellcheck source=/dev/null
         source /etc/os-release
         ID=${ID:-unknown} # Populate global ID variable
+        OS_PRETTY_NAME="${PRETTY_NAME:-Unknown}"
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04|24.10|25.04|25.10|26.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -2880,35 +3847,104 @@ check_system() {
 collect_config() {
     print_section "Configuration Setup"
     # --- Input Collection ---
-    while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
-        if validate_username "$USERNAME"; then
-            if id "$USERNAME" &>/dev/null; then
-                print_warning "User '$USERNAME' already exists."
-                if confirm "Use this existing user?"; then USER_EXISTS=true; break; fi
+    if [[ -n "${DU_USERNAME:-}" ]] && validate_username "${DU_USERNAME}"; then
+        USERNAME="${DU_USERNAME}"
+        if id "$USERNAME" &>/dev/null; then
+            if ! user_has_valid_login_shell "$USERNAME"; then
+                print_error "Existing user '$USERNAME' has a non-login shell and cannot be used for SSH administration."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
+                USERNAME=""
             else
-                USER_EXISTS=false; break
+                print_warning "User '$USERNAME' already exists."
+                if confirm_with_env "DU_USE_EXISTING_USER" "Use this existing user?" "y"; then
+                    USER_EXISTS=true
+                elif [[ $VERBOSE == false ]]; then
+                    print_error "User '$USERNAME' already exists and DU_USE_EXISTING_USER is false."
+                    exit 1
+                fi
             fi
         else
-            print_error "Invalid username. Use lowercase letters, numbers, hyphens, underscores (max 32 chars)."
+            USER_EXISTS=false
         fi
-    done
-    while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
-        if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
-    done
-    read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
-    PRETTY_NAME="${PRETTY_NAME:-$SERVER_NAME}"
+    fi
+
+    if [[ -z "$USERNAME" ]] || { id "$USERNAME" &>/dev/null && [[ "$USER_EXISTS" == false ]]; }; then
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
+            if validate_username "$USERNAME"; then
+                if id "$USERNAME" &>/dev/null; then
+                    if ! user_has_valid_login_shell "$USERNAME"; then
+                        print_error "User '$USERNAME' has a non-login shell (e.g., nologin/false). Choose or create a login-capable user."
+                        continue
+                    fi
+                    print_warning "User '$USERNAME' already exists."
+                    if confirm "Use this existing user?"; then USER_EXISTS=true; break; fi
+                else
+                    USER_EXISTS=false; break
+                fi
+            else
+                if [[ "$USERNAME" == "root" ]] || [[ "$(id -u "$USERNAME" 2>/dev/null || true)" == "0" ]]; then
+                    print_error "Cannot use 'root' (or any UID 0 account) as the admin user because root SSH login will be disabled."
+                else
+                    print_error "Invalid username. Use lowercase letters, numbers, hyphens, underscores (max 32 chars)."
+                fi
+            fi
+        done
+    fi
+
+    if [[ -n "${DU_HOSTNAME:-}" ]] && validate_hostname "${DU_HOSTNAME}"; then
+        SERVER_NAME="${DU_HOSTNAME}"
+    elif [[ $VERBOSE == false ]]; then
+        SERVER_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "server")"
+        if ! validate_hostname "$SERVER_NAME"; then
+            SERVER_NAME="server"
+        fi
+    else
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter server hostname: ${NC}")" SERVER_NAME
+            if validate_hostname "$SERVER_NAME"; then break; else print_error "Invalid hostname."; fi
+        done
+    fi
+
+    if [[ -n "${DU_PRETTY_HOSTNAME:-}" ]]; then
+        PRETTY_NAME="${DU_PRETTY_HOSTNAME}"
+    elif [[ $VERBOSE == false ]]; then
+        PRETTY_NAME="$SERVER_NAME"
+    else
+        read -rp "$(printf '%s' "${CYAN}Enter a 'pretty' hostname (optional): ${NC}")" PRETTY_NAME
+        PRETTY_NAME="${PRETTY_NAME:-$SERVER_NAME}"
+    fi
+
     # --- SSH Port Detection ---
     PREVIOUS_SSH_PORT=$(ss -tlpn | grep -E 'sshd|ssh\.socket' | awk '{print $4}' | grep -oP ':\K\d+' | grep -vE '^60[1-9][0-9]$' | head -n 1 || true)
     local PROMPT_DEFAULT_PORT=${PREVIOUS_SSH_PORT:-2222}
-    while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
-        SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
-        if validate_port "$SSH_PORT"; then
-            break
+    if [[ -n "${DU_SSH_PORT:-}" ]]; then
+        if validate_port "${DU_SSH_PORT}"; then
+            SSH_PORT="${DU_SSH_PORT}"
+        elif [[ $VERBOSE == false ]]; then
+            print_error "Configured DU_SSH_PORT '${DU_SSH_PORT}' failed validation or is already in use."
+            exit 1
         fi
-    done
+    elif [[ $VERBOSE == false ]]; then
+        if validate_port "$PROMPT_DEFAULT_PORT"; then
+            SSH_PORT="$PROMPT_DEFAULT_PORT"
+        else
+            print_error "Default SSH port '$PROMPT_DEFAULT_PORT' is invalid or in use. Specify DU_SSH_PORT."
+            exit 1
+        fi
+    fi
+
+    if [[ -z "$SSH_PORT" ]]; then
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter custom SSH port (1024-65535) [$PROMPT_DEFAULT_PORT]: ${NC}")" SSH_PORT
+            SSH_PORT=${SSH_PORT:-$PROMPT_DEFAULT_PORT}
+            if validate_port "$SSH_PORT"; then
+                break
+            fi
+        done
+    fi
     # --- IP Detection ---
     print_info "Detecting network configuration..."
     # 1. Get the Local LAN IP (Explicit Check)
@@ -2990,26 +4026,62 @@ install_packages() {
 setup_ssh_keys() {
     local USER_HOME="$1"
     local SSH_DIR="$USER_HOME/.ssh"
-    local AUTH_KEYS="$SSH_DIR/authorized_keys"
+
+    if ! prepare_user_ssh_dir "$USERNAME" "$USER_HOME"; then
+        exit 1
+    fi
+
+    if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
+        local raw_keys="${DU_SSH_PUBLIC_KEY//|/$'\n'}"
+        local key_line added_count=0 valid_keys_buf=""
+        while IFS= read -r key_line || [[ -n "$key_line" ]]; do
+            key_line="${key_line#"${key_line%%[![:space:]]*}"}"
+            key_line="${key_line%"${key_line##*[![:space:]]}"}"
+            [[ -z "$key_line" ]] && continue
+            if validate_ssh_key "$key_line" "true"; then
+                if [[ -z "$valid_keys_buf" ]]; then
+                    valid_keys_buf="$key_line"
+                else
+                    valid_keys_buf+=$'\n'"$key_line"
+                fi
+                (( added_count += 1 ))
+            else
+                print_error "Invalid SSH key in DU_SSH_PUBLIC_KEY."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
+            fi
+        done <<< "$raw_keys"
+        if (( added_count > 0 )); then
+            if ! append_and_dedup_authorized_keys "$USERNAME" "$USER_HOME" "$valid_keys_buf"; then
+                exit 1
+            fi
+            print_success "Added $added_count SSH public key(s) from DU_SSH_PUBLIC_KEY."
+            log "Added $added_count SSH public key(s) from DU_SSH_PUBLIC_KEY for '$USERNAME'."
+            LOCAL_KEY_ADDED=true
+            return 0
+        fi
+    fi
+
+    if [[ $VERBOSE == false ]]; then
+        print_error "No SSH public key configured for '$USERNAME' in --quiet mode. Set DU_SSH_PUBLIC_KEY."
+        exit 1
+    fi
 
     if confirm "Add SSH public key(s) from your local machine now?"; then
         while true; do
             local SSH_PUBLIC_KEY
             read -rp "$(printf '%s' "${CYAN}Paste your full SSH public key: ${NC}")" SSH_PUBLIC_KEY
 
-            if validate_ssh_key "$SSH_PUBLIC_KEY"; then
-                mkdir -p "$SSH_DIR"
-                chmod 700 "$SSH_DIR"
-                chown "$USERNAME:$USERNAME" "$SSH_DIR"
-                echo "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
-                awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
-                chmod 600 "$AUTH_KEYS"
-                chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+            if validate_ssh_key "$SSH_PUBLIC_KEY" "true"; then
+                if ! append_and_dedup_authorized_keys "$USERNAME" "$USER_HOME" "$SSH_PUBLIC_KEY"; then
+                    exit 1
+                fi
                 print_success "SSH public key added."
                 log "Added SSH public key for '$USERNAME'."
                 LOCAL_KEY_ADDED=true
             else
-                print_error "Invalid SSH key format. It should start with 'ssh-rsa', 'ecdsa-*', or 'ssh-ed25519'."
+                print_error "Invalid SSH key format. Provide a valid 'ssh-ed25519', 'ecdsa-*', or 'ssh-rsa' public key."
             fi
 
             if ! confirm "Do you have another SSH public key to add?" "n"; then
@@ -3025,23 +4097,21 @@ setup_ssh_keys() {
             print_error "ssh-keygen not found. Please install openssh-client."
             exit 1
         fi
-        if [[ ! -w /tmp ]]; then
-            print_error "Cannot write to /tmp. Unable to create temporary key file."
+        if [[ ! -w "${RUN_TMP_DIR:-/tmp}" ]]; then
+            print_error "Cannot write to temporary directory. Unable to create temporary key file."
             exit 1
         fi
-
-        mkdir -p "$SSH_DIR"
-        chmod 700 "$SSH_DIR"
-        chown "$USERNAME:$USERNAME" "$SSH_DIR"
 
         # Generate user key pair for login
         if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_user" -N "" -q; then
             print_error "Failed to generate user SSH key for '$USERNAME'."
             exit 1
         fi
-        cat "$SSH_DIR/id_ed25519_user.pub" >> "$AUTH_KEYS"
-        chmod 600 "$AUTH_KEYS"
-        chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+        local generated_pubkey
+        generated_pubkey=$(sudo -u "$USERNAME" cat "$SSH_DIR/id_ed25519_user.pub")
+        if ! append_and_dedup_authorized_keys "$USERNAME" "$USER_HOME" "$generated_pubkey"; then
+            exit 1
+        fi
         print_success "SSH key generated and added to authorized_keys."
         log "Generated and added user SSH key for '$USERNAME'."
 
@@ -3052,11 +4122,11 @@ setup_ssh_keys() {
         print_success "Server SSH key generated (not shared)."
         log "Generated server SSH key for '$USERNAME'."
 
-        TEMP_KEY_FILE="/tmp/${USERNAME}_ssh_key_$(date +%s)"
-        trap 'rm -f "$TEMP_KEY_FILE" 2>/dev/null' EXIT
-        cp "$SSH_DIR/id_ed25519_user" "$TEMP_KEY_FILE"
+        local TEMP_KEY_FILE
+        TEMP_KEY_FILE=$(mktemp "${RUN_TMP_DIR:-/tmp}/${USERNAME}_ssh_key.XXXXXX")
         chmod 600 "$TEMP_KEY_FILE"
         chown root:root "$TEMP_KEY_FILE"
+        sudo -u "$USERNAME" cat "$SSH_DIR/id_ed25519_user" | tee "$TEMP_KEY_FILE" > /dev/null
 
         printf '\n'
         printf '%s\n' "${YELLOW}⚠ SECURITY WARNING: The SSH key pair below is your only chance to access '$USERNAME' via SSH.${NC}"
@@ -3070,7 +4140,7 @@ setup_ssh_keys() {
         printf '\n'
         printf '%s\n' "${CYAN}2. Save the PUBLIC key to verify or use elsewhere:${NC}"
         printf '====SSH PUBLIC KEY BELOW THIS LINE====\n'
-        cat "$SSH_DIR/id_ed25519_user.pub"
+        printf '%s\n' "$generated_pubkey"
         printf '====SSH PUBLIC KEY END====\n'
         printf '\n'
         printf '%s\n' "${CYAN}3. On your local machine, set permissions for the private key:${NC}"
@@ -3088,8 +4158,164 @@ setup_ssh_keys() {
         rm -f "$TEMP_KEY_FILE" 2>/dev/null
         print_info "Temporary key file deleted."
         LOCAL_KEY_ADDED=true
-        trap - EXIT
     fi
+}
+
+save_initial_sudo_password() {
+    local user_home="$1"
+    local username="$2"
+    local rand_pass="$3"
+    local notice_script="${DU_PASS_NOTICE_PATH:-/etc/profile.d/du-setup-pass-notice.sh}"
+
+    if [[ -z "$user_home" || ! -d "$user_home" || -L "$user_home" ]]; then
+        print_error "Refusing to save initial sudo password: '$user_home' is missing or a symlink."
+        return 1
+    fi
+
+    local pass_file="${user_home}/.du_initial_sudo_password"
+    if [[ -L "$pass_file" ]]; then
+        print_error "Refusing to overwrite symlink at '$pass_file'."
+        return 1
+    fi
+
+    local file_content
+    file_content=$(cat <<EOF
+# ==============================================================================
+# du_setup.sh — Initial Auto-Generated Sudo Password for '${username}'
+# ==============================================================================
+# Save this password to your password manager (or change it with 'passwd'),
+# then delete this file immediately:
+#   shred -u ~/.du_initial_sudo_password
+# ==============================================================================
+${rand_pass}
+EOF
+)
+
+    if [[ $(id -u) -eq 0 ]] && id "$username" >/dev/null 2>&1; then
+        if ! sudo -u "$username" rm -f -- "$pass_file" || \
+           ! printf '%s\n' "$file_content" | sudo -u "$username" sh -c 'umask 077 && cat > "$1" && chmod 600 "$1"' _ "$pass_file"; then
+            print_error "Failed to write initial sudo password file '$pass_file' as '$username'."
+            return 1
+        fi
+    else
+        rm -f -- "$pass_file"
+        (
+            umask 077
+            printf '%s\n' "$file_content" > "$pass_file"
+        )
+        chmod 600 "$pass_file"
+        local user_primary_group
+        user_primary_group=$(id -gn "$username" 2>/dev/null || printf '%s' "$username")
+        chown -h "${username}:${user_primary_group}" "$pass_file" 2>/dev/null || true
+    fi
+
+    if [[ ! -f "$pass_file" || -L "$pass_file" ]]; then
+        print_error "Verification failed for initial sudo password file '$pass_file'."
+        return 1
+    fi
+    GENERATED_SUDO_PASS_FILE="$pass_file"
+
+    if [[ -d "$(dirname "$notice_script")" && ! -L "$notice_script" ]]; then
+        cat <<'EOF' > "$notice_script"
+# Managed by du_setup.sh — self-clearing initial sudo password reminder
+if [ -n "${HOME:-}" ] && [ -f "$HOME/.du_initial_sudo_password" ]; then
+    case "$-" in
+        *i*)
+            printf '\n\033[1;33m[du_setup] NOTICE:\033[0m Initial sudo password is saved in \033[1m~/.du_initial_sudo_password\033[0m — save it (or change with \033[1mpasswd\033[0m), then delete it: \033[0;36mshred -u ~/.du_initial_sudo_password\033[0m\n\n'
+            ;;
+    esac
+fi
+EOF
+        chmod 644 "$notice_script"
+    fi
+}
+
+user_has_usable_password() {
+    local target_user="$1"
+    local shadow_entry="" shadow_field=""
+
+    if [[ -n "${DU_SHADOW_FILE:-}" ]]; then
+        [[ -r "${DU_SHADOW_FILE}" ]] || return 1
+        shadow_entry=$(awk -F: -v u="$target_user" '$1 == u { print; exit }' "$DU_SHADOW_FILE")
+        [[ -n "$shadow_entry" ]] || return 1
+        shadow_field=$(printf '%s\n' "$shadow_entry" | cut -d: -f2)
+        [[ -n "$shadow_field" && "$shadow_field" != "!"* && "$shadow_field" != "*"* ]]
+        return $?
+    fi
+
+    shadow_entry=$(getent shadow "$target_user" 2>/dev/null || true)
+    if [[ -n "$shadow_entry" ]]; then
+        shadow_field=$(printf '%s\n' "$shadow_entry" | cut -d: -f2)
+        if [[ -n "$shadow_field" && "$shadow_field" != "!"* && "$shadow_field" != "*"* ]]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    local pw_status=""
+    pw_status=$(passwd -S "$target_user" 2>/dev/null | awk '{print $2}' || true)
+    [[ "$pw_status" == "P" ]]
+}
+
+apply_user_password() {
+    local target_user="$1"
+    local raw_pass="$2"
+    if [[ -z "$target_user" || -z "$raw_pass" || "$raw_pass" == *$'\n'* || "$raw_pass" == *$'\r'* || "$target_user" == *:* ]]; then
+        return 1
+    fi
+    printf '%s:%s\n' "$target_user" "$raw_pass" | chpasswd >/dev/null 2>&1
+}
+
+write_nopasswd_sudoers() {
+    local target_user="$1"
+    local sudoers_dir="${DU_SUDOERS_D_DIR:-/etc/sudoers.d}"
+    local target_file="${sudoers_dir}/99-${target_user}-nopasswd"
+    mkdir -p "$sudoers_dir"
+    if [[ -L "$target_file" ]]; then
+        print_error "Refusing to overwrite symlink at '$target_file'."
+        return 1
+    fi
+    (
+        umask 0337
+        printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$target_user" > "$target_file"
+    )
+    chmod 0440 "$target_file"
+}
+
+find_external_nopasswd_sudoers_files() {
+    local target_user="$1"
+    local sudoers_dir="${DU_SUDOERS_D_DIR:-/etc/sudoers.d}"
+    local managed_file="${sudoers_dir}/99-${target_user}-nopasswd"
+    [[ -n "$target_user" && -d "$sudoers_dir" ]] || return 0
+
+    local user_groups=""
+    user_groups=" $(id -nG "$target_user" 2>/dev/null || true) sudo "
+
+    local f base line first_tok grp_name
+    for f in "$sudoers_dir"/*; do
+        [[ -f "$f" && -r "$f" ]] || continue
+        [[ "$f" == "$managed_file" ]] && continue
+        base=$(basename "$f")
+        # sudoers includedir ignores README, backup (~), and filenames containing '.'
+        [[ "$base" == "README" || "$base" == *.* || "$base" == *~ ]] && continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" == \#* || "$line" == Defaults* ]] && continue
+            if [[ "$line" == *NOPASSWD* ]]; then
+                first_tok="${line%%[[:space:]]*}"
+                if [[ "$first_tok" == "$target_user" || "$first_tok" == "ALL" ]]; then
+                    printf '%s\n' "$f"
+                    break
+                elif [[ "$first_tok" == %* ]]; then
+                    grp_name="${first_tok#%}"
+                    if [[ -n "$grp_name" && "$user_groups" == *" ${grp_name} "* ]]; then
+                        printf '%s\n' "$f"
+                        break
+                    fi
+                fi
+            fi
+        done < "$f"
+    done
 }
 
 setup_user() {
@@ -3117,72 +4343,116 @@ setup_user() {
             print_error "User '$USERNAME' creation verification failed."
             exit 1
         fi
-        print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
-        while true; do
-            read -rsp "$(printf '%s' "${CYAN}New password: ${NC}")" PASS1
-            printf '\n'
-            read -rsp "$(printf '%s' "${CYAN}Retype new password: ${NC}")" PASS2
-            printf '\n'
-            if [[ -z "$PASS1" && -z "$PASS2" ]]; then
-                print_warning "Password skipped. Relying on SSH key authentication."
-                print_warning "Without a password, you will NOT be able to use 'sudo' for administrative tasks."
-                if confirm "Generate a secure random password for you? (Recommended)" "y"; then
-                    local RAND_PASS
-                    RAND_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 24)
-                    if echo "$USERNAME:$RAND_PASS" | chpasswd >/dev/null 2>&1; then
-                        print_success "Generated random password for '$USERNAME'."
-                        printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS:${NC}"
-                        printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
-                        log "Generated random password for '$USERNAME'."
-                        break
-                    else
-                        print_error "Failed to set random password. Please try again."
-                        continue
-                    fi
-                elif confirm "Enable passwordless sudo? (WARNING: Security Risk)" "n"; then
-                    echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/99-$USERNAME-nopasswd"
-                    chmod 0440 "/etc/sudoers.d/99-$USERNAME-nopasswd"
-                    print_warning "Passwordless sudo enabled for '$USERNAME'."
-                    log "Passwordless sudo explicitly enabled for '$USERNAME'."
-                    break
-                elif confirm "Would you like to manually type a password instead?" "y"; then
-                    print_info "Returning to password prompt..."
-                    continue
-                else
-                    print_warning "Proceeding with NO password and NO sudo rights for '$USERNAME'."
-                    log "Password setting skipped, no sudo rights for '$USERNAME'."
-                    break
-                fi
-            elif [[ "$PASS1" == "$PASS2" ]]; then
-                if echo "$USERNAME:$PASS1" | chpasswd >/dev/null 2>&1; then
-                    print_success "Password for '$USERNAME' updated."
-                    break
-                else
-                    print_error "Failed to set password. Possible causes:"
-                    print_info "  • permissions issue or password policy restrictions."
-                    print_info "  • VPS provider password requirements (min. 8-12 chars, complexity rules)"
-                    printf '\n'
-                    print_info "Try again or press Enter twice to skip."
-                    log "Failed to set password for '$USERNAME'."
-                fi
-            else
-                print_error "Passwords do not match. Please try again."
-            fi
-        done
 
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+        if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+            print_error "Home directory for '$USERNAME' was not found (${USER_HOME:-empty})."
+            exit 1
+        fi
+        chown "$USERNAME:$(id -gn "$USERNAME")" "$USER_HOME"
+        chmod 700 "$USER_HOME"
 
         # Check if home directory is writable
         if [[ ! -w "$USER_HOME" ]]; then
-            print_error "Home directory $USER_HOME is not writable by $USERNAME."
-            print_info "Attempting to fix permissions..."
-            chown "$USERNAME:$USERNAME" "$USER_HOME"
-            chmod 700 "$USER_HOME"
-            if [[ ! -w "$USER_HOME" ]]; then
-                print_error "Failed to make $USER_HOME writable. Check filesystem permissions."
-                exit 1
+            print_error "Home directory $USER_HOME is not writable. Check filesystem permissions."
+            exit 1
+        fi
+
+        local password_configured=false
+        if [[ -n "${DU_USER_PASSWORD:-}" ]]; then
+            if apply_user_password "$USERNAME" "${DU_USER_PASSWORD}"; then
+                SUDO_PASSWORD_STATUS="explicit"
+                print_success "Password for '$USERNAME' set from DU_USER_PASSWORD."
+                log "Password set for '$USERNAME' via DU_USER_PASSWORD."
+                password_configured=true
+            else
+                print_error "Failed to apply DU_USER_PASSWORD via chpasswd (check system password policy or invalid characters)."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
             fi
-            log "Fixed permissions for $USER_HOME."
+        elif [[ $VERBOSE == false ]]; then
+            local nopasswd_rc=0
+            env_bool_status "DU_PASSWORDLESS_SUDO" || nopasswd_rc=$?
+            if [[ $nopasswd_rc -eq 0 ]]; then
+                write_nopasswd_sudoers "$USERNAME"
+                SUDO_PASSWORD_STATUS="nopasswd"
+                log "Passwordless sudo enabled for '$USERNAME' via DU_PASSWORDLESS_SUDO."
+                password_configured=true
+            elif confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Generate a secure random password for you? (Recommended)" "y"; then
+                local RAND_PASS
+                RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
+                if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                    SUDO_PASSWORD_STATUS="generated"
+                    log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME"))."
+                    password_configured=true
+                else
+                    print_error "Failed to generate and set random password for '$USERNAME' in --quiet mode."
+                    exit 1
+                fi
+            else
+                SUDO_PASSWORD_STATUS="none"
+                log "Password skipped in --quiet mode (no sudo password or passwordless sudo configured for '$USERNAME')."
+                password_configured=true
+            fi
+        fi
+
+        if [[ "$password_configured" == false ]]; then
+            print_info "Set a password for '$USERNAME' (required for sudo, or press Enter twice to skip for key-only access):"
+            while true; do
+                read -rsp "$(printf '%s' "${CYAN}New password: ${NC}")" PASS1
+                printf '\n'
+                read -rsp "$(printf '%s' "${CYAN}Retype new password: ${NC}")" PASS2
+                printf '\n'
+                if [[ -z "$PASS1" && -z "$PASS2" ]]; then
+                    print_warning "Password skipped. Relying on SSH key authentication."
+                    print_warning "Without a password, you will NOT be able to use 'sudo' for administrative tasks."
+                    if confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Generate a secure random password for you? (Recommended)" "y"; then
+                        local RAND_PASS
+                        RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
+                        if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                            SUDO_PASSWORD_STATUS="generated"
+                            print_success "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                            printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS (also saved to $GENERATED_SUDO_PASS_FILE):${NC}"
+                            printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
+                            log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                            break
+                        else
+                            print_error "Failed to set random password. Please try again."
+                            continue
+                        fi
+                    elif confirm_with_env "DU_PASSWORDLESS_SUDO" "Enable passwordless sudo? (WARNING: Security Risk)" "n"; then
+                        write_nopasswd_sudoers "$USERNAME"
+                        SUDO_PASSWORD_STATUS="nopasswd"
+                        print_warning "Passwordless sudo enabled for '$USERNAME'."
+                        log "Passwordless sudo explicitly enabled for '$USERNAME'."
+                        break
+                    elif confirm "Would you like to manually type a password instead?" "y"; then
+                        print_info "Returning to password prompt..."
+                        continue
+                    else
+                        SUDO_PASSWORD_STATUS="none"
+                        print_warning "Proceeding with NO password and NO sudo rights for '$USERNAME'."
+                        log "Password setting skipped, no sudo rights for '$USERNAME'."
+                        break
+                    fi
+                elif [[ "$PASS1" == "$PASS2" ]]; then
+                    if apply_user_password "$USERNAME" "$PASS1"; then
+                        SUDO_PASSWORD_STATUS="explicit"
+                        print_success "Password for '$USERNAME' updated."
+                        break
+                    else
+                        print_error "Failed to set password. Possible causes:"
+                        print_info "  • permissions issue or password policy restrictions."
+                        print_info "  • VPS provider password requirements (min. 8-12 chars, complexity rules)"
+                        printf '\n'
+                        print_info "Try again or press Enter twice to skip."
+                        log "Failed to set password for '$USERNAME'."
+                    fi
+                else
+                    print_error "Passwords do not match. Please try again."
+                fi
+            done
         fi
 
         setup_ssh_keys "$USER_HOME"
@@ -3199,9 +4469,15 @@ setup_user() {
             log "Marked existing user '$USERNAME' as script-managed"
         fi
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+        if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+            print_error "Home directory for existing user '$USERNAME' was not found (${USER_HOME:-empty})."
+            exit 1
+        fi
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
-        if [[ ! -s "$AUTH_KEYS" ]] || ! grep -qE '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null; then
+        if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
+            setup_ssh_keys "$USER_HOME"
+        elif ! has_valid_authorized_keys_file "$AUTH_KEYS"; then
             print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
             print_info "You must add or generate a key now to prevent lockout."
 
@@ -3209,6 +4485,75 @@ setup_user() {
         else
             LOCAL_KEY_ADDED=true
             print_success "Valid SSH keys found for existing user '$USERNAME'."
+        fi
+        if ! ensure_and_validate_ssh_strict_modes "$USERNAME" "$USER_HOME" "true"; then
+            print_error "Existing user '$USERNAME' home/SSH directory permissions violate OpenSSH StrictModes. Aborting to prevent lockout."
+            exit 1
+        fi
+
+        # Idempotent password & sudo policy for pre-existing accounts (e.g., Proxmox Cloud-Init / Cloud VPS)
+        local existing_nopasswd_rc=0
+        env_bool_status "DU_PASSWORDLESS_SUDO" || existing_nopasswd_rc=$?
+
+        if [[ -n "${DU_USER_PASSWORD:-}" ]]; then
+            if apply_user_password "$USERNAME" "${DU_USER_PASSWORD}"; then
+                SUDO_PASSWORD_STATUS="explicit"
+                if [[ -f "${USER_HOME}/.du_initial_sudo_password" && ! -L "${USER_HOME}/.du_initial_sudo_password" ]]; then
+                    if [[ $(id -u) -eq 0 ]]; then
+                        sudo -u "$USERNAME" rm -f -- "${USER_HOME}/.du_initial_sudo_password" 2>/dev/null || true
+                    else
+                        rm -f -- "${USER_HOME}/.du_initial_sudo_password" 2>/dev/null || true
+                    fi
+                fi
+                print_success "Password for existing user '$USERNAME' set from DU_USER_PASSWORD."
+                log "Password set for existing user '$USERNAME' via DU_USER_PASSWORD."
+            else
+                print_error "Failed to apply DU_USER_PASSWORD for existing user '$USERNAME' via chpasswd (check system password policy or invalid characters)."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
+            fi
+        elif [[ $existing_nopasswd_rc -eq 0 ]]; then
+            write_nopasswd_sudoers "$USERNAME"
+            SUDO_PASSWORD_STATUS="nopasswd"
+            print_warning "Passwordless sudo enabled for existing user '$USERNAME'."
+            log "Passwordless sudo enabled for existing user '$USERNAME' via DU_PASSWORDLESS_SUDO."
+        elif ! user_has_usable_password "$USERNAME"; then
+            print_info "Existing user '$USERNAME' has no active password set (locked or key-only account)."
+            if confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Existing user '$USERNAME' has no password set. Generate a secure random sudo password? (Recommended)" "y"; then
+                local RAND_PASS
+                RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
+                if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                    SUDO_PASSWORD_STATUS="generated"
+                    print_success "Generated initial sudo password for existing user '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                    if [[ $VERBOSE == true ]]; then
+                        printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS (also saved to $GENERATED_SUDO_PASS_FILE):${NC}"
+                        printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
+                    fi
+                    log "Generated random password for existing user '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME"))."
+                else
+                    print_error "Failed to generate and set initial sudo password for existing user '$USERNAME'."
+                    if [[ $VERBOSE == false ]]; then
+                        exit 1
+                    fi
+                fi
+            elif [[ $VERBOSE == true ]] && confirm_with_env "DU_PASSWORDLESS_SUDO" "Enable passwordless sudo for '$USERNAME'? (WARNING: Security Risk)" "n"; then
+                write_nopasswd_sudoers "$USERNAME"
+                SUDO_PASSWORD_STATUS="nopasswd"
+                print_warning "Passwordless sudo enabled for existing user '$USERNAME'."
+                log "Passwordless sudo explicitly enabled for existing user '$USERNAME'."
+            else
+                SUDO_PASSWORD_STATUS="none"
+                print_warning "No password configured for existing user '$USERNAME'."
+                log "Password generation skipped for existing passwordless user '$USERNAME'."
+            fi
+        else
+            SUDO_PASSWORD_STATUS="retained"
+            if [[ -f "${USER_HOME}/.du_initial_sudo_password" && ! -L "${USER_HOME}/.du_initial_sudo_password" ]]; then
+                GENERATED_SUDO_PASS_FILE="${USER_HOME}/.du_initial_sudo_password"
+            fi
+            print_info "Existing user '$USERNAME' already has an active password; retaining existing password."
+            log "Existing user '$USERNAME' already has an active password; retained unchanged."
         fi
     fi
 
@@ -3249,22 +4594,39 @@ configure_system() {
     cp /etc/sysctl.conf "$BACKUP_DIR/sysctl.conf.backup" 2>/dev/null || true
 
     print_info "Configuring timezone..."
-    while true; do
-        read -rp "$(printf '%s' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
-        TIMEZONE=${TIMEZONE:-Etc/UTC}
-        if validate_timezone "$TIMEZONE"; then
-            if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
-                timedatectl set-timezone "$TIMEZONE"
-                print_success "Timezone set to $TIMEZONE."
-                log "Timezone set to $TIMEZONE."
-            else
-                print_info "Timezone already set to $TIMEZONE."
-            fi
-            break
+    if [[ -n "${DU_TIMEZONE:-}" ]] && validate_timezone "${DU_TIMEZONE}"; then
+        TIMEZONE="${DU_TIMEZONE}"
+        if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
+            timedatectl set-timezone "$TIMEZONE"
+            print_success "Timezone set to $TIMEZONE."
+            log "Timezone set to $TIMEZONE."
         else
-            print_error "Invalid timezone. View list with 'timedatectl list-timezones'."
+            print_info "Timezone already set to $TIMEZONE."
         fi
-    done
+    elif [[ $VERBOSE == false ]]; then
+        TIMEZONE="Etc/UTC"
+        if validate_timezone "$TIMEZONE" && [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
+            timedatectl set-timezone "$TIMEZONE"
+            log "Timezone defaulted to $TIMEZONE in --quiet mode."
+        fi
+    else
+        while true; do
+            read -rp "$(printf '%s' "${CYAN}Enter desired timezone (e.g., Europe/London, America/New_York) [Etc/UTC]: ${NC}")" TIMEZONE
+            TIMEZONE=${TIMEZONE:-Etc/UTC}
+            if validate_timezone "$TIMEZONE"; then
+                if [[ $(timedatectl status | grep "Time zone" | awk '{print $3}') != "$TIMEZONE" ]]; then
+                    timedatectl set-timezone "$TIMEZONE"
+                    print_success "Timezone set to $TIMEZONE."
+                    log "Timezone set to $TIMEZONE."
+                else
+                    print_info "Timezone already set to $TIMEZONE."
+                fi
+                break
+            else
+                print_error "Invalid timezone. View list with 'timedatectl list-timezones'."
+            fi
+        done
+    fi
 
     if confirm "Configure system locales interactively?"; then
         dpkg-reconfigure locales
@@ -3426,7 +4788,7 @@ configure_ssh() {
     trap cleanup_and_exit ERR
 
     print_section "SSH Hardening"
-    local CURRENT_SSH_PORT USER_HOME SSH_DIR SSH_KEY AUTH_KEYS
+    local CURRENT_SSH_PORT USER_HOME SSH_DIR AUTH_KEYS
 
     # Ensure openssh-server is installed
     if ! dpkg -l openssh-server | grep -q ^ii; then
@@ -3466,28 +4828,43 @@ configure_ssh() {
 
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
-        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
-        sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
-        cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
+        prepare_user_ssh_dir "$USERNAME" "$USER_HOME" || return 1
+        sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q || return 1
+        local fallback_pubkey
+        fallback_pubkey=$(sudo -u "$USERNAME" cat "$SSH_DIR/id_ed25519.pub")
+        append_and_dedup_authorized_keys "$USERNAME" "$USER_HOME" "$fallback_pubkey" || return 1
         # Verify the key was added
         if [[ ! -s "$AUTH_KEYS" ]]; then
             print_error "Failed to create authorized_keys file."
             return 1
         fi
-        chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
         print_success "SSH key generated."
-        printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
+        printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; printf '%s\n' "$fallback_pubkey"
     fi
 
-    print_warning "SSH Key Authentication Required for Next Steps!"
-    printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
-
-    # Show options for CURRENT port
-    show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
-
-    if ! confirm "Can you successfully log in using your SSH key?" "n" 300; then
-        print_error "SSH key authentication is mandatory to proceed."
+    if ! ensure_and_validate_ssh_strict_modes "$USERNAME" "$USER_HOME" "true"; then
+        print_error "SSH StrictModes permission validation failed for '$USERNAME'. Aborting SSH hardening to prevent lockout."
         return 1
+    fi
+
+    if [[ $VERBOSE == false ]]; then
+        if ! has_valid_authorized_keys_file "$AUTH_KEYS" "true"; then
+            print_error "Quiet mode aborted: No valid SSH public key verified in $AUTH_KEYS."
+            return 1
+        fi
+        print_info "Quiet mode: Verified valid SSH public key(s) and StrictModes permissions in $AUTH_KEYS."
+        log "Quiet mode: Pre-hardening authorized_keys and StrictModes validation passed for $USERNAME."
+    else
+        print_warning "SSH Key Authentication Required for Next Steps!"
+        printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
+
+        # Show options for CURRENT port
+        show_connection_options "$CURRENT_SSH_PORT" "$SERVER_IP_V4"
+
+        if ! confirm "Can you successfully log in using your SSH key?" "n" 300; then
+            print_error "SSH key authentication is mandatory to proceed."
+            return 1
+        fi
     fi
 
     # Apply port override
@@ -3509,9 +4886,13 @@ configure_ssh() {
 Port $SSH_PORT
 PermitRootLogin no
 PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
 PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
 MaxAuthTries 3
 ClientAliveInterval 300
+ClientAliveCountMax 2
 X11Forwarding no
 PrintMotd no
 Banner /etc/issue.net
@@ -3537,11 +4918,21 @@ EOF
             return 1
         fi
     fi
+    if ! verify_sshd_effective_pubkey_config "$USERNAME" "$USER_HOME" "$AUTH_KEYS" "$SSH_PORT"; then
+        print_error "Aborting SSH hardening to prevent lockout because sshd will not read '$AUTH_KEYS' for '$USERNAME'."
+        rm -f /etc/ssh/sshd_config.d/10-hardening.conf
+        rm -f /etc/issue.net
+        rm -f /etc/systemd/system/ssh.socket.d/override.conf
+        rm -f /etc/systemd/system/ssh.service.d/override.conf
+        rm -f /etc/systemd/system/sshd.service.d/override.conf
+        systemctl daemon-reload
+        return 1
+    fi
     print_info "Reloading systemd and restarting SSH service..."
     systemctl daemon-reload
     systemctl restart "$SSH_SERVICE"
     sleep 5
-    if ! ss -tuln | grep -q ":$SSH_PORT"; then
+    if ! ss -tuln | awk '{print $5}' | grep -qE "(^|:)${SSH_PORT}$"; then
         print_error "SSH not listening on port $SSH_PORT after restart!"
         return 1
     fi
@@ -3557,7 +4948,20 @@ EOF
         print_success "Confirmed: Root SSH login is disabled."
     fi
 
-    if [[ "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
+    if [[ $VERBOSE == false ]]; then
+        if ! sshd -t >/dev/null 2>&1 || ! ss -tuln | awk '{print $5}' | grep -qE "(^|:)${SSH_PORT}$"; then
+            print_error "Quiet mode SSH verification failed. Initiating rollback..."
+            rollback_ssh_changes
+            return 1
+        fi
+        if [[ "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
+            print_info "Removing temporary UFW rule for old SSH port $PREVIOUS_SSH_PORT..."
+            ufw delete allow "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
+            ufw delete limit "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
+        fi
+        print_success "Quiet mode: SSH hardening verified on port $SSH_PORT."
+        log "Quiet mode: SSH hardening verified on port $SSH_PORT."
+    elif [[ "$SSH_PORT" != "$PREVIOUS_SSH_PORT" ]]; then
         print_warning "CRITICAL: Test new SSH connection on port $SSH_PORT in a SEPARATE terminal NOW!"
         print_warning "ACTION REQUIRED: Check your VPS provider's edge/network firewall to allow $SSH_PORT/tcp."
 
@@ -3576,14 +4980,14 @@ EOF
                 ufw delete limit "$PREVIOUS_SSH_PORT"/tcp 2>/dev/null || true
                 break
             else
-                (( retry_count++ ))
+                (( retry_count += 1 ))
                 if (( retry_count < max_retries )); then
                     print_info "Retrying SSH connection test ($retry_count/$max_retries)..."
                     sleep 5
                 else
                     print_error "All retries failed. Initiating rollback to port $PREVIOUS_SSH_PORT..."
                     rollback_ssh_changes
-                    if ! ss -tuln | grep -q ":$PREVIOUS_SSH_PORT"; then
+                    if ! ss -tuln | awk '{print $5}' | grep -qE "(^|:)${PREVIOUS_SSH_PORT}$"; then
                         print_error "Rollback failed. SSH not restored on original port $PREVIOUS_SSH_PORT."
                     else
                         print_success "Rollback successful. SSH restored on original port $PREVIOUS_SSH_PORT."
@@ -3605,12 +5009,13 @@ EOF
         fi
     fi
 
-    trap - ERR
+    trap 'handle_error $LINENO' ERR
     log "SSH hardening completed."
 }
 
 rollback_ssh_changes() {
     print_info "Rolling back SSH configuration changes to port $PREVIOUS_SSH_PORT..."
+    local tmp_dir="${RUN_TMP_DIR:-/tmp}"
 
     # Ensure SSH_SERVICE is set and valid
     local SSH_SERVICE=${SSH_SERVICE:-"sshd.service"}
@@ -3683,9 +5088,9 @@ rollback_ssh_changes() {
     fi
 
     # Validate restored sshd_config
-    if ! /usr/sbin/sshd -t >/tmp/sshd_config_test.log 2>&1; then
-        print_error "Restored sshd_config is invalid. Check /tmp/sshd_config_test.log for details."
-        log "Rollback failed: Invalid sshd_config after restoration. See /tmp/sshd_config_test.log."
+    if ! /usr/sbin/sshd -t >"${tmp_dir}/sshd_config_test.log" 2>&1; then
+        print_error "Restored sshd_config is invalid. Check ${tmp_dir}/sshd_config_test.log for details."
+        log "Rollback failed: Invalid sshd_config after restoration. See ${tmp_dir}/sshd_config_test.log."
         print_info "Action: Fix /etc/ssh/sshd_config manually and test with 'sshd -t', then restart with 'systemctl restart ssh.service'."
         return 0
     fi
@@ -3701,70 +5106,70 @@ rollback_ssh_changes() {
     if [[ "$USE_SOCKET" == true ]]; then
         # Stop ssh.socket to avoid conflicts
         if systemctl is-active --quiet ssh.socket; then
-            if ! systemctl stop ssh.socket 2>/tmp/ssh_socket_stop.log; then
+            if ! systemctl stop ssh.socket 2>"${tmp_dir}/ssh_socket_stop.log"; then
                 print_warning "Failed to stop ssh.socket. May affect port binding."
-                log "Rollback warning: Failed to stop ssh.socket. See /tmp/ssh_socket_stop.log."
+                log "Rollback warning: Failed to stop ssh.socket. See ${tmp_dir}/ssh_socket_stop.log."
             else
                 log "Stopped ssh.socket to ensure correct port binding."
             fi
         fi
         # Restart ssh.service to ensure sshd starts
         print_info "Restarting ssh.service..."
-        if ! systemctl restart ssh.service 2>/tmp/sshd_restart.log; then
+        if ! systemctl restart ssh.service 2>"${tmp_dir}/sshd_restart.log"; then
             print_warning "Failed to restart ssh.service. Attempting manual start..."
-            log "Rollback warning: Failed to restart ssh.service. See /tmp/sshd_restart.log."
+            log "Rollback warning: Failed to restart ssh.service. See ${tmp_dir}/sshd_restart.log."
             # Ensure no other sshd processes are running
             pkill -f "sshd:.*" 2>/dev/null || true
             # Manual start in foreground to verify
-            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >/tmp/sshd_manual_start.log 2>&1
-            local TIMEOUT_EXIT=$?
+            local TIMEOUT_EXIT=0
+            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >"${tmp_dir}/sshd_manual_start.log" 2>&1 || TIMEOUT_EXIT=$?
             if [[ $TIMEOUT_EXIT -eq 0 || $TIMEOUT_EXIT -eq 124 ]]; then
                 log "Manual SSH start succeeded (exit code $TIMEOUT_EXIT)."
                 # Restart ssh.service to ensure systemd management
-                if ! systemctl restart ssh.service 2>/tmp/sshd_restart_manual.log; then
+                if ! systemctl restart ssh.service 2>"${tmp_dir}/sshd_restart_manual.log"; then
                     print_error "Failed to restart ssh.service after manual start."
-                    log "Rollback failed: Failed to restart ssh.service after manual start. See /tmp/sshd_restart_manual.log."
+                    log "Rollback failed: Failed to restart ssh.service after manual start. See ${tmp_dir}/sshd_restart_manual.log."
                     print_info "Action: Check service status with 'systemctl status ssh.service' and logs with 'journalctl -u ssh.service'."
                     return 0
                 fi
             else
-                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check /tmp/sshd_manual_start.log."
-                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See /tmp/sshd_manual_start.log."
+                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check ${tmp_dir}/sshd_manual_start.log."
+                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See ${tmp_dir}/sshd_manual_start.log."
                 print_info "Action: Check service status with 'systemctl status ssh.service' and logs with 'journalctl -u ssh.service'."
                 return 0
             fi
         fi
         # Restart ssh.socket to re-enable socket activation
         print_info "Restarting ssh.socket..."
-        if ! systemctl restart ssh.socket 2>/tmp/ssh_socket_restart.log; then
+        if ! systemctl restart ssh.socket 2>"${tmp_dir}/ssh_socket_restart.log"; then
             print_warning "Failed to restart ssh.socket. SSH service may still be running."
-            log "Rollback warning: Failed to restart ssh.socket. See /tmp/ssh_socket_restart.log."
+            log "Rollback warning: Failed to restart ssh.socket. See ${tmp_dir}/ssh_socket_restart.log."
         else
             log "Restarted ssh.socket for socket activation."
         fi
     else
         # Direct service restart for non-socket systems
         print_info "Restarting $SSH_SERVICE..."
-        if ! systemctl restart "$SSH_SERVICE" 2>/tmp/sshd_restart.log; then
+        if ! systemctl restart "$SSH_SERVICE" 2>"${tmp_dir}/sshd_restart.log"; then
             print_warning "Failed to restart $SSH_SERVICE. Attempting manual start..."
-            log "Rollback warning: Failed to restart $SSH_SERVICE. See /tmp/sshd_restart.log."
+            log "Rollback warning: Failed to restart $SSH_SERVICE. See ${tmp_dir}/sshd_restart.log."
             # Ensure no other sshd processes are running
             pkill -f "sshd:.*" 2>/dev/null || true
             # Manual start in foreground to verify
-            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >/tmp/sshd_manual_start.log 2>&1
-            local TIMEOUT_EXIT=$?
+            local TIMEOUT_EXIT=0
+            timeout 5 /usr/sbin/sshd -D -f /etc/ssh/sshd_config >"${tmp_dir}/sshd_manual_start.log" 2>&1 || TIMEOUT_EXIT=$?
             if [[ $TIMEOUT_EXIT -eq 0 || $TIMEOUT_EXIT -eq 124 ]]; then
                 log "Manual SSH start succeeded (exit code $TIMEOUT_EXIT)."
                 # Restart service to ensure systemd management
-                if ! systemctl restart "$SSH_SERVICE" 2>/tmp/sshd_restart_manual.log; then
+                if ! systemctl restart "$SSH_SERVICE" 2>"${tmp_dir}/sshd_restart_manual.log"; then
                     print_error "Failed to restart $SSH_SERVICE after manual start."
-                    log "Rollback failed: Failed to restart $SSH_SERVICE after manual start. See /tmp/sshd_restart_manual.log."
+                    log "Rollback failed: Failed to restart $SSH_SERVICE after manual start. See ${tmp_dir}/sshd_restart_manual.log."
                     print_info "Action: Check service status with 'systemctl status $SSH_SERVICE' and logs with 'journalctl -u $SSH_SERVICE'."
                     return 0
                 fi
             else
-                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check /tmp/sshd_manual_start.log."
-                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See /tmp/sshd_manual_start.log."
+                print_error "Manual SSH start failed (exit code $TIMEOUT_EXIT). Check ${tmp_dir}/sshd_manual_start.log."
+                log "Rollback failed: Manual SSH start failed (exit code $TIMEOUT_EXIT). See ${tmp_dir}/sshd_manual_start.log."
                 print_info "Action: Check service status with 'systemctl status $SSH_SERVICE' and logs with 'journalctl -u $SSH_SERVICE'."
                 return 0
             fi
@@ -3775,7 +5180,7 @@ rollback_ssh_changes() {
     local rollback_verified=false
     print_info "Verifying SSH rollback to port $PREVIOUS_SSH_PORT..."
     for ((i=1; i<=10; i++)); do
-        if ss -tuln | grep -q ":$PREVIOUS_SSH_PORT "; then
+        if ss -tuln | awk '{print $5}' | grep -qE "(^|:)${PREVIOUS_SSH_PORT}$"; then
             rollback_verified=true
             break
         fi
@@ -3788,7 +5193,7 @@ rollback_ssh_changes() {
         log "Rollback successful: SSH listening on port $PREVIOUS_SSH_PORT."
     else
         print_error "Rollback failed. SSH service is not listening on port $PREVIOUS_SSH_PORT."
-        log "Rollback failed: SSH not listening on port $PREVIOUS_SSH_PORT. See /tmp/sshd_config_test.log, /tmp/sshd_restart.log, /tmp/sshd_manual_start.log, /tmp/ssh_socket_restart.log."
+        log "Rollback failed: SSH not listening on port $PREVIOUS_SSH_PORT."
         print_info "Action: Check service status with 'systemctl status ssh.service' or 'systemctl status ssh.socket', logs with 'journalctl -u ssh.service' or 'journalctl -u ssh.socket', and test config with 'sshd -t'."
         print_info "Manually verify port with 'ss -tuln | grep :$PREVIOUS_SSH_PORT'."
         print_info "Try starting SSH with 'sudo systemctl start ssh.service'."
@@ -3798,6 +5203,12 @@ rollback_ssh_changes() {
 }
 
 configure_2fa() {
+    if [[ $VERBOSE == false ]]; then
+        print_info "Quiet mode enabled. Skipping interactive 2FA (TOTP) setup."
+        log "2FA setup skipped due to quiet mode."
+        return 0
+    fi
+
     print_section "Two-Factor Authentication (2FA) Setup"
     print_info "2FA adds an extra layer of security by requiring a time-based code (TOTP) along with your SSH key."
     print_info "Note: This will be configured specifically for the user '$USERNAME'."
@@ -3869,23 +5280,28 @@ configure_2fa() {
         SETUP_SUCCESS=true
     fi
 
-    # 3. Configure PAM
+    # 3. Configure PAM (backup stored in $BACKUP_DIR, common-auth disabled so key-only users work cleanly)
     local PAM_FILE="/etc/pam.d/sshd"
+    local PAM_BACKUP_FILE
+    PAM_BACKUP_FILE="$BACKUP_DIR/pam_sshd.backup_$(date +%Y%m%d_%H%M%S)"
     print_info "Configuring PAM ($PAM_FILE)..."
+    cp "$PAM_FILE" "$PAM_BACKUP_FILE"
     if ! grep -q "pam_google_authenticator.so" "$PAM_FILE"; then
-        cp "$PAM_FILE" "${PAM_FILE}.backup_$(date +%Y%m%d_%H%M%S)"
-        # Prepend to ensure it runs
         sed -i '1i auth required pam_google_authenticator.so nullok' "$PAM_FILE"
-        print_success "Updated PAM configuration."
-    else
-        print_info "PAM already configured."
     fi
+    # Comment @include common-auth so SSH requires strictly SSH Key + TOTP (preventing pam_unix lockout for key-only users)
+    sed -i 's/^[[:space:]]*@include[[:space:]]\+common-auth/#@include common-auth/' "$PAM_FILE"
+    print_success "Updated PAM configuration (backup saved to $PAM_BACKUP_FILE)."
 
     # 4. Configure SSH
     print_info "Configuring SSH to enforce 2FA for '$USERNAME'..."
     local SSH_DROPIN_DIR="/etc/ssh/sshd_config.d"
+    local HARDENING_DROPIN="$SSH_DROPIN_DIR/10-hardening.conf"
     local SSH_2FA_CONF="$SSH_DROPIN_DIR/95-2fa-${USERNAME}.conf"
+    local SSHD_2FA_BACKUP
+    SSHD_2FA_BACKUP="$BACKUP_DIR/sshd_config.2fa_backup_$(date +%Y%m%d_%H%M%S)"
     local USE_DROPIN=false
+    local HARDENING_UPDATED=false
 
     # Check if drop-in directory exists and is included (standard on Ubuntu 20.04+/Debian 12)
     if [[ -d "$SSH_DROPIN_DIR" ]] && grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
@@ -3898,35 +5314,55 @@ configure_2fa() {
 "
 
     if [[ "$USE_DROPIN" == "true" ]]; then
+        # Because 10-hardening.conf loads lexically first (first-match-wins), enable KbdInteractiveAuthentication
+        # globally while requiring publickey globally so non-2FA users cannot authenticate via PAM alone.
+        if [[ -f "$HARDENING_DROPIN" ]]; then
+            sed -i 's/^KbdInteractiveAuthentication[[:space:]]\+no/KbdInteractiveAuthentication yes/' "$HARDENING_DROPIN"
+            if ! grep -q '^AuthenticationMethods[[:space:]]' "$HARDENING_DROPIN"; then
+                echo "AuthenticationMethods publickey" >> "$HARDENING_DROPIN"
+            fi
+            HARDENING_UPDATED=true
+        fi
         echo "$CONFIG_CONTENT" > "$SSH_2FA_CONF"
         print_success "Created SSH user config: $SSH_2FA_CONF"
     else
         # Fallback for older systems: Append to main config
         print_warning "Drop-in config not supported. Appending to /etc/ssh/sshd_config."
-        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup_2fa
+        cp /etc/ssh/sshd_config "$SSHD_2FA_BACKUP"
         # Ensure global KbdInteractive is enabled if not already
         if ! grep -q "^KbdInteractiveAuthentication yes" /etc/ssh/sshd_config && ! grep -q "^ChallengeResponseAuthentication yes" /etc/ssh/sshd_config; then
              echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
+        fi
+        if ! grep -q "^AuthenticationMethods[[:space:]]" /etc/ssh/sshd_config; then
+             echo "AuthenticationMethods publickey" >> /etc/ssh/sshd_config
         fi
         if ! grep -q "Match User $USERNAME" /etc/ssh/sshd_config; then
              echo "$CONFIG_CONTENT" >> /etc/ssh/sshd_config
         fi
     fi
 
-    # 5. Restart and Verify
-    print_info "Restarting SSH service..."
-    if ! systemctl restart "$SSH_SERVICE"; then
-        print_error "Failed to restart SSH service. Reverting 2FA changes..."
-        if [[ "$USE_DROPIN" == "true" ]]; then rm -f "$SSH_2FA_CONF"; else cp /etc/ssh/sshd_config.backup_2fa /etc/ssh/sshd_config; fi
-        sed -i '/pam_google_authenticator.so/d' "$PAM_FILE"
+    # 5. Validate, Restart, and Verify
+    print_info "Validating and restarting SSH service..."
+    if ! sshd -t 2>&1 | tee -a "$LOG_FILE" || ! systemctl restart "$SSH_SERVICE"; then
+        print_error "Failed to validate or restart SSH service. Reverting 2FA changes..."
+        if [[ "$USE_DROPIN" == "true" ]]; then
+            rm -f "$SSH_2FA_CONF"
+            if [[ "$HARDENING_UPDATED" == "true" && -f "$HARDENING_DROPIN" ]]; then
+                sed -i 's/^KbdInteractiveAuthentication[[:space:]]\+yes/KbdInteractiveAuthentication no/' "$HARDENING_DROPIN"
+                sed -i '/^AuthenticationMethods publickey$/d' "$HARDENING_DROPIN"
+            fi
+        elif [[ -f "$SSHD_2FA_BACKUP" ]]; then
+            cp "$SSHD_2FA_BACKUP" /etc/ssh/sshd_config
+        fi
+        cp "$PAM_BACKUP_FILE" "$PAM_FILE"
+        systemctl restart "$SSH_SERVICE" 2>/dev/null || true
         return 1
     fi
 
     print_warning "CRITICAL VERIFICATION STEP"
     print_info "Do NOT close this terminal."
     print_info "Open a NEW terminal window and try to SSH in as $USERNAME."
-    print_info "You should be asked for your SSH Key passphrase (if set) FOLLOWED by the Verification Code."
-    print_info "With default PAM settings, you may ALSO be asked for $USERNAME password."
+    print_info "You should be asked for your SSH Key passphrase (if set) FOLLOWED by the Verification Code (no account password required)."
 
     show_connection_options "$SSH_PORT" "$SERVER_IP_V4"
 
@@ -3938,11 +5374,16 @@ configure_2fa() {
         print_error "Login verification failed. Reverting 2FA changes..."
         if [[ "$USE_DROPIN" == "true" ]]; then
             rm -f "$SSH_2FA_CONF"
+            if [[ "$HARDENING_UPDATED" == "true" && -f "$HARDENING_DROPIN" ]]; then
+                sed -i 's/^KbdInteractiveAuthentication[[:space:]]\+yes/KbdInteractiveAuthentication no/' "$HARDENING_DROPIN"
+                sed -i '/^AuthenticationMethods publickey$/d' "$HARDENING_DROPIN"
+            fi
+        elif [[ -f "$SSHD_2FA_BACKUP" ]]; then
+            cp "$SSHD_2FA_BACKUP" /etc/ssh/sshd_config
         else
-            # Basic cleanup for non-dropin
             sed -i "/Match User $USERNAME/,+3d" /etc/ssh/sshd_config
         fi
-        sed -i '/pam_google_authenticator.so/d' "$PAM_FILE"
+        cp "$PAM_BACKUP_FILE" "$PAM_FILE"
         systemctl restart "$SSH_SERVICE"
         print_info "2FA changes reverted. Your SSH access should be standard."
     fi
@@ -3963,7 +5404,7 @@ configure_firewall() {
     else
         print_info "SSH rule for port $SSH_PORT already exists."
     fi
-    if confirm "Allow HTTP traffic (port 80)?"; then
+    if confirm_with_env "DU_ALLOW_HTTP" "Allow HTTP traffic (port 80)?" "n"; then
         if ! ufw status | grep -qw "80/tcp"; then
             ufw allow http comment 'HTTP'
             print_success "HTTP traffic allowed."
@@ -3971,7 +5412,7 @@ configure_firewall() {
             print_info "HTTP rule already exists."
         fi
     fi
-    if confirm "Allow HTTPS traffic (port 443)?"; then
+    if confirm_with_env "DU_ALLOW_HTTPS" "Allow HTTPS traffic (port 443)?" "n"; then
         if ! ufw status | grep -qw "443/tcp"; then
             ufw allow https comment 'HTTPS'
             print_success "HTTPS traffic allowed."
@@ -3979,7 +5420,7 @@ configure_firewall() {
             print_info "HTTPS rule already exists."
         fi
     fi
-    if confirm "Allow Tailscale traffic (UDP 41641)?"; then
+    if confirm_with_env "DU_ALLOW_TAILSCALE_UDP" "Allow Tailscale traffic (UDP 41641)?" "n"; then
         if ! ufw status | grep -qw "41641/udp"; then
             ufw allow 41641/udp comment 'Tailscale VPN'
             print_success "Tailscale traffic (UDP 41641) allowed."
@@ -3988,7 +5429,25 @@ configure_firewall() {
             print_info "Tailscale rule (UDP 41641) already exists."
         fi
     fi
-    if confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
+    if [[ -n "${DU_CUSTOM_UFW_PORTS:-}" ]]; then
+        local -a env_custom_ports=()
+        local port
+        read -ra env_custom_ports <<< "${DU_CUSTOM_UFW_PORTS}"
+        for port in "${env_custom_ports[@]}"; do
+            if ! validate_ufw_port "$port"; then
+                print_warning "Skipping invalid DU_CUSTOM_UFW_PORTS entry '$port' (expected <port>[/tcp|/udp])."
+                log "Skipped invalid DU_CUSTOM_UFW_PORTS entry: $port"
+                continue
+            fi
+            if ufw status | grep -qw "$port"; then
+                print_info "Rule for $port already exists."
+            else
+                ufw allow "$port" comment "Custom port $port"
+                print_success "Added rule for $port with comment 'Custom port $port'."
+                log "Added UFW rule for $port via DU_CUSTOM_UFW_PORTS."
+            fi
+        done
+    elif confirm "Add additional custom ports (e.g., 8080/tcp, 123/udp)?"; then
         while true; do
             local CUSTOM_PORTS # Make variable local to the loop
             read -rp "$(printf '%s' "${CYAN}Enter ports (space-separated, e.g., 8080/tcp 123/udp): ${NC}")" CUSTOM_PORTS
@@ -4069,13 +5528,38 @@ configure_firewall() {
     log "Firewall configuration completed."
 }
 
+ensure_ufw_logfile() {
+    local ufw_log="/var/log/ufw.log"
+    local created=false
+    if [[ ! -f "$ufw_log" ]]; then
+        touch "$ufw_log"
+        created=true
+    fi
+    if id -u syslog >/dev/null 2>&1 && getent group adm >/dev/null 2>&1; then
+        chown syslog:adm "$ufw_log"
+    elif getent group adm >/dev/null 2>&1; then
+        chown root:adm "$ufw_log"
+    else
+        chown root:root "$ufw_log"
+    fi
+    chmod 640 "$ufw_log"
+    if systemctl is-active --quiet rsyslog.service 2>/dev/null; then
+        systemctl kill -s HUP rsyslog.service 2>/dev/null || true
+    fi
+    if [[ "$created" == true ]]; then
+        print_info "Initialized $ufw_log with rsyslog-compatible permissions."
+    fi
+}
+
 configure_fail2ban() {
     print_section "Fail2Ban Configuration"
 
-    if ! dpkg -l fail2ban | grep -q ^ii || ! dpkg -l nftables | grep -q ^ii; then
-        print_info "Installing Fail2Ban and nftables..."
-        if ! apt-get install -y -qq fail2ban nftables; then
-            print_error "Failed to install Fail2Ban or nftables."
+    if ! dpkg -l fail2ban 2>/dev/null | grep -q ^ii || \
+       ! dpkg -l nftables 2>/dev/null | grep -q ^ii || \
+       ! dpkg -l python3-systemd 2>/dev/null | grep -q ^ii; then
+        print_info "Installing Fail2Ban, nftables, and python3-systemd..."
+        if ! apt-get install -y -qq fail2ban nftables python3-systemd; then
+            print_error "Failed to install Fail2Ban, nftables, or python3-systemd."
             return 1
         fi
     fi
@@ -4107,7 +5591,7 @@ configure_fail2ban() {
     if [[ -n "$DETECTED_IP" ]]; then
         print_info "Detected SSH connection from: $DETECTED_IP"
 
-        if confirm "Whitelist your current IP ($DETECTED_IP) in Fail2Ban?"; then
+        if confirm_with_env "DU_FAIL2BAN_WHITELIST_CURRENT_IP" "Whitelist your current IP ($DETECTED_IP) in Fail2Ban?" "n"; then
             IGNORE_IPS+=("$DETECTED_IP")
             print_success "Added your current IP to whitelist."
             log "Auto-whitelisted SSH connection IP: $DETECTED_IP"
@@ -4118,7 +5602,19 @@ configure_fail2ban() {
         print_info "You can manually add your IP in the next step."
     fi
 
-    if [[ $VERBOSE != false ]] && \
+    if [[ -n "${DU_FAIL2BAN_IGNORE_IPS:-}" ]]; then
+        local -a env_ignore_ips=()
+        local ip
+        read -ra env_ignore_ips <<< "${DU_FAIL2BAN_IGNORE_IPS}"
+        for ip in "${env_ignore_ips[@]}"; do
+            if validate_ip_or_cidr "$ip"; then
+                IGNORE_IPS+=("$ip")
+            else
+                print_warning "Skipping invalid DU_FAIL2BAN_IGNORE_IPS entry '$ip'."
+                log "Skipped invalid DU_FAIL2BAN_IGNORE_IPS entry: $ip"
+            fi
+        done
+    elif [[ $VERBOSE != false ]] && \
         confirm "Add$prompt_change IP addresses or CIDR ranges to Fail2Ban ignore list (e.g., Tailscale)?"; then
         while true; do
             local -a WHITELIST_IPS=()
@@ -4174,12 +5670,24 @@ configure_fail2ban() {
         print_info "$WHITELIST_STR"
     fi
 
+    # Optional ufw-probes port-scan jail (disabled by default to avoid spoofed pre-handshake SYN bans)
+    local UFW_PROBES_ENABLED="false"
+    print_info "Note: UFW already drops traffic to closed ports, and [sshd] protects SSH after real failed logins."
+    print_info "Optional 'ufw-probes' jail bans port scanners across all ports, but spoofed SYN packets could ban non-whitelisted IPs."
+    if confirm_with_env "DU_FAIL2BAN_UFW_PROBES" "Enable optional Fail2Ban 'ufw-probes' port-scan jail? (Whitelist your admin IP first if enabling)" "n"; then
+        UFW_PROBES_ENABLED="true"
+        print_warning "Enabled 'ufw-probes' jail. Ensure your static/VPN admin IPs are included in 'ignoreip'."
+        log "Enabled optional Fail2Ban ufw-probes jail."
+    else
+        log "Fail2Ban ufw-probes jail left disabled (default)."
+    fi
+
     # --- Define Desired Configurations ---
     local UFW_PROBES_CONFIG
     UFW_PROBES_CONFIG=$(cat <<'EOF'
 [Definition]
-# This regex looks for the standard "[UFW BLOCK]" message in /var/log/ufw.log
-failregex = \[UFW BLOCK\] IN=.* OUT=.* SRC=<HOST>
+# Match blocked inbound TCP SYN probes in /var/log/ufw.log (ignores spoofable stateless UDP traffic)
+failregex = \[UFW BLOCK\] IN=.* OUT=.* SRC=<HOST> .* PROTO=TCP .* SYN
 ignoreregex =
 EOF
 )
@@ -4210,10 +5718,12 @@ banaction = nftables-allports
 [sshd]
 enabled = true
 port = $SSH_PORT
+backend = systemd
 
-# This jail monitors UFW logs for rejected packets (port scans, etc.).
+# Optional jail monitoring UFW logs for rejected TCP SYN port-scan packets.
+# Disabled by default because pre-handshake SYN source IPs can be spoofed unless admin IPs are whitelisted in ignoreip.
 [ufw-probes]
-enabled = true
+enabled = $UFW_PROBES_ENABLED
 port = all
 filter = ufw-probes
 logpath = /var/log/ufw.log
@@ -4224,6 +5734,9 @@ EOF
     local UFW_FILTER_PATH="/etc/fail2ban/filter.d/ufw-probes.conf"
     local JAIL_LOCAL_PATH="/etc/fail2ban/jail.local"
     local NFTABLES_LOCAL_PATH="/etc/fail2ban/action.d/nftables-allports.local"
+
+    # --- Ensure the log file exists and has rsyslog permissions ---
+    ensure_ufw_logfile
 
     # --- Idempotency Check ---
     if [[ -f "$UFW_FILTER_PATH" && -f "$JAIL_LOCAL_PATH" && -f "$NFTABLES_LOCAL_PATH" ]] && \
@@ -4242,12 +5755,6 @@ EOF
     echo "$UFW_PROBES_CONFIG" > "$UFW_FILTER_PATH"
     echo "$JAIL_LOCAL_CONFIG" > "$JAIL_LOCAL_PATH"
     echo "$NFTABLES_ALLPORTS_LOCAL" > "$NFTABLES_LOCAL_PATH"
-
-    # --- Ensure the log file exists BEFORE restarting the service ---
-    if [[ ! -f /var/log/ufw.log ]]; then
-        touch /var/log/ufw.log
-        print_info "Created empty /var/log/ufw.log to ensure Fail2Ban starts correctly."
-    fi
 
     # --- Restart and Verify Fail2ban ---
     print_info "Enabling and restarting Fail2Ban to apply new rules..."
@@ -4328,10 +5835,7 @@ configure_crowdsec() {
     # UFW Log Acquisition (Parity with Fail2Ban)
     mkdir -p /etc/crowdsec/acquis.d
     print_info "Configuring UFW log acquisition..."
-    if [[ ! -f /var/log/ufw.log ]]; then
-        touch /var/log/ufw.log
-        print_info "Created empty /var/log/ufw.log for monitoring."
-    fi
+    ensure_ufw_logfile
     cat <<EOF > /etc/crowdsec/acquis.d/ufw.yaml
 filenames:
   - /var/log/ufw.log
@@ -4341,7 +5845,19 @@ EOF
     print_success "Added /var/log/ufw.log to CrowdSec acquisition."
 
     # Optional Additional Collections
-    if confirm "Install additional CrowdSec collections (e.g., Nginx, Apache, HTTP-CVE)?" "n"; then
+    if [[ -n "${DU_CROWDSEC_COLLECTIONS:-}" ]]; then
+        local -a env_collections=()
+        local col
+        read -ra env_collections <<< "${DU_CROWDSEC_COLLECTIONS}"
+        for col in "${env_collections[@]}"; do
+            print_info "Installing CrowdSec collection '$col'..."
+            if cscli collections install "$col" 2>&1 | tee -a "$LOG_FILE"; then
+                print_success "Collection $col installed."
+            else
+                print_warning "Failed to install CrowdSec collection '$col'."
+            fi
+        done
+    elif confirm "Install additional CrowdSec collections (e.g., Nginx, Apache, HTTP-CVE)?" "n"; then
         while true; do
             printf '\n'
             print_info "Browse collections at: https://app.crowdsec.net/hub/collections"
@@ -4388,7 +5904,14 @@ EOF
     fi
 
     # Enrollment
-    if confirm "Enroll this instance in the CrowdSec Console (optional)?" "n"; then
+    if [[ -n "${DU_CROWDSEC_ENROLL_KEY:-}" ]]; then
+        print_info "Enrolling instance in CrowdSec Console via DU_CROWDSEC_ENROLL_KEY..."
+        if cscli console enroll "${DU_CROWDSEC_ENROLL_KEY}" >> "$LOG_FILE" 2>&1; then
+            print_success "Instance enrolled successfully."
+        else
+            print_warning "CrowdSec Console enrollment failed. Check log for details."
+        fi
+    elif confirm "Enroll this instance in the CrowdSec Console (optional)?" "n"; then
         local ENROLL_KEY
         while true; do
             read -rp "$(printf '%s' "${CYAN}Enter your CrowdSec Enrollment Key: ${NC}")" ENROLL_KEY
@@ -4428,7 +5951,7 @@ EOF
 
 configure_auto_updates() {
     print_section "Automatic Security Updates"
-    if confirm "Enable automatic security updates via unattended-upgrades?"; then
+    if confirm_with_env "DU_ENABLE_AUTO_UPDATES" "Enable automatic security updates via unattended-upgrades?" "n"; then
         if ! dpkg -l unattended-upgrades | grep -q ^ii; then
             print_error "unattended-upgrades package is not installed."
             exit 1
@@ -4450,7 +5973,7 @@ configure_auto_updates() {
 configure_secure_dns() {
     print_section "Secure DNS Configuration (DNS-over-TLS)"
 
-    if ! confirm "Configure secure, encrypted DNS (Quad9 + Cloudflare fallback) and disable local tracking protocols?"; then
+    if ! confirm_with_env "DU_ENABLE_SECURE_DNS" "Configure secure, encrypted DNS (Quad9 + Cloudflare fallback) and disable local tracking protocols?" "n"; then
         print_info "Skipping secure DNS configuration."
         log "Secure DNS skipped by user."
         return 0
@@ -4459,7 +5982,7 @@ configure_secure_dns() {
     # Ensure systemd-resolved is installed and active
     if ! command -v systemd-resolve >/dev/null 2>&1 && ! command -v resolvectl >/dev/null 2>&1; then
          print_warning "systemd-resolved is not installed on this system."
-         if confirm "Install and enable systemd-resolved to handle encrypted DNS?"; then
+         if confirm "Install and enable systemd-resolved to handle encrypted DNS?" "y"; then
              if ! apt-get update -qq || ! apt-get install -y -qq systemd-resolved; then
                  print_error "Failed to install systemd-resolved."
                  log "Failed to install systemd-resolved for secure DNS."
@@ -4515,7 +6038,7 @@ SECURE_DNS_CONFIG
 
 configure_kernel_hardening() {
     print_section "Kernel Parameter Hardening (sysctl)"
-    if ! confirm "Apply recommended kernel security settings (sysctl)?"; then
+    if ! confirm_with_env "DU_ENABLE_KERNEL_HARDENING" "Apply recommended kernel security settings (sysctl)?" "n"; then
         print_info "Skipping kernel hardening."
         log "Kernel hardening skipped by user."
         return 0
@@ -4536,7 +6059,7 @@ configure_kernel_hardening() {
     log "Detected main interface for sysctl SLAAC fix: $MAIN_IFACE"
 
     local KERNEL_HARDENING_CONFIG
-    KERNEL_HARDENING_CONFIG=$(mktemp)
+    KERNEL_HARDENING_CONFIG=$(mktemp "${RUN_TMP_DIR:-/tmp}/sysctl_hardening.XXXXXX")
     # create the config in a temporary file
     tee "$KERNEL_HARDENING_CONFIG" > /dev/null <<KERNEL_HARDENING_CONFIG
 # Recommended Security Settings managed by du_setup.sh
@@ -4613,14 +6136,205 @@ KERNEL_HARDENING_CONFIG
     fi
 }
 
+discover_docker_container_port() {
+    local host_port="$1"
+    if ! command -v docker >/dev/null 2>&1 || ! systemctl is-active --quiet docker 2>/dev/null; then
+        printf '%s\n' "$host_port"
+        return 0
+    fi
+    local detected=""
+    detected=$(docker ps --format '{{.Ports}}' 2>/dev/null \
+        | tr ',' '\n' \
+        | grep -v '127\.0\.0\.1:' \
+        | sed -nE "s/.*:${host_port}->([0-9]+)\/tcp.*/\1/p" \
+        | head -n 1 || true)
+    printf '%s\n' "${detected:-$host_port}"
+}
+
+upsert_ufw_managed_block() {
+    local rules_file="$1"
+    local new_block="$2"
+    local marker_begin="# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
+    local marker_end="# END UFW AND DOCKER (managed by du_setup.sh)"
+    local tmp_out
+    tmp_out=$(mktemp "${RUN_TMP_DIR:-/tmp}/ufw_rules.XXXXXX")
+
+    awk -v mb="$marker_begin" -v me="$marker_end" '
+        $0 == mb { skip = 1; next }
+        $0 == me { skip = 0; next }
+        !skip { lines[++n] = $0 }
+        END {
+            while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
+            for (i = 1; i <= n; i++) print lines[i]
+        }
+    ' "$rules_file" > "$tmp_out"
+
+    printf '\n%s\n' "$new_block" >> "$tmp_out"
+
+    if cmp -s "$tmp_out" "$rules_file"; then
+        rm -f "$tmp_out"
+        return 1
+    fi
+
+    cat "$tmp_out" > "$rules_file"
+    rm -f "$tmp_out"
+    return 0
+}
+
+configure_docker_ufw_hardening() {
+    # Part A: Always display explicit Docker + UFW port-binding security notice
+    printf '\n'
+    print_warning "SECURITY NOTICE: Docker + UFW Firewall Behavior"
+    print_info "By default, publishing container ports with '-p 8080:8080' modifies iptables/ip6tables"
+    print_info "directly and BYPASSES UFW incoming rules, exposing the port to the public internet."
+    print_info "Best practice: Bind internal container ports to localhost:"
+    printf '  %s\n\n' "${CYAN}docker run -p 127.0.0.1:8080:8080 ...${NC}"
+
+    # Part B: Optional DOCKER-USER firewall chain hardening in UFW
+    local after_rules="/etc/ufw/after.rules"
+    local after6_rules="/etc/ufw/after6.rules"
+    if ! [[ -f "$after_rules" ]]; then
+        print_warning "/etc/ufw/after.rules not found. Skipping UFW DOCKER-USER hardening."
+        return 0
+    fi
+
+    local ipv6_enabled=false
+    if [[ -f "$after6_rules" ]] && grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+        ipv6_enabled=true
+    fi
+
+    # Match DNAT conntrack state after UFW route evaluation so published container ports (-p)
+    # on any current or future Docker bridge require an explicit 'ufw route allow' rule,
+    # without trusting bridge name prefixes (like br-+) or static subnet lists.
+    local desired_v4_block desired_v6_block
+    desired_v4_block=$(cat <<'EOF'
+# BEGIN UFW AND DOCKER (managed by du_setup.sh)
+*filter
+:ufw-user-forward - [0:0]
+:ufw-docker-logging-deny - [0:0]
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+-A DOCKER-USER -j ufw-user-forward
+-A DOCKER-USER -m conntrack --ctstate DNAT -j ufw-docker-logging-deny
+-A DOCKER-USER -j RETURN
+-A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+-A ufw-docker-logging-deny -j DROP
+COMMIT
+# END UFW AND DOCKER (managed by du_setup.sh)
+EOF
+)
+
+    desired_v6_block=$(cat <<'EOF'
+# BEGIN UFW AND DOCKER (managed by du_setup.sh)
+*filter
+:ufw6-user-forward - [0:0]
+:ufw6-docker-logging-deny - [0:0]
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+-A DOCKER-USER -j ufw6-user-forward
+-A DOCKER-USER -m conntrack --ctstate DNAT -j ufw6-docker-logging-deny
+-A DOCKER-USER -j RETURN
+-A ufw6-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+-A ufw6-docker-logging-deny -j DROP
+COMMIT
+# END UFW AND DOCKER (managed by du_setup.sh)
+EOF
+)
+
+    if ! confirm_with_env "DU_DOCKER_UFW_HARDEN" "Harden UFW (DOCKER-USER chain) so published Docker container ports cannot bypass UFW?" "y"; then
+        print_info "Skipping UFW DOCKER-USER hardening. Remember to bind container ports to 127.0.0.1!"
+        log "UFW DOCKER-USER hardening skipped by user."
+        return 0
+    fi
+
+    local after_backup after6_backup="" changed=false
+    after_backup="$BACKUP_DIR/ufw_after.rules.backup_$(date +%Y%m%d_%H%M%S)"
+    cp "$after_rules" "$after_backup"
+    if upsert_ufw_managed_block "$after_rules" "$desired_v4_block"; then
+        changed=true
+    fi
+
+    if [[ "$ipv6_enabled" == true ]]; then
+        after6_backup="$BACKUP_DIR/ufw_after6.rules.backup_$(date +%Y%m%d_%H%M%S)"
+        cp "$after6_rules" "$after6_backup"
+        if upsert_ufw_managed_block "$after6_rules" "$desired_v6_block"; then
+            changed=true
+        fi
+    fi
+
+    if [[ "$changed" == false ]]; then
+        rm -f "$after_backup" "${after6_backup:-}" 2>/dev/null || true
+        print_info "UFW DOCKER-USER firewall hardening is already configured and up to date."
+        DOCKER_UFW_HARDENED=true
+        return 0
+    fi
+
+    print_info "Reloading UFW to activate DOCKER-USER rules..."
+    if ! ufw reload >> "$LOG_FILE" 2>&1; then
+        print_error "UFW reload failed with DOCKER-USER rules. Restoring original UFW after.rules..."
+        cp "$after_backup" "$after_rules"
+        if [[ -n "$after6_backup" && -f "$after6_backup" ]]; then
+            cp "$after6_backup" "$after6_rules"
+        fi
+        ufw reload >> "$LOG_FILE" 2>&1 || true
+        log "UFW DOCKER-USER hardening failed on reload; restored backups."
+        return 0
+    fi
+
+    DOCKER_UFW_HARDENED=true
+    print_success "UFW DOCKER-USER firewall hardening enabled (IPv4/IPv6)."
+    log "Enabled UFW DOCKER-USER firewall hardening."
+
+    # Offer to allow forwarded traffic for HTTP/HTTPS mapped against the container destination port
+    if ufw status | grep -qw "80/tcp"; then
+        if confirm "HTTP (80/tcp) is open on the host. Also allow public routed traffic to a Docker container for HTTP?" "n"; then
+            local default_http_cport http_cport=""
+            default_http_cport=$(discover_docker_container_port "80")
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter the internal container port for HTTP (e.g., 8080 for '-p 80:8080') [default: ${default_http_cport}]: ${NC}")" http_cport
+                http_cport="${http_cport:-$default_http_cport}"
+                if [[ "$http_cport" =~ ^[0-9]+$ ]] && (( http_cport >= 1 && http_cport <= 65535 )); then
+                    break
+                fi
+                print_error "Invalid port '$http_cport'. Enter a TCP port between 1 and 65535."
+            done
+            ufw route allow proto tcp from any to any port "$http_cport" comment 'Docker HTTP' >> "$LOG_FILE" 2>&1 || true
+            print_success "Added UFW route rule for Docker container destination port ${http_cport}/tcp (HTTP)."
+        fi
+    fi
+    if ufw status | grep -qw "443/tcp"; then
+        if confirm "HTTPS (443/tcp) is open on the host. Also allow public routed traffic to a Docker container for HTTPS?" "n"; then
+            local default_https_cport https_cport=""
+            default_https_cport=$(discover_docker_container_port "443")
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter the internal container port for HTTPS (e.g., 8443 for '-p 443:8443') [default: ${default_https_cport}]: ${NC}")" https_cport
+                https_cport="${https_cport:-$default_https_cport}"
+                if [[ "$https_cport" =~ ^[0-9]+$ ]] && (( https_cport >= 1 && https_cport <= 65535 )); then
+                    break
+                fi
+                print_error "Invalid port '$https_cport'. Enter a TCP port between 1 and 65535."
+            done
+            ufw route allow proto tcp from any to any port "$https_cport" comment 'Docker HTTPS' >> "$LOG_FILE" 2>&1 || true
+            print_success "Added UFW route rule for Docker container destination port ${https_cport}/tcp (HTTPS)."
+        fi
+    fi
+
+    print_info "To publicly expose a Docker container port later (use the INTERNAL container port, e.g. 8080 for '-p 80:8080'):"
+    printf '  %s\n\n' "${CYAN}sudo ufw route allow proto tcp from any to any port <CONTAINER_PORT>${NC}"
+}
+
 install_docker() {
-    if ! confirm "Install Docker Engine (Optional)?"; then
+    if ! confirm_with_env "DU_INSTALL_DOCKER" "Install Docker Engine (Optional)?" "n"; then
         print_info "Skipping Docker installation."
         return 0
     fi
     print_section "Docker Installation"
     if command -v docker >/dev/null 2>&1; then
         print_info "Docker already installed."
+        configure_docker_ufw_hardening
+        install_dtop_optional
         return 0
     fi
     print_info "Removing old container runtimes..."
@@ -4647,7 +6361,7 @@ install_docker() {
     fi
     print_info "Configuring Docker daemon..."
     local NEW_DOCKER_CONFIG
-    NEW_DOCKER_CONFIG=$(mktemp)
+    NEW_DOCKER_CONFIG=$(mktemp "${RUN_TMP_DIR:-/tmp}/docker_daemon.XXXXXX")
     tee "$NEW_DOCKER_CONFIG" > /dev/null <<DAEMONFILE
 {
     "log-driver": "json-file",
@@ -4699,16 +6413,21 @@ DAEMONFILE
     fi
     systemctl daemon-reload
     systemctl enable --now docker
+
+    # Apply Docker + UFW security warning and DOCKER-USER firewall guard BEFORE smoke test
+    # so transient image-pull failures never leave a running Docker daemon unhardened.
+    configure_docker_ufw_hardening
+
     print_info "Running Docker sanity check..."
     if sudo -u "$USERNAME" docker run --rm hello-world 2>&1 | tee -a "$LOG_FILE" | grep -q "Hello from Docker"; then
         print_success "Docker sanity check passed."
     else
         print_error "Docker hello-world test failed. Please verify installation once the script is complete."
         DOCKER_SANITY_WARN=true
-        return 0
     fi
     print_warning "NOTE: '$USERNAME' must log out and back in to use Docker without sudo."
     log "Docker installation completed."
+
     # Offer dtop installation
     install_dtop_optional
 }
@@ -4718,20 +6437,22 @@ install_dtop_optional() {
         print_info "dtop is already installed."
         return 0
     fi
-    if ! confirm "Install 'dtop' (Docker container monitoring TUI)?"; then
+    if ! confirm_with_env "DU_INSTALL_DTOP" "Install 'dtop' (Docker container monitoring TUI)?" "n"; then
         print_info "Skipping dtop installation."
         return 0
     fi
     print_info "Installing dtop for user '$USERNAME'..."
-    local DTOP_INSTALLER="/tmp/dtop-installer.sh"
+    local DTOP_INSTALLER
+    DTOP_INSTALLER=$(mktemp /tmp/dtop-installer.XXXXXX)
+    DTOP_TMP_INSTALLER="$DTOP_INSTALLER"
     if ! curl -fsSL "https://github.com/amir20/dtop/releases/latest/download/dtop-installer.sh" -o "$DTOP_INSTALLER"; then
         print_warning "Failed to download dtop installer. Continuing setup..."
         log "Failed to download dtop installer."
+        rm -f "$DTOP_INSTALLER"
+        DTOP_TMP_INSTALLER=""
         return 0
     fi
-    chmod +x "$DTOP_INSTALLER"
-    # shellcheck disable=SC2064
-    trap "rm -f '$DTOP_INSTALLER'" RETURN
+    chmod 755 "$DTOP_INSTALLER"
     local USER_HOME
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     local USER_LOCAL_BIN="$USER_HOME/.local/bin"
@@ -4739,6 +6460,8 @@ install_dtop_optional() {
         print_info "Creating $USER_LOCAL_BIN..."
         if ! sudo -u "$USERNAME" mkdir -p "$USER_LOCAL_BIN"; then
             print_warning "Failed to create $USER_LOCAL_BIN. Skipping dtop."
+            rm -f "$DTOP_INSTALLER"
+            DTOP_TMP_INSTALLER=""
             return 0
         fi
     fi
@@ -4755,8 +6478,7 @@ install_dtop_optional() {
                     echo '# Add local bin to PATH'
                     # shellcheck disable=SC2016
                     echo 'if [ -d "$HOME/.local/bin" ]; then PATH="$HOME/.local/bin:$PATH"; fi'
-                } >> "$BASHRC"
-                chown "$USERNAME:$USERNAME" "$BASHRC"
+                } | sudo -u "$USERNAME" tee -a "$BASHRC" > /dev/null
                 if grep -q "\.local/bin" "$BASHRC"; then
                     print_info "PATH configuration updated successfully."
                 else
@@ -4773,10 +6495,38 @@ install_dtop_optional() {
         print_warning "dtop installation script failed. Continuing setup..."
         log "dtop installation script failed."
     fi
+    rm -f "$DTOP_INSTALLER"
+    DTOP_TMP_INSTALLER=""
 }
 
 configure_mesh_vpn() {
-    # Bypass for automated runs
+    if [[ -n "${DU_VPN:-}" ]]; then
+        case "${DU_VPN,,}" in
+            tailscale|1)
+                install_tailscale
+                return 0
+                ;;
+            netbird|2)
+                install_netbird
+                return 0
+                ;;
+            both|3)
+                install_tailscale
+                install_netbird
+                return 0
+                ;;
+            none|skip|4)
+                print_info "Skipping Mesh VPN installation (DU_VPN=${DU_VPN})."
+                log "Mesh VPN installation skipped via DU_VPN=${DU_VPN}."
+                return 0
+                ;;
+            *)
+                print_warning "Invalid DU_VPN value '${DU_VPN}' (expected none|tailscale|netbird|both)."
+                ;;
+        esac
+    fi
+
+    # Bypass for automated runs when DU_VPN is unset/invalid
     if [[ "$VERBOSE" == "false" ]]; then
         print_info "Quiet mode enabled. Skipping interactive Mesh VPN setup."
         log "Mesh VPN setup skipped due to quiet mode."
@@ -4812,8 +6562,43 @@ configure_mesh_vpn() {
     esac
 }
 
+apply_configured_tailscale_flags_if_connected() {
+    local tmp_dir="$1"
+    [[ -n "${DU_TAILSCALE_FLAGS:-}" ]] || return 0
+
+    local -a raw_ts_flags=() ts_set_flags=()
+    local flag
+    read -ra raw_ts_flags <<< "${DU_TAILSCALE_FLAGS}"
+    for flag in "${raw_ts_flags[@]}"; do
+        case "$flag" in
+            --ssh|--advertise-exit-node|--accept-dns|--accept-routes)
+                ts_set_flags+=("$flag")
+                ;;
+            *)
+                print_warning "Ignoring unsupported DU_TAILSCALE_FLAGS option '$flag'."
+                ;;
+        esac
+    done
+
+    (( ${#ts_set_flags[@]} > 0 )) || return 0
+
+    # Use 'tailscale set' on already-connected nodes so specified flags apply idempotently
+    # without requiring --auth-key or resetting existing non-default preferences.
+    print_info "Applying configured DU_TAILSCALE_FLAGS to connected Tailscale node: ${ts_set_flags[*]}"
+    if tailscale set --operator="$USERNAME" "${ts_set_flags[@]}"; then
+        local ts_flags_str="${ts_set_flags[*]}"
+        printf '%s\n' "${ts_flags_str//--/}" > "${tmp_dir}/tailscale_flags"
+        print_success "Applied Tailscale options: ${ts_set_flags[*]}"
+        log "Applied DU_TAILSCALE_FLAGS via 'tailscale set': ${ts_set_flags[*]}"
+    else
+        print_warning "Failed to apply DU_TAILSCALE_FLAGS (${ts_set_flags[*]}) via 'tailscale set'."
+        log "Failed to apply DU_TAILSCALE_FLAGS via 'tailscale set': ${ts_set_flags[*]}"
+    fi
+}
+
 install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
+    local tmp_dir="${RUN_TMP_DIR:-/tmp}"
 
     # Check if Tailscale is already installed and active
     if command -v tailscale >/dev/null 2>&1; then
@@ -4822,32 +6607,34 @@ install_tailscale() {
             TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
             TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
             print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
-            echo "$TS_IPS" > /tmp/tailscale_ips.txt
+            echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+            apply_configured_tailscale_flags_if_connected "$tmp_dir"
             return 0
         else
             print_warning "Service tailscaled is installed but not active or connected."
         fi
     else
         print_info "Installing Tailscale..."
+        local ts_installer="${tmp_dir}/tailscale_install.sh"
         # Gracefully handle download failures
-        if ! curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale_install.sh; then
+        if ! curl -fsSL https://tailscale.com/install.sh -o "$ts_installer"; then
             print_error "Failed to download the Tailscale installation script."
             print_info "After setup completes, please try installing it manually: curl -fsSL https://tailscale.com/install.sh | sh"
-            rm -f /tmp/tailscale_install.sh # Clean up partial download
+            rm -f "$ts_installer" # Clean up partial download
             TAILSCALE_INSTALL_WARN=true
             return 0 # Exit the function without exiting the main script
         fi
 
         # Execute the downloaded script with 'sh'
-        if ! sh /tmp/tailscale_install.sh; then
+        if ! sh "$ts_installer"; then
             print_error "Tailscale installation script failed to execute."
             log "Tailscale installation failed."
-            rm -f /tmp/tailscale_install.sh # Clean up
+            rm -f "$ts_installer" # Clean up
             TAILSCALE_INSTALL_WARN=true
             return 0 # Exit the function gracefully
         fi
 
-        rm -f /tmp/tailscale_install.sh # Clean up successful install
+        rm -f "$ts_installer" # Clean up successful install
         print_success "Tailscale installation complete."
         log "Tailscale installation completed."
     fi
@@ -4857,48 +6644,73 @@ install_tailscale() {
         TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
         TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
         print_info "Tailscale is already connected. Node IPv4 in tailnet: $TS_IPV4"
-        echo "$TS_IPS" > /tmp/tailscale_ips.txt
+        echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+        apply_configured_tailscale_flags_if_connected "$tmp_dir"
         return 0
     fi
 
-    if ! confirm "Configure Tailscale now?"; then
+    if [[ -z "${DU_TAILSCALE_AUTH_KEY:-}" ]] && ! confirm "Configure Tailscale now?"; then
         print_info "You can configure Tailscale later by running: sudo tailscale up"
         print_info "If you are using a custom Tailscale server, use: sudo tailscale up --login-server=<your_server_url>"
         return 0
     fi
 
-    print_info "Configuring Tailscale connection..."
-    printf '%s\n' "${CYAN}Choose Tailscale connection method:${NC}"
-    printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin )\n'
-    printf '  2) Custom Tailscale server (requires server URL and pre-auth key)\n'
-    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
-    TS_CONNECTION=${TS_CONNECTION:-1}
-    local AUTH_KEY LOGIN_SERVER=""
-    if [[ "$TS_CONNECTION" == "2" ]]; then
+    local TS_CONNECTION="1"
+    local AUTH_KEY=""
+    local LOGIN_SERVER=""
+
+    if [[ -n "${DU_TAILSCALE_AUTH_KEY:-}" ]]; then
+        print_info "Configuring Tailscale connection via environment settings..."
+        AUTH_KEY="${DU_TAILSCALE_AUTH_KEY}"
+        if [[ -n "${DU_TAILSCALE_LOGIN_SERVER:-}" ]]; then
+            if [[ "${DU_TAILSCALE_LOGIN_SERVER}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+                LOGIN_SERVER="${DU_TAILSCALE_LOGIN_SERVER}"
+                TS_CONNECTION="2"
+            else
+                print_error "Invalid DU_TAILSCALE_LOGIN_SERVER '${DU_TAILSCALE_LOGIN_SERVER}'. Must start with https://."
+                return 0
+            fi
+        elif [[ ! "$AUTH_KEY" =~ ^tskey-auth- ]]; then
+            print_error "Invalid DU_TAILSCALE_AUTH_KEY format (standard Tailscale keys must start with 'tskey-auth-')."
+            return 0
+        fi
+    else
+        print_info "Configuring Tailscale connection..."
+        printf '%s\n' "${CYAN}Choose Tailscale connection method:${NC}"
+        printf '  1) Standard Tailscale (requires pre-auth key from https://login.tailscale.com/admin )\n'
+        printf '  2) Custom Tailscale server (requires server URL and pre-auth key)\n'
+        read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" TS_CONNECTION
+        TS_CONNECTION=${TS_CONNECTION:-1}
+        if [[ "$TS_CONNECTION" == "2" ]]; then
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
+                if [[ "$LOGIN_SERVER" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Must start with https://. Try again."; fi
+            done
+        fi
         while true; do
-            read -rp "$(printf '%s' "${CYAN}Enter Tailscale server URL (e.g., https://ts.mydomain.cloud): ${NC}")" LOGIN_SERVER
-            if [[ "$LOGIN_SERVER" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Must start with https://. Try again."; fi
+            read -rsp "$(printf '%s' "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
+            printf '\n'
+            if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
+            elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
+                print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
+                break
+            else
+                print_error "Invalid key format. For standard connection, key must start with 'tskey-auth-'. For custom server, key cannot be empty."
+            fi
         done
     fi
-    while true; do
-        read -rsp "$(printf '%s' "${CYAN}Enter Tailscale pre-auth key: ${NC}")" AUTH_KEY
-        printf '\n'
-        if [[ "$TS_CONNECTION" == "1" && "$AUTH_KEY" =~ ^tskey-auth- ]]; then break
-        elif [[ "$TS_CONNECTION" == "2" && -n "$AUTH_KEY" ]]; then
-            print_warning "Ensure the pre-auth key is valid for your custom Tailscale server ($LOGIN_SERVER)."
-            break
-        else
-            print_error "Invalid key format. For standard connection, key must start with 'tskey-auth-'. For custom server, key cannot be empty."
-        fi
-    done
-    local TS_COMMAND="tailscale up"
-    if [[ "$TS_CONNECTION" == "2" ]]; then
-        TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
+
+    local -a ts_cmd=("tailscale" "up")
+    local TS_COMMAND_SAFE="tailscale up"
+    if [[ "$TS_CONNECTION" == "2" && -n "$LOGIN_SERVER" ]]; then
+        ts_cmd+=("--login-server=$LOGIN_SERVER")
+        TS_COMMAND_SAFE="$TS_COMMAND_SAFE --login-server=$LOGIN_SERVER"
     fi
-    TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME"
-    TS_COMMAND_SAFE=$(echo "$TS_COMMAND" | sed -E 's/--auth-key=[^[:space:]]+/--auth-key=REDACTED/g')
+    ts_cmd+=("--auth-key=$AUTH_KEY" "--operator=$USERNAME")
+    TS_COMMAND_SAFE="$TS_COMMAND_SAFE --auth-key=REDACTED --operator=$USERNAME"
+
     print_info "Connecting to Tailscale with: $TS_COMMAND_SAFE"
-    if ! $TS_COMMAND; then
+    if ! "${ts_cmd[@]}"; then
         print_warning "Failed to connect to Tailscale. Possible issues: invalid pre-auth key, network restrictions, or server unavailability."
         print_info "Please run the following command manually after resolving the issue:"
         printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
@@ -4919,96 +6731,114 @@ install_tailscale() {
                 fi
             fi
             print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
-            sleep $DELAY
+            sleep "$DELAY"
         done
         if $CONNECTED; then
             print_success "Tailscale connected successfully. Node IPv4 in tailnet: $TS_IPV4"
             log "Tailscale connected: $TS_COMMAND_SAFE"
             # Store connection details for summary
-            echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > /tmp/tailscale_server
-            echo "$TS_IPS" > /tmp/tailscale_ips.txt
-            echo "None" > /tmp/tailscale_flags
+            echo "${LOGIN_SERVER:-https://controlplane.tailscale.com}" > "${tmp_dir}/tailscale_server"
+            echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+            echo "None" > "${tmp_dir}/tailscale_flags"
         else
             print_warning "Tailscale connection attempt succeeded, but no IPs assigned."
             print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
             printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
             log "Tailscale connection not verified: $TS_COMMAND_SAFE"
-            tailscale status > /tmp/tailscale_status.txt 2>&1
-            log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
+            tailscale status > "${tmp_dir}/tailscale_status.txt" 2>&1
+            log "Tailscale status output saved to ${tmp_dir}/tailscale_status.txt for debugging"
         fi
     fi
 
     # --- Configure Additional Flags ---
-    print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
-    printf '%s\n' "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
-    printf '%s\n' "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
-    printf '%s\n' "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
-    printf '%s\n' "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
-    printf '%s\n' "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
-    read -rp "  " TS_FLAG_CHOICES
-    local TS_FLAGS=""
-    if [[ -n "$TS_FLAG_CHOICES" ]]; then
-        if echo "$TS_FLAG_CHOICES" | grep -q "1"; then
-            TS_FLAGS="$TS_FLAGS --ssh"
-        fi
-        if echo "$TS_FLAG_CHOICES" | grep -q "2"; then
-            TS_FLAGS="$TS_FLAGS --advertise-exit-node"
-        fi
-        if echo "$TS_FLAG_CHOICES" | grep -q "3"; then
-            TS_FLAGS="$TS_FLAGS --accept-dns"
-        fi
-        if echo "$TS_FLAG_CHOICES" | grep -q "4"; then
-            TS_FLAGS="$TS_FLAGS --accept-routes"
-        fi
-        if [[ -n "$TS_FLAGS" ]]; then
-            TS_COMMAND="tailscale up"
-            if [[ "$TS_CONNECTION" == "2" ]]; then
-                TS_COMMAND="$TS_COMMAND --login-server=$LOGIN_SERVER"
+    local -a ts_extra_flags=()
+    if [[ -n "${DU_TAILSCALE_FLAGS:-}" ]]; then
+        local -a raw_ts_flags=()
+        local flag
+        read -ra raw_ts_flags <<< "${DU_TAILSCALE_FLAGS}"
+        for flag in "${raw_ts_flags[@]}"; do
+            case "$flag" in
+                --ssh|--advertise-exit-node|--accept-dns|--accept-routes)
+                    ts_extra_flags+=("$flag")
+                    ;;
+                *)
+                    print_warning "Ignoring unsupported DU_TAILSCALE_FLAGS option '$flag'."
+                    ;;
+            esac
+        done
+    elif [[ "$VERBOSE" != "false" ]]; then
+        local TS_FLAG_CHOICES=""
+        print_info "Select additional Tailscale options to configure (comma-separated, e.g., 1,3):"
+        printf '%s\n' "${CYAN}  1) SSH (--ssh) - WARNING: May restrict server access to Tailscale connections only${NC}"
+        printf '%s\n' "${CYAN}  2) Advertise as Exit Node (--advertise-exit-node)${NC}"
+        printf '%s\n' "${CYAN}  3) Accept DNS (--accept-dns)${NC}"
+        printf '%s\n' "${CYAN}  4) Accept Routes (--accept-routes)${NC}"
+        printf '%s\n' "${CYAN}  Enter numbers (1-4) or leave blank to skip:${NC}"
+        read -rp "  " TS_FLAG_CHOICES
+        if [[ -n "$TS_FLAG_CHOICES" ]]; then
+            if echo "$TS_FLAG_CHOICES" | grep -q "1"; then
+                ts_extra_flags+=("--ssh")
             fi
-            TS_COMMAND="$TS_COMMAND --auth-key=$AUTH_KEY --operator=$USERNAME $TS_FLAGS"
-            TS_COMMAND_SAFE=$(echo "$TS_COMMAND" | sed -E 's/--auth-key=[^[:space:]]+/--auth-key=REDACTED/g')
-            print_info "Reconfiguring Tailscale with additional options: $TS_COMMAND_SAFE"
-            if ! $TS_COMMAND; then
-                print_warning "Failed to reconfigure Tailscale with additional options."
-                print_info "Please run the following command manually after resolving the issue:"
-                printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
-                log "Tailscale reconfiguration failed: $TS_COMMAND_SAFE"
-            else
-                # Verify reconfiguration status with retries
-                local RETRIES=3
-                local DELAY=5
-                local CONNECTED=false
-                local TS_IPS TS_IPV4
-                for ((i=1; i<=RETRIES; i++)); do
-                    if tailscale ip >/dev/null 2>&1; then
-                        TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
-                        TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
-                        if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
-                            CONNECTED=true
-                            break
-                        fi
-                    fi
-                    print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
-                    sleep $DELAY
-                done
-                if $CONNECTED; then
-                    print_success "Tailscale reconfigured with additional options. Node IPv4 in tailnet: $TS_IPV4"
-                    log "Tailscale reconfigured: $TS_COMMAND_SAFE"
-		    # Store flags and IPs for summary
-                    echo "$TS_FLAGS" | sed 's/ --/ /g' | sed 's/^ *//' > /tmp/tailscale_flags
-                    echo "$TS_IPS" > /tmp/tailscale_ips.txt
-                else
-                    print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
-                    print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
-                    printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
-                    log "Tailscale reconfiguration not verified: $TS_COMMAND"
-                    tailscale status > /tmp/tailscale_status.txt 2>&1
-                    log "Tailscale status output saved to /tmp/tailscale_status.txt for debugging"
-                fi
+            if echo "$TS_FLAG_CHOICES" | grep -q "2"; then
+                ts_extra_flags+=("--advertise-exit-node")
             fi
+            if echo "$TS_FLAG_CHOICES" | grep -q "3"; then
+                ts_extra_flags+=("--accept-dns")
+            fi
+            if echo "$TS_FLAG_CHOICES" | grep -q "4"; then
+                ts_extra_flags+=("--accept-routes")
+            fi
+        fi
+    fi
+
+    if (( ${#ts_extra_flags[@]} > 0 )); then
+        ts_cmd=("tailscale" "up")
+        TS_COMMAND_SAFE="tailscale up"
+        if [[ "$TS_CONNECTION" == "2" && -n "$LOGIN_SERVER" ]]; then
+            ts_cmd+=("--login-server=$LOGIN_SERVER")
+            TS_COMMAND_SAFE="$TS_COMMAND_SAFE --login-server=$LOGIN_SERVER"
+        fi
+        ts_cmd+=("--auth-key=$AUTH_KEY" "--operator=$USERNAME" "${ts_extra_flags[@]}")
+        TS_COMMAND_SAFE="$TS_COMMAND_SAFE --auth-key=REDACTED --operator=$USERNAME ${ts_extra_flags[*]}"
+        print_info "Reconfiguring Tailscale with additional options: $TS_COMMAND_SAFE"
+        if ! "${ts_cmd[@]}"; then
+            print_warning "Failed to reconfigure Tailscale with additional options."
+            print_info "Please run the following command manually after resolving the issue:"
+            printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
+            log "Tailscale reconfiguration failed: $TS_COMMAND_SAFE"
         else
-            print_info "No valid Tailscale options selected."
-            log "No valid Tailscale options selected."
+            # Verify reconfiguration status with retries
+            local RETRIES=3
+            local DELAY=5
+            local CONNECTED=false
+            local TS_IPS TS_IPV4
+            for ((i=1; i<=RETRIES; i++)); do
+                if tailscale ip >/dev/null 2>&1; then
+                    TS_IPS=$(tailscale ip 2>/dev/null || echo "Unknown")
+                    TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
+                    if [[ -n "$TS_IPV4" && "$TS_IPV4" != "Unknown" ]]; then
+                        CONNECTED=true
+                        break
+                    fi
+                fi
+                print_info "Waiting for Tailscale to connect ($i/$RETRIES)..."
+                sleep "$DELAY"
+            done
+            if $CONNECTED; then
+                print_success "Tailscale reconfigured with additional options. Node IPv4 in tailnet: $TS_IPV4"
+                log "Tailscale reconfigured: $TS_COMMAND_SAFE"
+                # Store flags and IPs for summary
+                local ts_flags_str="${ts_extra_flags[*]}"
+                printf '%s\n' "${ts_flags_str//--/}" > "${tmp_dir}/tailscale_flags"
+                echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+            else
+                print_warning "Tailscale reconfiguration attempt succeeded, but no IPs assigned."
+                print_info "Please verify with 'tailscale ip' and run the following command manually if needed:"
+                printf '%s\n' "${CYAN}  $TS_COMMAND_SAFE${NC}"
+                log "Tailscale reconfiguration not verified: $TS_COMMAND_SAFE"
+                tailscale status > "${tmp_dir}/tailscale_status.txt" 2>&1
+                log "Tailscale status output saved to ${tmp_dir}/tailscale_status.txt for debugging"
+            fi
         fi
     else
         print_info "No additional Tailscale options selected."
@@ -5021,6 +6851,7 @@ install_tailscale() {
 
 install_netbird() {
     print_section "NetBird VPN Installation and Configuration"
+    local tmp_dir="${RUN_TMP_DIR:-/tmp}"
 
     # Check if NetBird is already installed
     if command -v netbird >/dev/null 2>&1; then
@@ -5028,7 +6859,7 @@ install_netbird() {
             local NB_IPV4
             NB_IPV4=$(ip -4 addr show wt0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1 || echo "Unknown")
             print_success "NetBird is active and connected. Node IPv4: $NB_IPV4"
-            echo "$NB_IPV4" > /tmp/netbird_ips.txt
+            echo "$NB_IPV4" > "${tmp_dir}/netbird_ips.txt"
             return 0
         else
             print_warning "NetBird is installed but not active or connected."
@@ -5054,44 +6885,60 @@ install_netbird() {
         log "NetBird installation completed."
     fi
 
-    if ! confirm "Configure NetBird now?"; then
+    if [[ -z "${DU_NETBIRD_SETUP_KEY:-}" ]] && ! confirm "Configure NetBird now?"; then
         print_info "You can configure NetBird later by running: sudo netbird up"
         return 0
     fi
 
-    print_info "Configuring NetBird connection..."
-    printf '%s\n' "${CYAN}Choose NetBird connection method:${NC}"
-    printf '  1) Standard NetBird Cloud (requires setup key from https://app.netbird.io/setup-keys )\n'
-    printf '  2) Custom/Self-hosted NetBird server (requires server URL and setup key)\n'
+    local NB_CONNECTION="1"
+    local SETUP_KEY=""
+    local MANAGEMENT_URL=""
 
-    local NB_CONNECTION
-    read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" NB_CONNECTION
-    NB_CONNECTION=${NB_CONNECTION:-1}
+    if [[ -n "${DU_NETBIRD_SETUP_KEY:-}" ]]; then
+        print_info "Configuring NetBird connection via environment settings..."
+        SETUP_KEY="${DU_NETBIRD_SETUP_KEY}"
+        if [[ -n "${DU_NETBIRD_MANAGEMENT_URL:-}" ]]; then
+            if [[ "${DU_NETBIRD_MANAGEMENT_URL}" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+                MANAGEMENT_URL="${DU_NETBIRD_MANAGEMENT_URL}"
+                NB_CONNECTION="2"
+            else
+                print_error "Invalid DU_NETBIRD_MANAGEMENT_URL '${DU_NETBIRD_MANAGEMENT_URL}'."
+                return 0
+            fi
+        fi
+    else
+        print_info "Configuring NetBird connection..."
+        printf '%s\n' "${CYAN}Choose NetBird connection method:${NC}"
+        printf '  1) Standard NetBird Cloud (requires setup key from https://app.netbird.io/setup-keys )\n'
+        printf '  2) Custom/Self-hosted NetBird server (requires server URL and setup key)\n'
 
-    local SETUP_KEY MANAGEMENT_URL=""
-    if [[ "$NB_CONNECTION" == "2" ]]; then
+        read -rp "$(printf '%s' "${CYAN}Enter choice (1-2) [1]: ${NC}")" NB_CONNECTION
+        NB_CONNECTION=${NB_CONNECTION:-1}
+
+        if [[ "$NB_CONNECTION" == "2" ]]; then
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter NetBird management URL (e.g., https://netbird.mydomain.com:33073): ${NC}")" MANAGEMENT_URL
+                if [[ "$MANAGEMENT_URL" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Try again."; fi
+            done
+        fi
+
         while true; do
-            read -rp "$(printf '%s' "${CYAN}Enter NetBird management URL (e.g., https://netbird.mydomain.com:33073): ${NC}")" MANAGEMENT_URL
-            if [[ "$MANAGEMENT_URL" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then break; else print_error "Invalid URL. Try again."; fi
+            read -rsp "$(printf '%s' "${CYAN}Enter NetBird setup key: ${NC}")" SETUP_KEY
+            printf '\n'
+            if [[ -n "$SETUP_KEY" ]]; then break; else print_error "Setup key cannot be empty."; fi
         done
     fi
 
-    while true; do
-        read -rsp "$(printf '%s' "${CYAN}Enter NetBird setup key: ${NC}")" SETUP_KEY
-        printf '\n'
-        if [[ -n "$SETUP_KEY" ]]; then break; else print_error "Setup key cannot be empty."; fi
-    done
-
-    local NB_COMMAND="netbird up --setup-key $SETUP_KEY"
-    if [[ "$NB_CONNECTION" == "2" ]]; then
-        NB_COMMAND="$NB_COMMAND --management-url $MANAGEMENT_URL"
+    local -a nb_cmd=("netbird" "up" "--setup-key" "$SETUP_KEY")
+    local NB_COMMAND_SAFE="netbird up --setup-key REDACTED"
+    if [[ "$NB_CONNECTION" == "2" && -n "$MANAGEMENT_URL" ]]; then
+        nb_cmd+=("--management-url" "$MANAGEMENT_URL")
+        NB_COMMAND_SAFE="$NB_COMMAND_SAFE --management-url $MANAGEMENT_URL"
     fi
 
-    local NB_COMMAND_SAFE
-    NB_COMMAND_SAFE=$(echo "$NB_COMMAND" | sed -E 's/--setup-key [^[:space:]]+/--setup-key REDACTED/g')
     print_info "Connecting to NetBird with: $NB_COMMAND_SAFE"
 
-    if ! $NB_COMMAND; then
+    if ! "${nb_cmd[@]}"; then
         print_warning "Failed to connect to NetBird. Check setup key or network."
         log "NetBird connection failed: $NB_COMMAND_SAFE"
     else
@@ -5106,14 +6953,14 @@ install_netbird() {
                 fi
             fi
             print_info "Waiting for NetBird to connect ($i/$RETRIES)..."
-            sleep $DELAY
+            sleep "$DELAY"
         done
 
         if $CONNECTED; then
             print_success "NetBird connected successfully. Node IPv4 in VPN: $NB_IPV4"
             log "NetBird connected: $NB_COMMAND_SAFE"
-            echo "${MANAGEMENT_URL:-https://api.netbird.io}" > /tmp/netbird_server
-            echo "$NB_IPV4" > /tmp/netbird_ips.txt
+            echo "${MANAGEMENT_URL:-https://api.netbird.io}" > "${tmp_dir}/netbird_server"
+            echo "$NB_IPV4" > "${tmp_dir}/netbird_ips.txt"
         else
             print_warning "NetBird connection attempt finished, but could not verify IP."
             log "NetBird connection not verified: $NB_COMMAND_SAFE"
@@ -5197,15 +7044,21 @@ setup_backup() {
             fi
         fi
         if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
+            local ssh_copy_log="${RUN_TMP_DIR:-/tmp}/ssh-copy-id.log"
+            local -a ssh_copy_args=("-p" "$BACKUP_PORT" "-i" "$ROOT_SSH_KEY.pub")
+            if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
+                ssh_copy_args+=("$SSH_COPY_ID_FLAGS")
+            fi
+            ssh_copy_args+=("$BACKUP_DEST")
             read -rsp "$(printf '%s' "${CYAN}Enter password for $BACKUP_DEST: ${NC}")" BACKUP_PASSWORD; printf '\n'
             # Ensure ~/.ssh/ exists on remote for Hetzner
             if [[ -n "$SSH_COPY_ID_FLAGS" ]]; then
                 ssh -p "$BACKUP_PORT" "$BACKUP_DEST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null || print_warning "Failed to create ~/.ssh on remote server."
             fi
-            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id -p "$BACKUP_PORT" -i "$ROOT_SSH_KEY.pub" $SSH_COPY_ID_FLAGS "$BACKUP_DEST" 2>&1 | tee /tmp/ssh-copy-id.log; then
+            if SSHPASS="$BACKUP_PASSWORD" sshpass -e ssh-copy-id "${ssh_copy_args[@]}" 2>&1 | tee "$ssh_copy_log"; then
                 print_success "SSH key copied successfully."
             else
-                print_error "Automated SSH key copy failed. Error details in /tmp/ssh-copy-id.log."
+                print_error "Automated SSH key copy failed. Error details in $ssh_copy_log."
                 print_info "Please verify the password and ensure ~/.ssh/authorized_keys is writable on the remote server."
                 KEY_COPY_CHOICE=2
             fi
@@ -5427,7 +7280,7 @@ EOF
     fi
     # Create temporary cron file
     local TEMP_CRON
-    TEMP_CRON=$(mktemp)
+    TEMP_CRON=$(mktemp "${RUN_TMP_DIR:-/tmp}/cron.XXXXXX")
     if ! crontab -u root -l 2>/dev/null | grep -v "$CRON_MARKER" > "$TEMP_CRON"; then
         print_warning "No existing crontab found or error reading crontab. Creating new one."
         : > "$TEMP_CRON" # Create empty file
@@ -5609,19 +7462,25 @@ configure_swap() {
             fi
         else
             # --- Case 2: Resize Existing Swap File ---
-            if confirm "Modify existing swap file size?"; then
+            if confirm_with_env "DU_CONFIGURE_SWAP" "Modify existing swap file size?" "n"; then
                 local SWAP_SIZE REQUIRED_MB
 
                 while true; do
-                    read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $display_size]: ${NC}")" SWAP_SIZE
-                    SWAP_SIZE=${SWAP_SIZE:-$display_size}
+                    if [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]]; then
+                        SWAP_SIZE="${DU_SWAP_SIZE:-$display_size}"
+                    else
+                        read -rp "$(printf '%s' "${CYAN}Enter new swap size (e.g., 2G, 512M) [current: $display_size]: ${NC}")" SWAP_SIZE
+                        SWAP_SIZE=${SWAP_SIZE:-$display_size}
+                    fi
                     # 1. Validate Format
                     if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                        [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                         continue
                     fi
                     # 2. Min Size
                     if (( REQUIRED_MB < 128 )); then
                         print_error "Swap size too small (minimum: 128M)."
+                        [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                         continue
                     fi
                     # 3. Disk Space Check
@@ -5635,6 +7494,7 @@ configure_swap() {
                         if (( MAX_SAFE_MB >= 128 )); then
                             print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
                         fi
+                        [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                         continue
                     fi
                     break
@@ -5650,10 +7510,12 @@ configure_swap() {
                     print_warning "fallocate failed. Using dd (slower)..."
                     rm -f "$existing_swap"
 
-                    local dd_status=""
-                    if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
+                    local -a dd_args=("if=/dev/zero" "of=$existing_swap" "bs=1M" "count=$REQUIRED_MB")
+                    if [[ "$VERBOSE" != "false" ]] && dd --version 2>&1 | grep -q "progress"; then
+                        dd_args+=("status=progress")
+                    fi
 
-                    if ! dd if=/dev/zero of="$existing_swap" bs=1M count="$REQUIRED_MB" $dd_status; then
+                    if ! dd "${dd_args[@]}"; then
                         print_error "Failed to create swap file with dd. Swap creation aborted."
                         return 0
                     fi
@@ -5674,7 +7536,7 @@ configure_swap() {
 
     # --- Case 3: Create New Swap ---
     if [[ -z "$existing_swap" ]]; then
-        if ! confirm "Configure a swap file (recommended for < 4GB RAM)?"; then
+        if ! confirm_with_env "DU_CONFIGURE_SWAP" "Configure a swap file (recommended for < 4GB RAM)?" "n"; then
             print_info "Skipping swap configuration."
             return 0
         fi
@@ -5682,15 +7544,21 @@ configure_swap() {
         local SWAP_SIZE REQUIRED_MB
 
         while true; do
-            read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
-            SWAP_SIZE=${SWAP_SIZE:-2G}
+            if [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]]; then
+                SWAP_SIZE="${DU_SWAP_SIZE:-2G}"
+            else
+                read -rp "$(printf '%s' "${CYAN}Enter swap file size (e.g., 2G, 512M) [2G]: ${NC}")" SWAP_SIZE
+                SWAP_SIZE=${SWAP_SIZE:-2G}
+            fi
             # 1. Validate Format
             if ! REQUIRED_MB=$(convert_to_mb "$SWAP_SIZE"); then
+                [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                 continue
             fi
             # 2. Min Size
             if (( REQUIRED_MB < 128 )); then
                 print_error "Swap size too small (minimum: 128M)."
+                [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                 continue
             fi
             # 3. Disk Space Check
@@ -5704,6 +7572,7 @@ configure_swap() {
                 if (( MAX_SAFE_MB >= 128 )); then
                     print_info "Suggested maximum: ${MAX_SAFE_MB}M (leaves 20% free space)"
                 fi
+                [[ -n "${DU_SWAP_SIZE:-}" || "$VERBOSE" == "false" ]] && return 0
                 continue
             fi
             break
@@ -5712,9 +7581,11 @@ configure_swap() {
         print_info "Creating $SWAP_SIZE swap file at /swapfile..."
         if ! fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null; then
             print_warning "fallocate failed. Using dd (slower)..."
-            local dd_status=""
-            if dd --version 2>&1 | grep -q "progress"; then dd_status="status=progress"; fi
-            if ! dd if=/dev/zero of=/swapfile bs=1M count="$REQUIRED_MB" $dd_status; then
+            local -a dd_args=("if=/dev/zero" "of=/swapfile" "bs=1M" "count=$REQUIRED_MB")
+            if [[ "$VERBOSE" != "false" ]] && dd --version 2>&1 | grep -q "progress"; then
+                dd_args+=("status=progress")
+            fi
+            if ! dd "${dd_args[@]}"; then
                 print_error "Failed to create swap file. Swap creation aborted."
                 rm -f /swapfile || true
                 return 0
@@ -5742,8 +7613,24 @@ configure_swap_settings() {
     print_info "Configuring swap settings..."
     local SWAPPINESS=10
     local CACHE_PRESSURE=50
+    local INPUT=""
 
-    if confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
+    if [[ -n "${DU_SWAPPINESS:-}" ]]; then
+        if [[ "${DU_SWAPPINESS}" =~ ^[0-9]+$ && "${DU_SWAPPINESS}" -ge 0 && "${DU_SWAPPINESS}" -le 100 ]]; then
+            SWAPPINESS="${DU_SWAPPINESS}"
+        else
+            print_warning "Invalid DU_SWAPPINESS='${DU_SWAPPINESS}' (expected 0-100). Using default $SWAPPINESS."
+        fi
+    fi
+    if [[ -n "${DU_VFS_CACHE_PRESSURE:-}" ]]; then
+        if [[ "${DU_VFS_CACHE_PRESSURE}" =~ ^[0-9]+$ && "${DU_VFS_CACHE_PRESSURE}" -ge 1 && "${DU_VFS_CACHE_PRESSURE}" -le 1000 ]]; then
+            CACHE_PRESSURE="${DU_VFS_CACHE_PRESSURE}"
+        else
+            print_warning "Invalid DU_VFS_CACHE_PRESSURE='${DU_VFS_CACHE_PRESSURE}' (expected 1-1000). Using default $CACHE_PRESSURE."
+        fi
+    fi
+
+    if [[ -z "${DU_SWAPPINESS:-}" && -z "${DU_VFS_CACHE_PRESSURE:-}" ]] && confirm "Customize swap settings (vm.swappiness and vm.vfs_cache_pressure)?"; then
         while true; do
             read -rp "$(printf '%s' "${CYAN}Enter vm.swappiness (0-100) [default: $SWAPPINESS]: ${NC}")" INPUT
             INPUT=${INPUT:-$SWAPPINESS}
@@ -5757,11 +7644,11 @@ configure_swap_settings() {
             print_error "Invalid value (1-1000)."
         done
     else
-        print_info "Using default swap settings (vm.swappiness=$SWAPPINESS, vm.vfs_cache_pressure=$CACHE_PRESSURE)."
+        print_info "Using swap settings (vm.swappiness=$SWAPPINESS, vm.vfs_cache_pressure=$CACHE_PRESSURE)."
     fi
 
     local NEW_SWAP_CONFIG
-    NEW_SWAP_CONFIG=$(mktemp)
+    NEW_SWAP_CONFIG=$(mktemp "${RUN_TMP_DIR:-/tmp}/swap_sysctl.XXXXXX")
     tee "$NEW_SWAP_CONFIG" > /dev/null <<EOF
 vm.swappiness=$SWAPPINESS
 vm.vfs_cache_pressure=$CACHE_PRESSURE
@@ -5806,7 +7693,7 @@ configure_time_sync() {
 
 configure_security_audit() {
     print_section "Security Audit Configuration"
-    if ! confirm "Run a security audit with Lynis (and optionally debsecan on Debian)?"; then
+    if ! confirm_with_env "DU_RUN_SECURITY_AUDIT" "Run a security audit with Lynis (and optionally debsecan on Debian)?" "n"; then
         print_info "Security audit skipped."
         log "Security audit skipped by user."
         AUDIT_RAN=false
@@ -5836,10 +7723,10 @@ configure_security_audit() {
             log "Lynis audit completed successfully."
             # Extract hardening index
             HARDENING_INDEX=$(grep -oP "Hardening index : \K\d+" "$AUDIT_LOG" || echo "Unknown")
-            #Extract top suggestions
-            grep "Suggestion:" /var/log/lynis-report.dat | head -n 5 > /tmp/lynis_suggestions.txt 2>/dev/null || true
+            # Extract top suggestions
+            grep "Suggestion:" /var/log/lynis-report.dat | head -n 5 > "${RUN_TMP_DIR:-/tmp}/lynis_suggestions.txt" 2>/dev/null || true
             # Append Lynis system log for persistence
-            cat /var/log/lynis.log >> "$AUDIT_LOG" 2>/dev/null
+            cat /var/log/lynis.log >> "$AUDIT_LOG" 2>/dev/null || true
         else
             print_error "Lynis audit failed. Check $AUDIT_LOG for details."
             log "Lynis audit failed."
@@ -5850,7 +7737,7 @@ configure_security_audit() {
     # shellcheck source=/dev/null
     source /etc/os-release
     if [[ "$ID" == "debian" ]]; then
-        if confirm "Also run debsecan to check for package vulnerabilities?"; then
+        if confirm_with_env "DU_RUN_DEBSECAN" "Also run debsecan to check for package vulnerabilities?" "n"; then
             print_info "Installing debsecan..."
             if ! apt-get install -y -qq debsecan; then
                 print_warning "Failed to install debsecan. Skipping debsecan audit."
@@ -5858,7 +7745,8 @@ configure_security_audit() {
             else
                 print_info "Running debsecan audit..."
                 if debsecan --suite "$VERSION_CODENAME" >> "$AUDIT_LOG" 2>&1; then
-                    DEBSECAN_VULNS=$(grep -c "CVE-" "$AUDIT_LOG" || echo "0")
+                    DEBSECAN_VULNS=$(grep -c "CVE-" "$AUDIT_LOG" 2>/dev/null || true)
+                    DEBSECAN_VULNS=${DEBSECAN_VULNS:-0}
                     print_success "debsecan audit completed. Found $DEBSECAN_VULNS vulnerabilities."
                     log "debsecan audit completed with $DEBSECAN_VULNS vulnerabilities."
                 else
@@ -5909,13 +7797,25 @@ final_cleanup() {
     log "Final system cleanup completed."
 }
 
+summary_warning() {
+    printf '%s\n' "${YELLOW}⚠ $1${NC}"
+    log "WARNING: $1"
+}
+
+summary_info() {
+    printf '%s\n' "${PURPLE}ℹ $1${NC}"
+    log "INFO: $1"
+}
+
 generate_summary() {
+    local tmp_dir="${RUN_TMP_DIR:-/tmp}"
     # Create the report file and set permissions first
     touch "$REPORT_FILE" && chmod 600 "$REPORT_FILE"
 
     # Using a subshell to group all output and tee it to the report file
     (
-    print_section "Setup Complete!"
+    printf '\n%s\n' "${BLUE}▓▓▓ Setup Complete! ▓▓▓${NC}"
+    printf '%s\n' "${BLUE}$(printf '═%.0s' {1..65})${NC}"
 
     printf '\n%s\n\n' "${GREEN}Server setup and hardening script has finished successfully.${NC}"
     printf '%s %s\n' "${CYAN}📋 A detailed report has been saved to:${NC}" "${BOLD}$REPORT_FILE${NC}"
@@ -5973,7 +7873,7 @@ generate_summary() {
     if command -v tailscale >/dev/null 2>&1; then
         if systemctl is-active --quiet tailscaled && tailscale ip >/dev/null 2>&1; then
             printf "  %-20s ${GREEN}✓ Active & Connected${NC}\n" "tailscaled"
-            tailscale ip 2>/dev/null > /tmp/tailscale_ips.txt || true
+            tailscale ip 2>/dev/null > "${tmp_dir}/tailscale_ips.txt" || true
         else
             if grep -q "Tailscale connection failed: tailscale up" "$LOG_FILE"; then
                 printf "  %-20s ${RED}✗ INACTIVE (Connection Failed)${NC}\n" "tailscaled"
@@ -6000,6 +7900,12 @@ generate_summary() {
     fi
     printf '\n'
 
+    local -a EXTERNAL_NOPASSWD_FILES=()
+    local ext_sudo_file
+    while IFS= read -r ext_sudo_file; do
+        [[ -n "$ext_sudo_file" ]] && EXTERNAL_NOPASSWD_FILES+=("$ext_sudo_file")
+    done < <(find_external_nopasswd_sudoers_files "$USERNAME")
+
     # --- Main Configuration Summary ---
     print_separator "Configuration Summary:"
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
@@ -6010,6 +7916,20 @@ generate_summary() {
     fi
     if [[ "${SERVER_IP_V6:-}" != "not available" && "${SERVER_IP_V6:-}" != "Not available" ]]; then
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
+    fi
+    if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
+        printf "  %-20s ${YELLOW}Saved to %s (mode 0600, owned by %s)${NC}\n" "Sudo Password:" "$GENERATED_SUDO_PASS_FILE" "$USERNAME"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "explicit" ]]; then
+        printf "  %-20s ${GREEN}Configured${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "retained" ]]; then
+        printf "  %-20s ${GREEN}Existing account password retained${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "nopasswd" ]]; then
+        printf "  %-20s ${YELLOW}Passwordless sudo (NOPASSWD enabled)${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "none" ]]; then
+        printf "  %-20s ${RED}Not set (no usable password configured)${NC}\n" "Sudo Password:"
+    fi
+    if [[ ${#EXTERNAL_NOPASSWD_FILES[@]} -gt 0 ]]; then
+        printf "  %-20s ${YELLOW}NOPASSWD active via %s${NC}\n" "Sudoers Notice:" "${EXTERNAL_NOPASSWD_FILES[*]}"
     fi
 
     # --- DNS Status ---
@@ -6031,6 +7951,15 @@ generate_summary() {
         printf "  %-20s${GREEN}Applied${NC}\n" "Kernel Hardening:"
     else
         printf "  %-20s${YELLOW}Not Applied${NC}\n" "Kernel Hardening:"
+    fi
+
+    # --- Docker UFW Guard Status ---
+    if command -v docker >/dev/null 2>&1; then
+        if [[ "${DOCKER_UFW_HARDENED:-false}" == "true" ]] || grep -qF "# BEGIN UFW AND DOCKER (managed by du_setup.sh)" /etc/ufw/after.rules 2>/dev/null; then
+            printf "  %-20s${GREEN}Enabled (DOCKER-USER protected)${NC}\n" "Docker UFW Guard:"
+        else
+            printf "  %-20s${YELLOW}Standard (bind ports to 127.0.0.1)${NC}\n" "Docker UFW Guard:"
+        fi
     fi
 
     # --- Backup Configuration Summary ---
@@ -6067,15 +7996,15 @@ generate_summary() {
     # --- Tailscale Summary ---
     if command -v tailscale >/dev/null 2>&1; then
         local TS_CONFIGURED=false
-        if [[ -f /tmp/tailscale_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt 2>/dev/null; then
+        if [[ -f "${tmp_dir}/tailscale_ips.txt" ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "${tmp_dir}/tailscale_ips.txt" 2>/dev/null; then
             TS_CONFIGURED=true
         fi
         if $TS_CONFIGURED; then
             local TS_SERVER TS_IPS_RAW TS_IPS TS_FLAGS
-            TS_SERVER=$(cat /tmp/tailscale_server 2>/dev/null || echo "https://controlplane.tailscale.com")
-            TS_IPS_RAW=$(cat /tmp/tailscale_ips.txt 2>/dev/null || echo "Not connected")
+            TS_SERVER=$(cat "${tmp_dir}/tailscale_server" 2>/dev/null || echo "https://controlplane.tailscale.com")
+            TS_IPS_RAW=$(cat "${tmp_dir}/tailscale_ips.txt" 2>/dev/null || echo "Not connected")
             TS_IPS=$(echo "$TS_IPS_RAW" | paste -sd ", " -)
-            TS_FLAGS=$(cat /tmp/tailscale_flags 2>/dev/null || echo "None")
+            TS_FLAGS=$(cat "${tmp_dir}/tailscale_flags" 2>/dev/null || echo "None")
             printf '%s\n' "  Tailscale:          ${GREEN}Configured and connected${NC}"
             printf "    %-17s%s\n" "- Server:" "${TS_SERVER:-Not set}"
             printf "    %-17s%s\n" "- Tailscale IPs:" "${TS_IPS:-Not connected}"
@@ -6090,13 +8019,13 @@ generate_summary() {
     # --- NetBird Summary ---
     if command -v netbird >/dev/null 2>&1; then
         local NB_CONFIGURED=false
-        if [[ -f /tmp/netbird_ips.txt ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/netbird_ips.txt 2>/dev/null; then
+        if [[ -f "${tmp_dir}/netbird_ips.txt" ]] && grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "${tmp_dir}/netbird_ips.txt" 2>/dev/null; then
             NB_CONFIGURED=true
         fi
         if $NB_CONFIGURED; then
             local NB_SERVER NB_IPS
-            NB_SERVER=$(cat /tmp/netbird_server 2>/dev/null || echo "https://api.netbird.io")
-            NB_IPS=$(cat /tmp/netbird_ips.txt 2>/dev/null || echo "Not connected")
+            NB_SERVER=$(cat "${tmp_dir}/netbird_server" 2>/dev/null || echo "https://api.netbird.io")
+            NB_IPS=$(cat "${tmp_dir}/netbird_ips.txt" 2>/dev/null || echo "Not connected")
             printf '%s\n' "  NetBird:            ${GREEN}Configured and connected${NC}"
             printf "    %-17s%s\n" "- Server:" "${NB_SERVER}"
             printf "    %-17s%s\n" "- NetBird IPv4:" "${NB_IPS}"
@@ -6113,9 +8042,9 @@ generate_summary() {
         printf "    %-17s%s\n" "- Audit Log:" "${AUDIT_LOG:-N/A}"
         printf "    %-17s%s\n" "- Hardening Index:" "${HARDENING_INDEX:-Unknown}"
         printf "    %-17s%s\n" "- Vulnerabilities:" "${DEBSECAN_VULNS:-N/A}"
-        if [[ -s /tmp/lynis_suggestions.txt ]]; then
+        if [[ -s "${tmp_dir}/lynis_suggestions.txt" ]]; then
             printf '%s\n' "    ${YELLOW}- Top Lynis Suggestions:${NC}"
-            sed 's/^/      /' /tmp/lynis_suggestions.txt
+            sed 's/^/      /' "${tmp_dir}/lynis_suggestions.txt"
         fi
     else
         printf '%s\n' "  Security Audit:     ${RED}Not run${NC}"
@@ -6126,7 +8055,7 @@ generate_summary() {
     print_separator "System & Environment Information"
 
     # OS and Kernel Info
-    printf "%-20s %s\n" "OS:" "${PRETTY_NAME:-Unknown}"
+    printf "%-20s %s\n" "OS:" "${OS_PRETTY_NAME:-Unknown}"
     printf "%-20s %s\n" "Kernel:" "$(uname -r)"
     printf "%-20s %s\n" "Uptime:" "$(uptime -p 2>/dev/null || uptime | sed 's/.*up //;s/,.*//')"
 
@@ -6175,18 +8104,18 @@ generate_summary() {
     fi
 
     # 3. Tailscale Access
-    if [[ -f /tmp/tailscale_ips.txt ]]; then
+    if [[ -f "${tmp_dir}/tailscale_ips.txt" ]]; then
         local TS_SUMMARY_IP
-        TS_SUMMARY_IP=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/tailscale_ips.txt | head -n 1)
+        TS_SUMMARY_IP=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "${tmp_dir}/tailscale_ips.txt" | head -n 1 || true)
         if [[ -n "$TS_SUMMARY_IP" ]]; then
             printf "    %-26s ${CYAN}%s${NC}\n" "- Tailscale (VPN):" "ssh -p $SSH_PORT $USERNAME@$TS_SUMMARY_IP"
         fi
     fi
 
     # 3.1. NetBird Access
-    if [[ -f /tmp/netbird_ips.txt ]]; then
+    if [[ -f "${tmp_dir}/netbird_ips.txt" ]]; then
         local NB_SUMMARY_IP
-        NB_SUMMARY_IP=$(head -n 1 /tmp/netbird_ips.txt)
+        NB_SUMMARY_IP=$(head -n 1 "${tmp_dir}/netbird_ips.txt" || true)
         if [[ -n "$NB_SUMMARY_IP" ]]; then
             printf "    %-26s ${CYAN}%s${NC}\n" "- NetBird (VPN):" "ssh -p $SSH_PORT $USERNAME@$NB_SUMMARY_IP"
         fi
@@ -6212,6 +8141,9 @@ generate_summary() {
     printf "  %-28s ${CYAN}%s${NC}\n" "- Kernel settings:" "sudo sysctl fs.protected_hardlinks kernel.yama.ptrace_scope"
     if command -v docker >/dev/null 2>&1; then
         printf "  %-28s ${CYAN}%s${NC}\n" "- Docker status:" "docker ps"
+        if [[ "${DOCKER_UFW_HARDENED:-false}" == "true" ]]; then
+            printf "  %-28s ${CYAN}%s${NC}\n" "- Allow Docker port:" "sudo ufw route allow proto tcp from any to any port <PORT>"
+        fi
     fi
     if command -v tailscale >/dev/null 2>&1; then
         printf "  %-28s ${CYAN}%s${NC}\n" "- Tailscale status:" "tailscale status"
@@ -6232,44 +8164,67 @@ generate_summary() {
 
     # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
-        print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
+        summary_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
     fi
     if [[ "${DOCKER_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Docker packages failed to install. Review '$LOG_FILE' and reinstall Docker manually."
+        summary_warning "ACTION REQUIRED: Docker packages failed to install. Review '$LOG_FILE' and reinstall Docker manually."
     fi
     if [[ "${DOCKER_SANITY_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Docker sanity check failed. Run 'docker run --rm hello-world' after reboot to verify."
+        summary_warning "ACTION REQUIRED: Docker sanity check failed. Run 'docker run --rm hello-world' after reboot to verify."
     fi
     if [[ "${TAILSCALE_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Tailscale installation failed. Re-run the official installer and configure Tailscale manually."
+        summary_warning "ACTION REQUIRED: Tailscale installation failed. Re-run the official installer and configure Tailscale manually."
     fi
     if [[ "${NETBIRD_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: NetBird installation failed. Reinstall NetBird and run 'netbird up' manually."
+        summary_warning "ACTION REQUIRED: NetBird installation failed. Reinstall NetBird and run 'netbird up' manually."
     fi
     if [[ -n "${TS_COMMAND:-}" ]]; then
-        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
+        summary_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
         printf '%s\n' "${CYAN}  $TS_COMMAND${NC}"
     fi
     if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
-        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
+        summary_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
+    fi
+    if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
+        summary_warning "ACTION REQUIRED: Log in as '$USERNAME', save the initial sudo password from ~/.du_initial_sudo_password, and delete it with 'shred -u ~/.du_initial_sudo_password'."
+    fi
+    if [[ ${#EXTERNAL_NOPASSWD_FILES[@]} -gt 0 && "${SUDO_PASSWORD_STATUS:-}" != "nopasswd" ]]; then
+        summary_warning "NOTE: Pre-existing passwordless sudo rule detected for '$USERNAME' in: ${EXTERNAL_NOPASSWD_FILES[*]} (left untouched; review if you want sudo to require a password)."
     fi
 
-    print_warning "A reboot is required to apply all changes cleanly."
+    summary_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
-        if confirm "Reboot now?" "y"; then
-            print_info "Rebooting, bye!..."
+        if confirm_with_env "DU_AUTO_REBOOT" "Reboot now?" "y"; then
+            summary_info "Rebooting, bye!..."
             sleep 3
             reboot
         else
-            print_warning "Please reboot manually with 'sudo reboot'."
+            summary_warning "Please reboot manually with 'sudo reboot'."
         fi
     else
-        print_warning "Quiet mode enabled. Please reboot manually with 'sudo reboot'."
+        local auto_reboot_rc=0
+        env_bool_status "DU_AUTO_REBOOT" || auto_reboot_rc=$?
+        if [[ $auto_reboot_rc -eq 0 ]]; then
+            summary_info "Quiet mode: DU_AUTO_REBOOT=true — rebooting now..."
+            sleep 3
+            reboot
+        else
+            summary_warning "Quiet mode enabled. Please reboot manually with 'sudo reboot'."
+        fi
     fi
 
     ) | tee -a "$REPORT_FILE"
 
     log "Script finished successfully. Report generated at $REPORT_FILE"
+}
+
+cleanup_on_exit() {
+    if [[ -n "${DTOP_TMP_INSTALLER:-}" && -f "$DTOP_TMP_INSTALLER" ]]; then
+        rm -f -- "$DTOP_TMP_INSTALLER" 2>/dev/null || true
+    fi
+    if [[ -n "${RUN_TMP_DIR:-}" && -d "$RUN_TMP_DIR" ]]; then
+        rm -rf -- "$RUN_TMP_DIR" 2>/dev/null || true
+    fi
 }
 
 handle_error() {
@@ -6283,7 +8238,7 @@ handle_error() {
 
 main() {
     trap 'handle_error $LINENO' ERR
-    trap 'rm -f /tmp/lynis_suggestions.txt /tmp/tailscale_*.txt /tmp/sshd_config_test.log /tmp/ssh*.log /tmp/sshd_restart*.log' EXIT
+    trap cleanup_on_exit EXIT
 
     if [[ $(id -u) -ne 0 ]]; then
         printf '\n%s\n' "${RED}✗ Error: This script must be run with root privileges.${NC}"
@@ -6293,11 +8248,18 @@ main() {
         exit 1
     fi
 
+    RUN_TMP_DIR=$(mktemp -d /tmp/du_setup.XXXXXX)
+    chmod 700 "$RUN_TMP_DIR"
+
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     log "Starting Debian/Ubuntu hardening script."
 
     # --- PRELIMINARY CHECKS ---
     print_header
+    if [[ "$CLEANUP_ONLY" != "true" && "$CLEANUP_PREVIEW" != "true" ]]; then
+        # Validate required unattended settings before any mutating dependency or system checks
+        validate_quiet_mode_config
+    fi
     check_dependencies
     check_system
     run_update_check
@@ -6330,14 +8292,30 @@ main() {
     configure_firewall
     # --- Choose Firewall fail2ban/CrowdSec ---
     print_section "Intrusion Detection System (IDS)"
-    printf '%s\n' "${CYAN}Choose an Intrusion Detection/Prevention System:${NC}"
-    printf '  1) Fail2Ban (Classic, simple log parsing, standalone)\n'
-    printf '  2) CrowdSec (Modern, collaborative reputation database, highly recommended)\n'
-    printf '  3) Skip IDS setup\n'
+    local IDS_CHOICE=""
+    if [[ -n "${DU_IDS:-}" ]]; then
+        case "${DU_IDS,,}" in
+            fail2ban|1) IDS_CHOICE="1" ;;
+            crowdsec|2) IDS_CHOICE="2" ;;
+            none|skip|3) IDS_CHOICE="3" ;;
+            *)
+                print_warning "Invalid DU_IDS value '${DU_IDS}' (expected fail2ban|crowdsec|none). Defaulting to Fail2Ban."
+                IDS_CHOICE="1"
+                ;;
+        esac
+        print_info "Selected IDS via DU_IDS=${DU_IDS}."
+    elif [[ "$VERBOSE" == "false" ]]; then
+        IDS_CHOICE="1"
+        print_info "Quiet mode: Defaulting to Fail2Ban for Intrusion Detection."
+    else
+        printf '%s\n' "${CYAN}Choose an Intrusion Detection/Prevention System:${NC}"
+        printf '  1) Fail2Ban (Classic, simple log parsing, standalone)\n'
+        printf '  2) CrowdSec (Modern, collaborative reputation database, highly recommended)\n'
+        printf '  3) Skip IDS setup\n'
 
-    local IDS_CHOICE
-    read -rp "$(printf '%s' "${CYAN}Enter choice [1]: ${NC}")" IDS_CHOICE
-    IDS_CHOICE=${IDS_CHOICE:-1}
+        read -rp "$(printf '%s' "${CYAN}Enter choice [1]: ${NC}")" IDS_CHOICE
+        IDS_CHOICE=${IDS_CHOICE:-1}
+    fi
 
     case "$IDS_CHOICE" in
         1)

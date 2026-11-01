@@ -7,9 +7,9 @@
 
 -----
 
-**Version:** v0.81.4
+**Version:** v0.82.0
 
-**Last Updated:** 2026-08-12
+**Last Updated:** 2026-11-01
 
 **Compatible With:**
 
@@ -26,9 +26,9 @@ This script automates the initial setup and security hardening of a fresh Debian
 
 * **Secure User Management**: Creates a new `sudo` user and disables root SSH access. Optionally installs a custom .bashrc for enhanced terminal experience.
 * **SSH Hardening**: Configures a custom SSH port, enforces key-based authentication, and applies security best practices.
-* **Firewall Configuration**: Sets up UFW with secure defaults and customizable rules.
+* **Firewall Configuration**: Sets up UFW with secure defaults, customizable rules, and optional Docker `DOCKER-USER` chain hardening so published container ports cannot bypass UFW.
 * **2FA Configuration**: Optionally enhance server security with 2FA, Sets up 2FA and shows QR code to add to any TOTP authenticator.
-* **Intrusion Prevention**: Installs and configures **Fail2Ban** to block malicious IPs.
+* **Intrusion Prevention**: Installs and configures **Fail2Ban** (or **CrowdSec**) to block malicious IPs.
 * **Kernel Hardening**: Optionally applies a set of recommended `sysctl` security settings to harden the kernel against common network and memory-related threats.
 * **Automated Security Updates**: Enables `unattended-upgrades` for automatic security patches.
 * **System Stability**: Configures NTP time synchronization with `chrony` and optional swap file setup for low-RAM systems.
@@ -41,7 +41,7 @@ This script automates the initial setup and security hardening of a fresh Debian
   * Docker & Docker Compose
   * Tailscale (Mesh VPN)
 * **Comprehensive Logging**: Logs all actions to `/var/log/du_setup_*.log`.
-* **Automation-Friendly**: Supports `--quiet` mode for automated provisioning.
+* **Automation-Friendly**: Supports `--config <file>` and `--quiet` mode with safe prompt defaults, pre-flight SSH key validation, and an example configuration file (`du_setup.env.example`).
 
 -----
 
@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`87b55982d3eb81ac94fe3bb41749b55af08680a0920d2053bd7bbd08ce232313`
+`ebc56ee34ef26994dce28362274bdceda2be48ce3ae1c3819ef62b78ae8d0555`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo 87b55982d3eb81ac94fe3bb41749b55af08680a0920d2053bd7bbd08ce232313 du_setup.sh | sha256sum --check
+echo ebc56ee34ef26994dce28362274bdceda2be48ce3ae1c3819ef62b78ae8d0555 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -103,7 +103,7 @@ echo 87b55982d3eb81ac94fe3bb41749b55af08680a0920d2053bd7bbd08ce232313 du_setup.s
 Ideally run as root, if you are a sudo user you can switch to root with `sudo su`
 
 ```bash
-./du_setup
+./du_setup.sh
 ```
 
 Alternatively run with sudo -E, -E flag preserve the environment variables.
@@ -112,11 +112,26 @@ Alternatively run with sudo -E, -E flag preserve the environment variables.
 sudo -E ./du_setup.sh
 ```
 
-#### Quiet Mode (For Automation)
+#### Quiet Mode / Unattended Automation (`--config` + `--quiet`)
+
+For repeatable or automated server provisioning, copy the included `du_setup.env.example` template, fill in your `DU_USERNAME` and real `DU_SSH_PUBLIC_KEY`, and pass `--config` with `--quiet`:
 
 ```bash
-sudo -E ./du_setup.sh --quiet
+# Download the example environment file (if not cloning the repo)
+wget https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.env.example
+cp du_setup.env.example du_setup.env
+chmod 600 du_setup.env
+
+# Edit DU_USERNAME, DU_SSH_PUBLIC_KEY, DU_SSH_PORT, and optional features
+nano du_setup.env
+
+# Run unattended provisioning
+sudo -E ./du_setup.sh --config ./du_setup.env --quiet
 ```
+
+* Only `DU_*` variables are accepted by `--config` (parsed safely line-by-line without `eval`/`source`).
+* Pre-flight validation verifies `DU_USERNAME` and `DU_SSH_PUBLIC_KEY` before modifying packages or SSH settings to prevent accidental lockouts.
+* If `DU_USER_PASSWORD` is left empty (and `DU_PASSWORDLESS_SUDO="false"`), a 24-character random sudo password is generated and saved with `0600` permissions (owned by `<username>` and their primary group) at `/home/<username>/.du_initial_sudo_password`. On SSH login, a self-clearing reminder prompts `<username>` to save it (or change it with `passwd`) and delete it immediately via `shred -u ~/.du_initial_sudo_password`.
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >
@@ -225,6 +240,13 @@ After rebooting, verify the setup:
 * For Hetzner Storage Box, ensure `~/.ssh/` exists on the remote server: `ssh -p 23 <backup_user@backup_host> "mkdir -p ~/.ssh && chmod 700 ~/.ssh"`. Backups use SSH (port 23) for rsync, not SFTP.
 * For Tailscale, generate a pre-auth key from [https://login.tailscale.com/admin](https://login.tailscale.com/admin) (standard, must start with `tskey-auth-`) or your custom server (any valid key). Ensure UDP 41641 is open for Tailscale traffic.
 * For security audits, review `/var/log/setup_harden_security_audit_*.log` for Lynis and debsecan recommendations.
+* **Docker + UFW Firewall Protection**:
+  * By default on Linux, publishing Docker container ports with `-p 8080:8080` manipulates `iptables`/`ip6tables` directly and **bypasses UFW** incoming rules. Always bind internal services to localhost (`docker run -p 127.0.0.1:8080:8080 ...`) behind a reverse proxy whenever possible.
+  * When installing Docker, `du_setup.sh` offers optional `DOCKER-USER` firewall hardening in `/etc/ufw/after.rules` and `/etc/ufw/after6.rules` (`DU_DOCKER_UFW_HARDEN="true"`). When enabled, external internet traffic to published container ports is blocked by default unless explicitly permitted via UFW route rules matching the **internal container destination port** (e.g., `8080` for `-p 80:8080` or `-p 8080:8080`):
+
+    ```bash
+    sudo ufw route allow proto tcp from any to any port 8080
+    ```
 
 -----
 
@@ -232,25 +254,34 @@ After rebooting, verify the setup:
 
 ### SSH Lockout Recovery
 
-If locked out, use your provider’s console:
+If locked out, use your provider’s out-of-band console:
 
-1. **Remove Hardened Configuration**:
+1. **Remove Hardened Drop-in & Systemd Port Overrides**:
 
     ```bash
-    sudo rm /etc/ssh/sshd_config.d/99-hardening.conf
+    sudo rm -f /etc/ssh/sshd_config.d/10-hardening.conf /etc/ssh/sshd_config.d/95-2fa-*.conf
+    sudo rm -rf /etc/systemd/system/ssh.socket.d /etc/systemd/system/ssh.service.d /etc/systemd/system/sshd.service.d
+    sudo systemctl daemon-reload
     ```
 
-2. **Restore Original `sshd_config`**:
+2. **Restore Original `sshd_config` (and PAM if 2FA was enabled)**:
 
     ```bash
     LATEST_BACKUP=$(ls -td /root/setup_harden_backup_* | head -1)
-    sudo cp "$LATEST_BACKUP"/sshd_config.backup_* /etc/ssh/sshd_config
+    sudo cp "$(ls -t "$LATEST_BACKUP"/sshd_config.backup_* | head -1)" /etc/ssh/sshd_config
+    # If 2FA was enabled, also restore PAM:
+    ls "$LATEST_BACKUP"/pam_sshd.backup_* >/dev/null 2>&1 && sudo cp "$(ls -t "$LATEST_BACKUP"/pam_sshd.backup_* | head -1)" /etc/pam.d/sshd
     ```
 
-3. **Restart SSH**:
+3. **Restore UFW Allowance & Restart SSH**:
 
     ```bash
-    sudo systemctl restart ssh
+    # Reopen the restored SSH port(s) in UFW (and verify your provider firewall permits it):
+    sudo /usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | while read -r port; do
+        sudo ufw allow "$port/tcp"
+    done
+    sudo systemctl restart ssh.socket 2>/dev/null || true
+    sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
     ```
 
 ### Backup Issues
