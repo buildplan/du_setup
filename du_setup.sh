@@ -164,6 +164,7 @@ BACKUP_DIR="/root/setup_harden_backup_$(date +%Y%m%d_%H%M%S)"
 ORIGINAL_ARGS="$*"
 CONFIG_FILE=""
 RUN_TMP_DIR=""
+DTOP_TMP_INSTALLER=""
 
 CLEANUP_PREVIEW=false # If true, show what would be cleaned up without making changes
 CLEANUP_ONLY=false # If true, only perform cleanup tasks
@@ -2733,7 +2734,88 @@ confirm_with_env() {
 
 validate_username() {
     local username="$1"
-    [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ && ${#username} -le 32 ]]
+    [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ && ${#username} -le 32 ]] || return 1
+    if [[ "$username" == "root" ]] || [[ "$(id -u "$username" 2>/dev/null || true)" == "0" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+ensure_and_validate_ssh_strict_modes() {
+    local username="$1"
+    local user_home="$2"
+    local repair="${3:-true}"
+    local stop_root="${4:-/}"
+    local ssh_dir="${user_home}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    if [[ -z "$user_home" || ! -d "$user_home" || -L "$user_home" ]]; then
+        print_error "SSH StrictModes check failed: Home directory '$user_home' is missing or a symlink."
+        return 1
+    fi
+    if [[ ! -d "$ssh_dir" || -L "$ssh_dir" ]]; then
+        print_error "SSH StrictModes check failed: '$ssh_dir' is missing or a symlink."
+        return 1
+    fi
+    if [[ ! -f "$auth_keys" || -L "$auth_keys" ]]; then
+        print_error "SSH StrictModes check failed: '$auth_keys' is missing or a symlink."
+        return 1
+    fi
+
+    local target_uid target_group
+    target_uid=$(id -u "$username")
+    target_group=$(id -gn "$username")
+
+    if [[ "$repair" == "true" ]]; then
+        chown "${username}:${target_group}" "$user_home"
+        chmod go-w "$user_home"
+        chown "${username}:${target_group}" "$ssh_dir"
+        chmod 700 "$ssh_dir"
+        chown "${username}:${target_group}" "$auth_keys"
+        chmod 600 "$auth_keys"
+    fi
+
+    local check_path stat_out path_uid path_mode
+    for check_path in "$auth_keys" "$ssh_dir" "$user_home"; do
+        stat_out=$(stat -c '%u %a' "$check_path" 2>/dev/null || stat -f '%u %Lp' "$check_path")
+        path_uid="${stat_out%% *}"
+        path_mode="${stat_out##* }"
+        if [[ "$path_uid" != "$target_uid" && "$path_uid" != "0" ]]; then
+            print_error "SSH StrictModes check failed: '$check_path' is owned by UID $path_uid (expected '$username' or root)."
+            return 1
+        fi
+        if (( (8#$path_mode & 8#022) != 0 )); then
+            print_error "SSH StrictModes check failed: '$check_path' has group/world-writable permissions ($path_mode)."
+            return 1
+        fi
+    done
+
+    local parent_dir="$user_home"
+    while [[ "$parent_dir" != "$stop_root" ]]; do
+        local next_parent
+        next_parent=$(dirname "$parent_dir")
+        [[ "$next_parent" == "$parent_dir" ]] && break
+        parent_dir="$next_parent"
+
+        if [[ -L "$parent_dir" ]]; then
+            print_error "SSH StrictModes check failed: Ancestor directory '$parent_dir' is a symlink."
+            return 1
+        fi
+        stat_out=$(stat -c '%u %a' "$parent_dir" 2>/dev/null || stat -f '%u %Lp' "$parent_dir")
+        path_uid="${stat_out%% *}"
+        path_mode="${stat_out##* }"
+        if [[ "$path_uid" != "0" && "$path_uid" != "$target_uid" ]]; then
+            print_error "SSH StrictModes check failed: Ancestor '$parent_dir' is owned by UID $path_uid (expected root)."
+            return 1
+        fi
+        if (( (8#$path_mode & 8#022) != 0 )); then
+            print_error "SSH StrictModes check failed: Ancestor '$parent_dir' has group/world-writable permissions ($path_mode)."
+            return 1
+        fi
+        [[ "$parent_dir" == "/" ]] && break
+    done
+
+    return 0
 }
 
 validate_hostname() {
@@ -2784,7 +2866,7 @@ validate_quiet_mode_config() {
     [[ $VERBOSE == true ]] && return 0
 
     if [[ -z "${DU_USERNAME:-}" ]] || ! validate_username "${DU_USERNAME}"; then
-        print_error "Quiet mode requires a valid DU_USERNAME (set via --config <file> or environment)."
+        print_error "Quiet mode requires a valid non-root DU_USERNAME (set via --config <file> or environment)."
         exit 1
     fi
 
@@ -3139,7 +3221,11 @@ collect_config() {
                     USER_EXISTS=false; break
                 fi
             else
-                print_error "Invalid username. Use lowercase letters, numbers, hyphens, underscores (max 32 chars)."
+                if [[ "$USERNAME" == "root" ]] || [[ "$(id -u "$USERNAME" 2>/dev/null || true)" == "0" ]]; then
+                    print_error "Cannot use 'root' (or any UID 0 account) as the admin user because root SSH login will be disabled."
+                else
+                    print_error "Invalid username. Use lowercase letters, numbers, hyphens, underscores (max 32 chars)."
+                fi
             fi
         done
     fi
@@ -3612,6 +3698,10 @@ setup_user() {
             LOCAL_KEY_ADDED=true
             print_success "Valid SSH keys found for existing user '$USERNAME'."
         fi
+        if ! ensure_and_validate_ssh_strict_modes "$USERNAME" "$USER_HOME" "true"; then
+            print_error "Existing user '$USERNAME' home/SSH directory permissions violate OpenSSH StrictModes. Aborting to prevent lockout."
+            exit 1
+        fi
     fi
 
     # Add custom .bashrc
@@ -3898,13 +3988,18 @@ configure_ssh() {
         printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
 
+    if ! ensure_and_validate_ssh_strict_modes "$USERNAME" "$USER_HOME" "true"; then
+        print_error "SSH StrictModes permission validation failed for '$USERNAME'. Aborting SSH hardening to prevent lockout."
+        return 1
+    fi
+
     if [[ $VERBOSE == false ]]; then
         if [[ ! -s "$AUTH_KEYS" ]] || ! ssh-keygen -lf "$AUTH_KEYS" >/dev/null 2>&1; then
             print_error "Quiet mode aborted: No valid SSH public key verified in $AUTH_KEYS."
             return 1
         fi
-        print_info "Quiet mode: Verified valid SSH public key(s) in $AUTH_KEYS."
-        log "Quiet mode: Pre-hardening authorized_keys validation passed for $USERNAME."
+        print_info "Quiet mode: Verified valid SSH public key(s) and StrictModes permissions in $AUTH_KEYS."
+        log "Quiet mode: Pre-hardening authorized_keys and StrictModes validation passed for $USERNAME."
     else
         print_warning "SSH Key Authentication Required for Next Steps!"
         printf '%s\n' "${CYAN}Test SSH access from a SEPARATE terminal now.${NC}"
@@ -4339,7 +4434,7 @@ configure_2fa() {
     local HARDENING_DROPIN="$SSH_DROPIN_DIR/10-hardening.conf"
     local SSH_2FA_CONF="$SSH_DROPIN_DIR/95-2fa-${USERNAME}.conf"
     local SSHD_2FA_BACKUP
-    SSHD_2FA_BACKUP="$BACKUP_DIR/sshd_config.backup_2fa_$(date +%Y%m%d_%H%M%S)"
+    SSHD_2FA_BACKUP="$BACKUP_DIR/sshd_config.2fa_backup_$(date +%Y%m%d_%H%M%S)"
     local USE_DROPIN=false
     local HARDENING_UPDATED=false
 
@@ -4708,6 +4803,18 @@ configure_fail2ban() {
         print_info "$WHITELIST_STR"
     fi
 
+    # Optional ufw-probes port-scan jail (disabled by default to avoid spoofed pre-handshake SYN bans)
+    local UFW_PROBES_ENABLED="false"
+    print_info "Note: UFW already drops traffic to closed ports, and [sshd] protects SSH after real failed logins."
+    print_info "Optional 'ufw-probes' jail bans port scanners across all ports, but spoofed SYN packets could ban non-whitelisted IPs."
+    if confirm_with_env "DU_FAIL2BAN_UFW_PROBES" "Enable optional Fail2Ban 'ufw-probes' port-scan jail? (Whitelist your admin IP first if enabling)" "n"; then
+        UFW_PROBES_ENABLED="true"
+        print_warning "Enabled 'ufw-probes' jail. Ensure your static/VPN admin IPs are included in 'ignoreip'."
+        log "Enabled optional Fail2Ban ufw-probes jail."
+    else
+        log "Fail2Ban ufw-probes jail left disabled (default)."
+    fi
+
     # --- Define Desired Configurations ---
     local UFW_PROBES_CONFIG
     UFW_PROBES_CONFIG=$(cat <<'EOF'
@@ -4746,9 +4853,10 @@ enabled = true
 port = $SSH_PORT
 backend = systemd
 
-# This jail monitors UFW logs for rejected TCP SYN packets (port scans, etc.).
+# Optional jail monitoring UFW logs for rejected TCP SYN port-scan packets.
+# Disabled by default because pre-handshake SYN source IPs can be spoofed unless admin IPs are whitelisted in ignoreip.
 [ufw-probes]
-enabled = true
+enabled = $UFW_PROBES_ENABLED
 port = all
 filter = ufw-probes
 logpath = /var/log/ufw.log
@@ -5195,50 +5303,81 @@ configure_docker_ufw_hardening() {
     after_backup="$BACKUP_DIR/ufw_after.rules.backup_$(date +%Y%m%d_%H%M%S)"
     cp "$after_rules" "$after_backup"
 
-    cat <<'EOF' >> "$after_rules"
+    # Detect any existing Docker bridge networks using custom interface names (outside docker0 / br-*)
+    local -a custom_bridges=()
+    if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
+        local net_id bridge_iface
+        while IFS= read -r net_id; do
+            [[ -z "$net_id" ]] && continue
+            bridge_iface=$(docker network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$net_id" 2>/dev/null || true)
+            if [[ -n "$bridge_iface" && "$bridge_iface" != "docker0" && "$bridge_iface" != br-* && "$bridge_iface" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+                local already_added=false
+                local existing_b
+                for existing_b in "${custom_bridges[@]+"${custom_bridges[@]}"}"; do
+                    [[ "$existing_b" == "$bridge_iface" ]] && already_added=true
+                done
+                [[ "$already_added" == false ]] && custom_bridges+=("$bridge_iface")
+            fi
+        done < <(docker network ls --filter driver=bridge --format '{{.ID}}' 2>/dev/null || true)
+    fi
 
-# BEGIN UFW AND DOCKER (managed by du_setup.sh)
-*filter
-:ufw-user-forward - [0:0]
-:ufw-docker-logging-deny - [0:0]
-:DOCKER-USER - [0:0]
--A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
--A DOCKER-USER -j ufw-user-forward
--A DOCKER-USER -s 10.0.0.0/8 -j RETURN
--A DOCKER-USER -s 172.16.0.0/12 -j RETURN
--A DOCKER-USER -s 192.168.0.0/16 -j RETURN
--A DOCKER-USER -d 10.0.0.0/8 -j ufw-docker-logging-deny
--A DOCKER-USER -d 172.16.0.0/12 -j ufw-docker-logging-deny
--A DOCKER-USER -d 192.168.0.0/16 -j ufw-docker-logging-deny
--A DOCKER-USER -j RETURN
--A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
--A ufw-docker-logging-deny -j DROP
-COMMIT
-# END UFW AND DOCKER (managed by du_setup.sh)
-EOF
+    local custom_in_rules="" custom_out_rules_v4="" custom_out_rules_v6=""
+    local cb
+    for cb in "${custom_bridges[@]+"${custom_bridges[@]}"}"; do
+        custom_in_rules+="-A DOCKER-USER -i ${cb} -j RETURN"$'\n'
+        custom_out_rules_v4+="-A DOCKER-USER -o ${cb} -j ufw-docker-logging-deny"$'\n'
+        custom_out_rules_v6+="-A DOCKER-USER -o ${cb} -j ufw6-docker-logging-deny"$'\n'
+    done
+
+    # Match actual Docker bridge interfaces (docker0, br-+, and any custom bridge interfaces)
+    # rather than private IP subnets so non-RFC1918/global-IPv6 containers and LAN/VPC peers cannot bypass UFW.
+    {
+        printf '\n%s\n' "# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
+        printf '%s\n' "*filter"
+        printf '%s\n' ":ufw-user-forward - [0:0]"
+        printf '%s\n' ":ufw-docker-logging-deny - [0:0]"
+        printf '%s\n' ":DOCKER-USER - [0:0]"
+        printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+        printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP"
+        printf '%s\n' "-A DOCKER-USER -i docker0 -j RETURN"
+        printf '%s\n' "-A DOCKER-USER -i br-+ -j RETURN"
+        [[ -n "$custom_in_rules" ]] && printf '%s' "$custom_in_rules"
+        printf '%s\n' "-A DOCKER-USER -j ufw-user-forward"
+        printf '%s\n' "-A DOCKER-USER -o docker0 -j ufw-docker-logging-deny"
+        printf '%s\n' "-A DOCKER-USER -o br-+ -j ufw-docker-logging-deny"
+        [[ -n "$custom_out_rules_v4" ]] && printf '%s' "$custom_out_rules_v4"
+        printf '%s\n' "-A DOCKER-USER -j RETURN"
+        printf '%s\n' "-A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix \"[UFW DOCKER BLOCK] \""
+        printf '%s\n' "-A ufw-docker-logging-deny -j DROP"
+        printf '%s\n' "COMMIT"
+        printf '%s\n' "# END UFW AND DOCKER (managed by du_setup.sh)"
+    } >> "$after_rules"
 
     if [[ -f "$after6_rules" ]] && grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
         if ! grep -qF "$marker_begin" "$after6_rules" 2>/dev/null; then
             after6_backup="$BACKUP_DIR/ufw_after6.rules.backup_$(date +%Y%m%d_%H%M%S)"
             cp "$after6_rules" "$after6_backup"
-            cat <<'EOF' >> "$after6_rules"
-
-# BEGIN UFW AND DOCKER (managed by du_setup.sh)
-*filter
-:ufw6-user-forward - [0:0]
-:ufw6-docker-logging-deny - [0:0]
-:DOCKER-USER - [0:0]
--A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
--A DOCKER-USER -j ufw6-user-forward
--A DOCKER-USER -s fe80::/10 -j RETURN
--A DOCKER-USER -s fd00::/8 -j RETURN
--A DOCKER-USER -d fd00::/8 -j ufw6-docker-logging-deny
--A DOCKER-USER -j RETURN
--A ufw6-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
--A ufw6-docker-logging-deny -j DROP
-COMMIT
-# END UFW AND DOCKER (managed by du_setup.sh)
-EOF
+            {
+                printf '\n%s\n' "# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
+                printf '%s\n' "*filter"
+                printf '%s\n' ":ufw6-user-forward - [0:0]"
+                printf '%s\n' ":ufw6-docker-logging-deny - [0:0]"
+                printf '%s\n' ":DOCKER-USER - [0:0]"
+                printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+                printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP"
+                printf '%s\n' "-A DOCKER-USER -i docker0 -j RETURN"
+                printf '%s\n' "-A DOCKER-USER -i br-+ -j RETURN"
+                [[ -n "$custom_in_rules" ]] && printf '%s' "$custom_in_rules"
+                printf '%s\n' "-A DOCKER-USER -j ufw6-user-forward"
+                printf '%s\n' "-A DOCKER-USER -o docker0 -j ufw6-docker-logging-deny"
+                printf '%s\n' "-A DOCKER-USER -o br-+ -j ufw6-docker-logging-deny"
+                [[ -n "$custom_out_rules_v6" ]] && printf '%s' "$custom_out_rules_v6"
+                printf '%s\n' "-A DOCKER-USER -j RETURN"
+                printf '%s\n' "-A ufw6-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix \"[UFW DOCKER BLOCK] \""
+                printf '%s\n' "-A ufw6-docker-logging-deny -j DROP"
+                printf '%s\n' "COMMIT"
+                printf '%s\n' "# END UFW AND DOCKER (managed by du_setup.sh)"
+            } >> "$after6_rules"
         fi
     fi
 
@@ -5391,13 +5530,17 @@ install_dtop_optional() {
         return 0
     fi
     print_info "Installing dtop for user '$USERNAME'..."
-    local DTOP_INSTALLER="${RUN_TMP_DIR:-/tmp}/dtop-installer.sh"
+    local DTOP_INSTALLER
+    DTOP_INSTALLER=$(mktemp /tmp/dtop-installer.XXXXXX)
+    DTOP_TMP_INSTALLER="$DTOP_INSTALLER"
     if ! curl -fsSL "https://github.com/amir20/dtop/releases/latest/download/dtop-installer.sh" -o "$DTOP_INSTALLER"; then
         print_warning "Failed to download dtop installer. Continuing setup..."
         log "Failed to download dtop installer."
+        rm -f "$DTOP_INSTALLER"
+        DTOP_TMP_INSTALLER=""
         return 0
     fi
-    chmod +x "$DTOP_INSTALLER"
+    chmod 755 "$DTOP_INSTALLER"
     local USER_HOME
     USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
     local USER_LOCAL_BIN="$USER_HOME/.local/bin"
@@ -5406,6 +5549,7 @@ install_dtop_optional() {
         if ! sudo -u "$USERNAME" mkdir -p "$USER_LOCAL_BIN"; then
             print_warning "Failed to create $USER_LOCAL_BIN. Skipping dtop."
             rm -f "$DTOP_INSTALLER"
+            DTOP_TMP_INSTALLER=""
             return 0
         fi
     fi
@@ -5441,6 +5585,7 @@ install_dtop_optional() {
         log "dtop installation script failed."
     fi
     rm -f "$DTOP_INSTALLER"
+    DTOP_TMP_INSTALLER=""
 }
 
 configure_mesh_vpn() {
@@ -7096,6 +7241,9 @@ generate_summary() {
 }
 
 cleanup_on_exit() {
+    if [[ -n "${DTOP_TMP_INSTALLER:-}" && -f "$DTOP_TMP_INSTALLER" ]]; then
+        rm -f -- "$DTOP_TMP_INSTALLER" 2>/dev/null || true
+    fi
     if [[ -n "${RUN_TMP_DIR:-}" && -d "$RUN_TMP_DIR" ]]; then
         rm -rf -- "$RUN_TMP_DIR" 2>/dev/null || true
     fi
@@ -7130,6 +7278,10 @@ main() {
 
     # --- PRELIMINARY CHECKS ---
     print_header
+    if [[ "$CLEANUP_ONLY" != "true" && "$CLEANUP_PREVIEW" != "true" ]]; then
+        # Validate required unattended settings before any mutating dependency or system checks
+        validate_quiet_mode_config
+    fi
     check_dependencies
     check_system
     run_update_check
@@ -7152,8 +7304,6 @@ main() {
     fi
 
     # --- NORMAL EXECUTION FLOW ---
-    # Validate required unattended settings early before modifying packages or SSH
-    validate_quiet_mode_config
     # Detect environment used for the summary report at the end.
     detect_environment
     # --- CORE SETUP AND HARDENING ---
