@@ -279,7 +279,7 @@ load_config_file() {
             line="${line#"${line%%[![:space:]]*}"}"
         fi
         if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-            printf '%s\n' "${RED}✗ Invalid syntax in $cfg_file on line $line_num: $line${NC}" >&2
+            printf '%s\n' "${RED}✗ Invalid syntax in $cfg_file on line $line_num (expected DU_VAR=value).${NC}" >&2
             exit 1
         fi
         key="${BASH_REMATCH[1]}"
@@ -2609,7 +2609,7 @@ EOF
             print_warning "  ${temp_fallback_path}"
             print_info "After setup, please manually copy it:"
             print_info "  sudo cp ${temp_fallback_path} ${BASHRC_PATH}"
-            print_info "  sudo chown ${USERNAME}:${USERNAME} ${BASHRC_PATH}"
+            print_info "  sudo chown ${USERNAME}:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME") ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
             log "Saved custom .bashrc content to $temp_fallback_path for manual installation."
             keep_temp_source_on_error=true
@@ -2618,11 +2618,13 @@ EOF
             log "Critical error: Failed both writing to $BASHRC_PATH and copying $temp_source_bashrc to $temp_fallback_path."
         fi
     else
-        if ! chown "$USERNAME:$USERNAME" "$BASHRC_PATH" || ! chmod 644 "$BASHRC_PATH"; then
+        local user_primary_group
+        user_primary_group=$(id -gn "$USERNAME")
+        if ! chown "${USERNAME}:${user_primary_group}" "$BASHRC_PATH" || ! chmod 644 "$BASHRC_PATH"; then
             print_warning "Failed to set correct ownership/permissions on $BASHRC_PATH."
             log "Failed to chown/chmod $BASHRC_PATH"
             print_warning "ACTION REQUIRED: Please manually set ownership/permissions:"
-            print_info "  sudo chown ${USERNAME}:${USERNAME} ${BASHRC_PATH}"
+            print_info "  sudo chown ${USERNAME}:${user_primary_group} ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
             print_info "  (Source content is in ${temp_source_bashrc})"
             keep_temp_source_on_error=true
@@ -2844,15 +2846,87 @@ validate_backup_port() {
     [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
 }
 
+validate_authorized_keys_options() {
+    local opts="$1"
+    [[ -n "$opts" ]] || return 1
+    local flag_re='^(restrict|cert-authority|(no-)?(port-forwarding|agent-forwarding|x11-forwarding|touch-required|verify-required|pty|user-rc))(,(.*))?$'
+    local val_re='^(command|principals|from|expiry-time|environment|permitopen|permitlisten|tunnel)="(([^"\\]|\\.)*)"(,(.*))?$'
+    local rem="$opts"
+    local had_nocasematch=false
+    if shopt -q nocasematch; then
+        had_nocasematch=true
+    else
+        shopt -s nocasematch
+    fi
+    local rc=0
+    while [[ -n "$rem" ]]; do
+        if [[ "$rem" =~ $flag_re ]]; then
+            if [[ -n "${BASH_REMATCH[4]}" && -z "${BASH_REMATCH[5]}" ]]; then
+                rc=1
+                break
+            fi
+            rem="${BASH_REMATCH[5]}"
+        elif [[ "$rem" =~ $val_re ]]; then
+            if [[ -n "${BASH_REMATCH[4]}" && -z "${BASH_REMATCH[5]}" ]]; then
+                rc=1
+                break
+            fi
+            rem="${BASH_REMATCH[5]}"
+        else
+            rc=1
+            break
+        fi
+    done
+    if [[ "$had_nocasematch" == false ]]; then
+        shopt -u nocasematch
+    fi
+    return "$rc"
+}
+
 validate_ssh_key() {
     local key="$1"
-    if [[ -z "$key" ]] || [[ ! "$key" =~ ^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519)[[:space:]]+[A-Za-z0-9+/]{32,}={0,3}([[:space:]].*)?$ ]]; then
+    key="${key#"${key%%[![:space:]]*}"}"
+    if [[ -z "$key" || "$key" == *$'\n'* || "$key" == *$'\r'* || "$key" == \#* ]]; then
         return 1
+    fi
+    local keytype_re='^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]]+[A-Za-z0-9+/]{32,}={0,3}([[:space:]].*)?$'
+    local key_rest="$key"
+    if [[ ! "$key" =~ $keytype_re ]]; then
+        local i len=${#key} ch in_quote=false escaped=false split_idx=-1
+        for (( i = 0; i < len; i++ )); do
+            ch="${key:i:1}"
+            if [[ "$escaped" == true ]]; then
+                escaped=false
+                continue
+            fi
+            if [[ "$in_quote" == true ]]; then
+                if [[ "$ch" == "\\" ]]; then
+                    escaped=true
+                elif [[ "$ch" == '"' ]]; then
+                    in_quote=false
+                fi
+            else
+                if [[ "$ch" == '"' ]]; then
+                    in_quote=true
+                elif [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
+                    split_idx=$i
+                    break
+                fi
+            fi
+        done
+        if [[ "$in_quote" == true || "$split_idx" -le 0 ]]; then
+            return 1
+        fi
+        local opts_part="${key:0:split_idx}"
+        key_rest="${key:split_idx}"
+        key_rest="${key_rest#"${key_rest%%[![:space:]]*}"}"
+        validate_authorized_keys_options "$opts_part" || return 1
+        [[ "$key_rest" =~ $keytype_re ]] || return 1
     fi
     if command -v ssh-keygen >/dev/null 2>&1; then
         local tmp_key
         tmp_key=$(mktemp "${RUN_TMP_DIR:-/tmp}/sshkey_validate.XXXXXX")
-        printf '%s\n' "$key" > "$tmp_key"
+        printf '%s\n' "$key_rest" > "$tmp_key"
         if ! ssh-keygen -lf "$tmp_key" >/dev/null 2>&1; then
             rm -f "$tmp_key" 2>/dev/null || true
             return 1
@@ -2860,6 +2934,21 @@ validate_ssh_key() {
         rm -f "$tmp_key" 2>/dev/null || true
     fi
     return 0
+}
+
+has_valid_authorized_keys_file() {
+    local auth_file="$1"
+    [[ -f "$auth_file" && -s "$auth_file" ]] || return 1
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if validate_ssh_key "$line"; then
+            return 0
+        fi
+    done < "$auth_file"
+    return 1
 }
 
 validate_quiet_mode_config() {
@@ -2880,15 +2969,8 @@ validate_quiet_mode_config() {
             exit 1
         fi
         existing_home=$(getent passwd "$DU_USERNAME" | cut -d: -f6)
-        if [[ -n "$existing_home" && -s "$existing_home/.ssh/authorized_keys" ]]; then
-            local line
-            while IFS= read -r line || [[ -n "$line" ]]; do
-                [[ -z "$line" || "$line" == \#* ]] && continue
-                if validate_ssh_key "$line"; then
-                    has_valid_existing_key=true
-                    break
-                fi
-            done < "$existing_home/.ssh/authorized_keys"
+        if [[ -n "$existing_home" ]] && has_valid_authorized_keys_file "$existing_home/.ssh/authorized_keys"; then
+            has_valid_existing_key=true
         fi
     fi
 
@@ -3363,13 +3445,15 @@ setup_ssh_keys() {
     local USER_HOME="$1"
     local SSH_DIR="$USER_HOME/.ssh"
     local AUTH_KEYS="$SSH_DIR/authorized_keys"
+    local USER_GROUP
+    USER_GROUP=$(id -gn "$USERNAME")
 
     if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
         local raw_keys="${DU_SSH_PUBLIC_KEY//|/$'\n'}"
         local key_line added_count=0
         mkdir -p "$SSH_DIR"
         chmod 700 "$SSH_DIR"
-        chown "$USERNAME:$USERNAME" "$SSH_DIR"
+        chown "$USERNAME:$USER_GROUP" "$SSH_DIR"
         while IFS= read -r key_line || [[ -n "$key_line" ]]; do
             key_line="${key_line#"${key_line%%[![:space:]]*}"}"
             key_line="${key_line%"${key_line##*[![:space:]]}"}"
@@ -3387,7 +3471,7 @@ setup_ssh_keys() {
         if (( added_count > 0 )); then
             awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
             chmod 600 "$AUTH_KEYS"
-            chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+            chown "$USERNAME:$USER_GROUP" "$AUTH_KEYS"
             print_success "Added $added_count SSH public key(s) from DU_SSH_PUBLIC_KEY."
             log "Added $added_count SSH public key(s) from DU_SSH_PUBLIC_KEY for '$USERNAME'."
             LOCAL_KEY_ADDED=true
@@ -3408,11 +3492,11 @@ setup_ssh_keys() {
             if validate_ssh_key "$SSH_PUBLIC_KEY"; then
                 mkdir -p "$SSH_DIR"
                 chmod 700 "$SSH_DIR"
-                chown "$USERNAME:$USERNAME" "$SSH_DIR"
+                chown "$USERNAME:$USER_GROUP" "$SSH_DIR"
                 printf '%s\n' "$SSH_PUBLIC_KEY" >> "$AUTH_KEYS"
                 awk '!seen[$0]++' "$AUTH_KEYS" > "$AUTH_KEYS.tmp" && mv "$AUTH_KEYS.tmp" "$AUTH_KEYS"
                 chmod 600 "$AUTH_KEYS"
-                chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+                chown "$USERNAME:$USER_GROUP" "$AUTH_KEYS"
                 print_success "SSH public key added."
                 log "Added SSH public key for '$USERNAME'."
                 LOCAL_KEY_ADDED=true
@@ -3440,7 +3524,7 @@ setup_ssh_keys() {
 
         mkdir -p "$SSH_DIR"
         chmod 700 "$SSH_DIR"
-        chown "$USERNAME:$USERNAME" "$SSH_DIR"
+        chown "$USERNAME:$USER_GROUP" "$SSH_DIR"
 
         # Generate user key pair for login
         if ! sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519_user" -N "" -q; then
@@ -3449,7 +3533,7 @@ setup_ssh_keys() {
         fi
         cat "$SSH_DIR/id_ed25519_user.pub" >> "$AUTH_KEYS"
         chmod 600 "$AUTH_KEYS"
-        chown "$USERNAME:$USERNAME" "$AUTH_KEYS"
+        chown "$USERNAME:$USER_GROUP" "$AUTH_KEYS"
         print_success "SSH key generated and added to authorized_keys."
         log "Generated and added user SSH key for '$USERNAME'."
 
@@ -3522,7 +3606,9 @@ ${rand_pass}
 EOF
     )
     chmod 600 "$GENERATED_SUDO_PASS_FILE"
-    chown "$username:$username" "$GENERATED_SUDO_PASS_FILE"
+    local user_primary_group
+    user_primary_group=$(id -gn "$username" 2>/dev/null || printf '%s' "$username")
+    chown "${username}:${user_primary_group}" "$GENERATED_SUDO_PASS_FILE"
 
     if [[ -d "$(dirname "$notice_script")" ]]; then
         cat <<'EOF' > "$notice_script"
@@ -3570,7 +3656,7 @@ setup_user() {
             print_error "Home directory for '$USERNAME' was not found (${USER_HOME:-empty})."
             exit 1
         fi
-        chown "$USERNAME:$USERNAME" "$USER_HOME"
+        chown "$USERNAME:$(id -gn "$USERNAME")" "$USER_HOME"
         chmod 700 "$USER_HOME"
 
         # Check if home directory is writable
@@ -3604,7 +3690,7 @@ setup_user() {
                 RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
                 if [[ ${#RAND_PASS} -eq 24 ]] && printf '%s:%s\n' "$USERNAME" "$RAND_PASS" | chpasswd >/dev/null 2>&1; then
                     save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"
-                    log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$USERNAME)."
+                    log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME"))."
                     password_configured=true
                 else
                     print_error "Failed to generate and set random password for '$USERNAME' in --quiet mode."
@@ -3689,7 +3775,7 @@ setup_user() {
         AUTH_KEYS="$SSH_DIR/authorized_keys"
         if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
             setup_ssh_keys "$USER_HOME"
-        elif [[ ! -s "$AUTH_KEYS" ]] || ! grep -qE '^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-ed25519) ' "$AUTH_KEYS" 2>/dev/null; then
+        elif ! has_valid_authorized_keys_file "$AUTH_KEYS"; then
             print_warning "No valid SSH keys found in $AUTH_KEYS for existing user '$USERNAME'."
             print_info "You must add or generate a key now to prevent lockout."
 
@@ -3975,7 +4061,9 @@ configure_ssh() {
 
     if [[ $LOCAL_KEY_ADDED == false ]] && [[ ! -s "$AUTH_KEYS" ]]; then
         print_info "No local key provided. Generating new SSH key..."
-        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$USERNAME" "$SSH_DIR"
+        local ssh_user_group
+        ssh_user_group=$(id -gn "$USERNAME")
+        mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chown "$USERNAME:$ssh_user_group" "$SSH_DIR"
         sudo -u "$USERNAME" ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -q
         cat "$SSH_DIR/id_ed25519.pub" >> "$AUTH_KEYS"
         # Verify the key was added
@@ -3983,7 +4071,7 @@ configure_ssh() {
             print_error "Failed to create authorized_keys file."
             return 1
         fi
-        chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+        chmod 600 "$AUTH_KEYS"; chown -R "$USERNAME:$ssh_user_group" "$SSH_DIR"
         print_success "SSH key generated."
         printf '%s\n' "${YELLOW}Public key for remote access:${NC}"; cat "$SSH_DIR/id_ed25519.pub"
     fi
@@ -3994,7 +4082,7 @@ configure_ssh() {
     fi
 
     if [[ $VERBOSE == false ]]; then
-        if [[ ! -s "$AUTH_KEYS" ]] || ! ssh-keygen -lf "$AUTH_KEYS" >/dev/null 2>&1; then
+        if ! has_valid_authorized_keys_file "$AUTH_KEYS"; then
             print_error "Quiet mode aborted: No valid SSH public key verified in $AUTH_KEYS."
             return 1
         fi
@@ -5269,6 +5357,51 @@ KERNEL_HARDENING_CONFIG
     fi
 }
 
+discover_docker_container_port() {
+    local host_port="$1"
+    if ! command -v docker >/dev/null 2>&1 || ! systemctl is-active --quiet docker 2>/dev/null; then
+        printf '%s\n' "$host_port"
+        return 0
+    fi
+    local detected=""
+    detected=$(docker ps --format '{{.Ports}}' 2>/dev/null \
+        | tr ',' '\n' \
+        | grep -v '127\.0\.0\.1:' \
+        | sed -nE "s/.*:${host_port}->([0-9]+)\/tcp.*/\1/p" \
+        | head -n 1 || true)
+    printf '%s\n' "${detected:-$host_port}"
+}
+
+upsert_ufw_managed_block() {
+    local rules_file="$1"
+    local new_block="$2"
+    local marker_begin="# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
+    local marker_end="# END UFW AND DOCKER (managed by du_setup.sh)"
+    local tmp_out
+    tmp_out=$(mktemp "${RUN_TMP_DIR:-/tmp}/ufw_rules.XXXXXX")
+
+    awk -v mb="$marker_begin" -v me="$marker_end" '
+        $0 == mb { skip = 1; next }
+        $0 == me { skip = 0; next }
+        !skip { lines[++n] = $0 }
+        END {
+            while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
+            for (i = 1; i <= n; i++) print lines[i]
+        }
+    ' "$rules_file" > "$tmp_out"
+
+    printf '\n%s\n' "$new_block" >> "$tmp_out"
+
+    if cmp -s "$tmp_out" "$rules_file"; then
+        rm -f "$tmp_out"
+        return 1
+    fi
+
+    cat "$tmp_out" > "$rules_file"
+    rm -f "$tmp_out"
+    return 0
+}
+
 configure_docker_ufw_hardening() {
     # Part A: Always display explicit Docker + UFW port-binding security notice
     printf '\n'
@@ -5279,17 +5412,57 @@ configure_docker_ufw_hardening() {
     printf '  %s\n\n' "${CYAN}docker run -p 127.0.0.1:8080:8080 ...${NC}"
 
     # Part B: Optional DOCKER-USER firewall chain hardening in UFW
-    if ! [[ -f /etc/ufw/after.rules ]]; then
+    local after_rules="/etc/ufw/after.rules"
+    local after6_rules="/etc/ufw/after6.rules"
+    if ! [[ -f "$after_rules" ]]; then
         print_warning "/etc/ufw/after.rules not found. Skipping UFW DOCKER-USER hardening."
         return 0
     fi
 
-    local marker_begin="# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
-    if grep -qF "$marker_begin" /etc/ufw/after.rules 2>/dev/null; then
-        print_info "UFW DOCKER-USER firewall hardening is already configured."
-        DOCKER_UFW_HARDENED=true
-        return 0
+    local ipv6_enabled=false
+    if [[ -f "$after6_rules" ]] && grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+        ipv6_enabled=true
     fi
+
+    # Match DNAT conntrack state after UFW route evaluation so published container ports (-p)
+    # on any current or future Docker bridge require an explicit 'ufw route allow' rule,
+    # without trusting bridge name prefixes (like br-+) or static subnet lists.
+    local desired_v4_block desired_v6_block
+    desired_v4_block=$(cat <<'EOF'
+# BEGIN UFW AND DOCKER (managed by du_setup.sh)
+*filter
+:ufw-user-forward - [0:0]
+:ufw-docker-logging-deny - [0:0]
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+-A DOCKER-USER -j ufw-user-forward
+-A DOCKER-USER -m conntrack --ctstate DNAT -j ufw-docker-logging-deny
+-A DOCKER-USER -j RETURN
+-A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+-A ufw-docker-logging-deny -j DROP
+COMMIT
+# END UFW AND DOCKER (managed by du_setup.sh)
+EOF
+)
+
+    desired_v6_block=$(cat <<'EOF'
+# BEGIN UFW AND DOCKER (managed by du_setup.sh)
+*filter
+:ufw6-user-forward - [0:0]
+:ufw6-docker-logging-deny - [0:0]
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+-A DOCKER-USER -j ufw6-user-forward
+-A DOCKER-USER -m conntrack --ctstate DNAT -j ufw6-docker-logging-deny
+-A DOCKER-USER -j RETURN
+-A ufw6-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW DOCKER BLOCK] "
+-A ufw6-docker-logging-deny -j DROP
+COMMIT
+# END UFW AND DOCKER (managed by du_setup.sh)
+EOF
+)
 
     if ! confirm_with_env "DU_DOCKER_UFW_HARDEN" "Harden UFW (DOCKER-USER chain) so published Docker container ports cannot bypass UFW?" "y"; then
         print_info "Skipping UFW DOCKER-USER hardening. Remember to bind container ports to 127.0.0.1!"
@@ -5297,88 +5470,26 @@ configure_docker_ufw_hardening() {
         return 0
     fi
 
-    local after_rules="/etc/ufw/after.rules"
-    local after6_rules="/etc/ufw/after6.rules"
-    local after_backup after6_backup=""
+    local after_backup after6_backup="" changed=false
     after_backup="$BACKUP_DIR/ufw_after.rules.backup_$(date +%Y%m%d_%H%M%S)"
     cp "$after_rules" "$after_backup"
-
-    # Detect any existing Docker bridge networks using custom interface names (outside docker0 / br-*)
-    local -a custom_bridges=()
-    if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
-        local net_id bridge_iface
-        while IFS= read -r net_id; do
-            [[ -z "$net_id" ]] && continue
-            bridge_iface=$(docker network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$net_id" 2>/dev/null || true)
-            if [[ -n "$bridge_iface" && "$bridge_iface" != "docker0" && "$bridge_iface" != br-* && "$bridge_iface" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
-                local already_added=false
-                local existing_b
-                for existing_b in "${custom_bridges[@]+"${custom_bridges[@]}"}"; do
-                    [[ "$existing_b" == "$bridge_iface" ]] && already_added=true
-                done
-                [[ "$already_added" == false ]] && custom_bridges+=("$bridge_iface")
-            fi
-        done < <(docker network ls --filter driver=bridge --format '{{.ID}}' 2>/dev/null || true)
+    if upsert_ufw_managed_block "$after_rules" "$desired_v4_block"; then
+        changed=true
     fi
 
-    local custom_in_rules="" custom_out_rules_v4="" custom_out_rules_v6=""
-    local cb
-    for cb in "${custom_bridges[@]+"${custom_bridges[@]}"}"; do
-        custom_in_rules+="-A DOCKER-USER -i ${cb} -j RETURN"$'\n'
-        custom_out_rules_v4+="-A DOCKER-USER -o ${cb} -j ufw-docker-logging-deny"$'\n'
-        custom_out_rules_v6+="-A DOCKER-USER -o ${cb} -j ufw6-docker-logging-deny"$'\n'
-    done
-
-    # Match actual Docker bridge interfaces (docker0, br-+, and any custom bridge interfaces)
-    # rather than private IP subnets so non-RFC1918/global-IPv6 containers and LAN/VPC peers cannot bypass UFW.
-    {
-        printf '\n%s\n' "# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
-        printf '%s\n' "*filter"
-        printf '%s\n' ":ufw-user-forward - [0:0]"
-        printf '%s\n' ":ufw-docker-logging-deny - [0:0]"
-        printf '%s\n' ":DOCKER-USER - [0:0]"
-        printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
-        printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP"
-        printf '%s\n' "-A DOCKER-USER -i docker0 -j RETURN"
-        printf '%s\n' "-A DOCKER-USER -i br-+ -j RETURN"
-        [[ -n "$custom_in_rules" ]] && printf '%s' "$custom_in_rules"
-        printf '%s\n' "-A DOCKER-USER -j ufw-user-forward"
-        printf '%s\n' "-A DOCKER-USER -o docker0 -j ufw-docker-logging-deny"
-        printf '%s\n' "-A DOCKER-USER -o br-+ -j ufw-docker-logging-deny"
-        [[ -n "$custom_out_rules_v4" ]] && printf '%s' "$custom_out_rules_v4"
-        printf '%s\n' "-A DOCKER-USER -j RETURN"
-        printf '%s\n' "-A ufw-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix \"[UFW DOCKER BLOCK] \""
-        printf '%s\n' "-A ufw-docker-logging-deny -j DROP"
-        printf '%s\n' "COMMIT"
-        printf '%s\n' "# END UFW AND DOCKER (managed by du_setup.sh)"
-    } >> "$after_rules"
-
-    if [[ -f "$after6_rules" ]] && grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
-        if ! grep -qF "$marker_begin" "$after6_rules" 2>/dev/null; then
-            after6_backup="$BACKUP_DIR/ufw_after6.rules.backup_$(date +%Y%m%d_%H%M%S)"
-            cp "$after6_rules" "$after6_backup"
-            {
-                printf '\n%s\n' "# BEGIN UFW AND DOCKER (managed by du_setup.sh)"
-                printf '%s\n' "*filter"
-                printf '%s\n' ":ufw6-user-forward - [0:0]"
-                printf '%s\n' ":ufw6-docker-logging-deny - [0:0]"
-                printf '%s\n' ":DOCKER-USER - [0:0]"
-                printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
-                printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP"
-                printf '%s\n' "-A DOCKER-USER -i docker0 -j RETURN"
-                printf '%s\n' "-A DOCKER-USER -i br-+ -j RETURN"
-                [[ -n "$custom_in_rules" ]] && printf '%s' "$custom_in_rules"
-                printf '%s\n' "-A DOCKER-USER -j ufw6-user-forward"
-                printf '%s\n' "-A DOCKER-USER -o docker0 -j ufw6-docker-logging-deny"
-                printf '%s\n' "-A DOCKER-USER -o br-+ -j ufw6-docker-logging-deny"
-                [[ -n "$custom_out_rules_v6" ]] && printf '%s' "$custom_out_rules_v6"
-                printf '%s\n' "-A DOCKER-USER -j RETURN"
-                printf '%s\n' "-A ufw6-docker-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix \"[UFW DOCKER BLOCK] \""
-                printf '%s\n' "-A ufw6-docker-logging-deny -j DROP"
-                printf '%s\n' "COMMIT"
-                printf '%s\n' "# END UFW AND DOCKER (managed by du_setup.sh)"
-            } >> "$after6_rules"
+    if [[ "$ipv6_enabled" == true ]]; then
+        after6_backup="$BACKUP_DIR/ufw_after6.rules.backup_$(date +%Y%m%d_%H%M%S)"
+        cp "$after6_rules" "$after6_backup"
+        if upsert_ufw_managed_block "$after6_rules" "$desired_v6_block"; then
+            changed=true
         fi
+    fi
+
+    if [[ "$changed" == false ]]; then
+        rm -f "$after_backup" "${after6_backup:-}" 2>/dev/null || true
+        print_info "UFW DOCKER-USER firewall hardening is already configured and up to date."
+        DOCKER_UFW_HARDENED=true
+        return 0
     fi
 
     print_info "Reloading UFW to activate DOCKER-USER rules..."
@@ -5397,21 +5508,41 @@ configure_docker_ufw_hardening() {
     print_success "UFW DOCKER-USER firewall hardening enabled (IPv4/IPv6)."
     log "Enabled UFW DOCKER-USER firewall hardening."
 
-    # Offer to allow forwarded traffic for 80/443 if already allowed on host UFW
+    # Offer to allow forwarded traffic for HTTP/HTTPS mapped against the container destination port
     if ufw status | grep -qw "80/tcp"; then
-        if confirm "HTTP (80/tcp) is open in UFW. Also allow public traffic to Docker containers publishing port 80?" "n"; then
-            ufw route allow proto tcp from any to any port 80 comment 'Docker HTTP' >> "$LOG_FILE" 2>&1 || true
-            print_success "Added UFW route rule for Docker HTTP (80/tcp)."
+        if confirm "HTTP (80/tcp) is open on the host. Also allow public routed traffic to a Docker container for HTTP?" "n"; then
+            local default_http_cport http_cport=""
+            default_http_cport=$(discover_docker_container_port "80")
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter the internal container port for HTTP (e.g., 8080 for '-p 80:8080') [default: ${default_http_cport}]: ${NC}")" http_cport
+                http_cport="${http_cport:-$default_http_cport}"
+                if [[ "$http_cport" =~ ^[0-9]+$ ]] && (( http_cport >= 1 && http_cport <= 65535 )); then
+                    break
+                fi
+                print_error "Invalid port '$http_cport'. Enter a TCP port between 1 and 65535."
+            done
+            ufw route allow proto tcp from any to any port "$http_cport" comment 'Docker HTTP' >> "$LOG_FILE" 2>&1 || true
+            print_success "Added UFW route rule for Docker container destination port ${http_cport}/tcp (HTTP)."
         fi
     fi
     if ufw status | grep -qw "443/tcp"; then
-        if confirm "HTTPS (443/tcp) is open in UFW. Also allow public traffic to Docker containers publishing port 443?" "n"; then
-            ufw route allow proto tcp from any to any port 443 comment 'Docker HTTPS' >> "$LOG_FILE" 2>&1 || true
-            print_success "Added UFW route rule for Docker HTTPS (443/tcp)."
+        if confirm "HTTPS (443/tcp) is open on the host. Also allow public routed traffic to a Docker container for HTTPS?" "n"; then
+            local default_https_cport https_cport=""
+            default_https_cport=$(discover_docker_container_port "443")
+            while true; do
+                read -rp "$(printf '%s' "${CYAN}Enter the internal container port for HTTPS (e.g., 8443 for '-p 443:8443') [default: ${default_https_cport}]: ${NC}")" https_cport
+                https_cport="${https_cport:-$default_https_cport}"
+                if [[ "$https_cport" =~ ^[0-9]+$ ]] && (( https_cport >= 1 && https_cport <= 65535 )); then
+                    break
+                fi
+                print_error "Invalid port '$https_cport'. Enter a TCP port between 1 and 65535."
+            done
+            ufw route allow proto tcp from any to any port "$https_cport" comment 'Docker HTTPS' >> "$LOG_FILE" 2>&1 || true
+            print_success "Added UFW route rule for Docker container destination port ${https_cport}/tcp (HTTPS)."
         fi
     fi
 
-    print_info "To publicly expose a Docker container port through UFW in the future, run:"
+    print_info "To publicly expose a Docker container port later (use the INTERNAL container port, e.g. 8080 for '-p 80:8080'):"
     printf '  %s\n\n' "${CYAN}sudo ufw route allow proto tcp from any to any port <CONTAINER_PORT>${NC}"
 }
 
@@ -5424,6 +5555,7 @@ install_docker() {
     if command -v docker >/dev/null 2>&1; then
         print_info "Docker already installed."
         configure_docker_ufw_hardening
+        install_dtop_optional
         return 0
     fi
     print_info "Removing old container runtimes..."
@@ -5502,19 +5634,20 @@ DAEMONFILE
     fi
     systemctl daemon-reload
     systemctl enable --now docker
+
+    # Apply Docker + UFW security warning and DOCKER-USER firewall guard BEFORE smoke test
+    # so transient image-pull failures never leave a running Docker daemon unhardened.
+    configure_docker_ufw_hardening
+
     print_info "Running Docker sanity check..."
     if sudo -u "$USERNAME" docker run --rm hello-world 2>&1 | tee -a "$LOG_FILE" | grep -q "Hello from Docker"; then
         print_success "Docker sanity check passed."
     else
         print_error "Docker hello-world test failed. Please verify installation once the script is complete."
         DOCKER_SANITY_WARN=true
-        return 0
     fi
     print_warning "NOTE: '$USERNAME' must log out and back in to use Docker without sudo."
     log "Docker installation completed."
-
-    # Display Docker + UFW security warning and offer optional DOCKER-USER hardening
-    configure_docker_ufw_hardening
 
     # Offer dtop installation
     install_dtop_optional
@@ -5567,7 +5700,7 @@ install_dtop_optional() {
                     # shellcheck disable=SC2016
                     echo 'if [ -d "$HOME/.local/bin" ]; then PATH="$HOME/.local/bin:$PATH"; fi'
                 } >> "$BASHRC"
-                chown "$USERNAME:$USERNAME" "$BASHRC"
+                chown "$USERNAME:$(id -gn "$USERNAME")" "$BASHRC"
                 if grep -q "\.local/bin" "$BASHRC"; then
                     print_info "PATH configuration updated successfully."
                 else
