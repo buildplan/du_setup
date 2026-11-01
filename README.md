@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`f3b07b0e7b22f704083100c2475ba33f87be31766ca9ef3019375e3229988815`
+`6fb92177574bde58f953f6af8d5064eae120d5970086022c3014cdae5711cfd3`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo f3b07b0e7b22f704083100c2475ba33f87be31766ca9ef3019375e3229988815 du_setup.sh | sha256sum --check
+echo 6fb92177574bde58f953f6af8d5064eae120d5970086022c3014cdae5711cfd3 du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
@@ -131,7 +131,7 @@ sudo -E ./du_setup.sh --config ./du_setup.env --quiet
 
 * Only `DU_*` variables are accepted by `--config` (parsed safely line-by-line without `eval`/`source`).
 * Pre-flight validation verifies `DU_USERNAME` and `DU_SSH_PUBLIC_KEY` before modifying packages or SSH settings to prevent accidental lockouts.
-* If `DU_USER_PASSWORD` is left empty (and `DU_PASSWORDLESS_SUDO="false"`), a 24-character random sudo password is generated and saved with `0600` permissions at `/root/setup_harden_backup_*/<username>_sudo_password.txt` (path printed in the final report).
+* If `DU_USER_PASSWORD` is left empty (and `DU_PASSWORDLESS_SUDO="false"`), a 24-character random sudo password is generated and saved with `0600` permissions (owned by `<username>:<username>`) at `/home/<username>/.du_initial_sudo_password`. On SSH login, a self-clearing reminder prompts `<username>` to save it (or change it with `passwd`) and delete it immediately via `shred -u ~/.du_initial_sudo_password`.
 
 > **Warning**: The script pauses to verify SSH access on the new port before disabling old access methods. **Test the new SSH connection from a separate terminal before proceeding!**
 >

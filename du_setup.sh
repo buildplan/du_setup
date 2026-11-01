@@ -3413,6 +3413,46 @@ setup_ssh_keys() {
     fi
 }
 
+save_initial_sudo_password() {
+    local user_home="$1"
+    local username="$2"
+    local rand_pass="$3"
+    local notice_script="${DU_PASS_NOTICE_PATH:-/etc/profile.d/du-setup-pass-notice.sh}"
+
+    GENERATED_SUDO_PASS_FILE="${user_home}/.du_initial_sudo_password"
+    rm -f -- "$GENERATED_SUDO_PASS_FILE"
+
+    (
+        umask 077
+        cat <<EOF > "$GENERATED_SUDO_PASS_FILE"
+# ==============================================================================
+# du_setup.sh — Initial Auto-Generated Sudo Password for '${username}'
+# ==============================================================================
+# Save this password to your password manager (or change it with 'passwd'),
+# then delete this file immediately:
+#   shred -u ~/.du_initial_sudo_password
+# ==============================================================================
+${rand_pass}
+EOF
+    )
+    chmod 600 "$GENERATED_SUDO_PASS_FILE"
+    chown "$username:$username" "$GENERATED_SUDO_PASS_FILE"
+
+    if [[ -d "$(dirname "$notice_script")" ]]; then
+        cat <<'EOF' > "$notice_script"
+# Managed by du_setup.sh — self-clearing initial sudo password reminder
+if [ -n "${HOME:-}" ] && [ -f "$HOME/.du_initial_sudo_password" ]; then
+    case "$-" in
+        *i*)
+            printf '\n\033[1;33m[du_setup] NOTICE:\033[0m Initial sudo password is saved in \033[1m~/.du_initial_sudo_password\033[0m — save it (or change with \033[1mpasswd\033[0m), then delete it: \033[0;36mshred -u ~/.du_initial_sudo_password\033[0m\n\n'
+            ;;
+    esac
+fi
+EOF
+        chmod 644 "$notice_script"
+    fi
+}
+
 setup_user() {
     print_section "User Management"
     local USER_HOME SSH_DIR AUTH_KEYS PASS1 PASS2
@@ -3438,6 +3478,21 @@ setup_user() {
             print_error "User '$USERNAME' creation verification failed."
             exit 1
         fi
+
+        USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+        if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+            print_error "Home directory for '$USERNAME' was not found (${USER_HOME:-empty})."
+            exit 1
+        fi
+        chown "$USERNAME:$USERNAME" "$USER_HOME"
+        chmod 700 "$USER_HOME"
+
+        # Check if home directory is writable
+        if [[ ! -w "$USER_HOME" ]]; then
+            print_error "Home directory $USER_HOME is not writable. Check filesystem permissions."
+            exit 1
+        fi
+
         local password_configured=false
         if [[ -n "${DU_USER_PASSWORD:-}" ]]; then
             if printf '%s:%s\n' "$USERNAME" "${DU_USER_PASSWORD}" | chpasswd >/dev/null 2>&1; then
@@ -3462,11 +3517,8 @@ setup_user() {
                 local RAND_PASS
                 RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
                 if [[ ${#RAND_PASS} -eq 24 ]] && printf '%s:%s\n' "$USERNAME" "$RAND_PASS" | chpasswd >/dev/null 2>&1; then
-                    mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
-                    GENERATED_SUDO_PASS_FILE="$BACKUP_DIR/${USERNAME}_sudo_password.txt"
-                    (umask 077 && printf '%s\n' "$RAND_PASS" > "$GENERATED_SUDO_PASS_FILE")
-                    chmod 600 "$GENERATED_SUDO_PASS_FILE"
-                    log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                    save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"
+                    log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$USERNAME)."
                     password_configured=true
                 else
                     print_error "Failed to generate and set random password for '$USERNAME' in --quiet mode."
@@ -3531,21 +3583,6 @@ setup_user() {
                     print_error "Passwords do not match. Please try again."
                 fi
             done
-        fi
-
-        USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
-
-        # Check if home directory is writable
-        if [[ ! -w "$USER_HOME" ]]; then
-            print_error "Home directory $USER_HOME is not writable by $USERNAME."
-            print_info "Attempting to fix permissions..."
-            chown "$USERNAME:$USERNAME" "$USER_HOME"
-            chmod 700 "$USER_HOME"
-            if [[ ! -w "$USER_HOME" ]]; then
-                print_error "Failed to make $USER_HOME writable. Check filesystem permissions."
-                exit 1
-            fi
-            log "Fixed permissions for $USER_HOME."
         fi
 
         setup_ssh_keys "$USER_HOME"
@@ -6772,7 +6809,7 @@ generate_summary() {
         printf "  %-15s %s\n" "Server IPv6:" "$SERVER_IP_V6"
     fi
     if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
-        printf "  %-20s ${YELLOW}Saved to %s (mode 0600)${NC}\n" "Sudo Password:" "$GENERATED_SUDO_PASS_FILE"
+        printf "  %-20s ${YELLOW}Saved to %s (mode 0600, owned by %s)${NC}\n" "Sudo Password:" "$GENERATED_SUDO_PASS_FILE" "$USERNAME"
     fi
 
     # --- DNS Status ---
@@ -7027,6 +7064,9 @@ generate_summary() {
     fi
     if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
         print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
+    fi
+    if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
+        print_warning "ACTION REQUIRED: Log in as '$USERNAME', save the initial sudo password from ~/.du_initial_sudo_password, and delete it with 'shred -u ~/.du_initial_sudo_password'."
     fi
 
     print_warning "A reboot is required to apply all changes cleanly."
