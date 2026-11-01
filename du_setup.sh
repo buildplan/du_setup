@@ -1216,7 +1216,6 @@ configure_custom_bashrc() {
     local USERNAME="$2"
     local BASHRC_PATH="$USER_HOME/.bashrc"
     local temp_source_bashrc=""
-    local keep_temp_source_on_error=false
 
     trap 'rm -f "$temp_source_bashrc" 2>/dev/null' INT TERM
 
@@ -2603,14 +2602,14 @@ EOF
         log "Backed up existing .bashrc to $BASHRC_BACKUP"
     fi
 
-    local temp_fallback_path="/tmp/custom_bashrc_for_${USERNAME}.txt"
-
     if ! tee "$BASHRC_PATH" < "$temp_source_bashrc" > /dev/null
     then
         print_error "Failed to automatically write custom .bashrc to $BASHRC_PATH."
         log "Error writing custom .bashrc for $USERNAME to $BASHRC_PATH (likely permissions issue)."
 
-        if cp "$temp_source_bashrc" "$temp_fallback_path"; then
+        local temp_fallback_path=""
+        temp_fallback_path=$(mktemp "/tmp/custom_bashrc_for_${USERNAME}.XXXXXX" 2>/dev/null || true)
+        if [[ -n "$temp_fallback_path" ]] && cp "$temp_source_bashrc" "$temp_fallback_path"; then
             chmod 644 "$temp_fallback_path"
             print_warning "ACTION REQUIRED: The custom .bashrc content has been saved to:"
             print_warning "  ${temp_fallback_path}"
@@ -2619,10 +2618,10 @@ EOF
             print_info "  sudo chown ${USERNAME}:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME") ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
             log "Saved custom .bashrc content to $temp_fallback_path for manual installation."
-            keep_temp_source_on_error=true
         else
-            print_error "Also failed to save custom .bashrc content to $temp_fallback_path."
-            log "Critical error: Failed both writing to $BASHRC_PATH and copying $temp_source_bashrc to $temp_fallback_path."
+            rm -f "${temp_fallback_path:-}" 2>/dev/null || true
+            print_error "Also failed to save custom .bashrc recovery file in /tmp."
+            log "Critical error: Failed both writing to $BASHRC_PATH and saving recovery copy."
         fi
     else
         local user_primary_group
@@ -2630,21 +2629,23 @@ EOF
         if [[ -L "$BASHRC_PATH" ]] || ! chown -h "${USERNAME}:${user_primary_group}" "$BASHRC_PATH" || ! chmod 644 "$BASHRC_PATH"; then
             print_warning "Failed to set correct ownership/permissions on $BASHRC_PATH."
             log "Failed to chown/chmod $BASHRC_PATH"
+            local temp_recovery_path=""
+            temp_recovery_path=$(mktemp "/tmp/custom_bashrc_for_${USERNAME}.XXXXXX" 2>/dev/null || true)
             print_warning "ACTION REQUIRED: Please manually set ownership/permissions:"
             print_info "  sudo chown ${USERNAME}:${user_primary_group} ${BASHRC_PATH}"
             print_info "  sudo chmod 644 ${BASHRC_PATH}"
-            print_info "  (Source content is in ${temp_source_bashrc})"
-            keep_temp_source_on_error=true
+            if [[ -n "$temp_recovery_path" ]] && cp "$temp_source_bashrc" "$temp_recovery_path"; then
+                chmod 644 "$temp_recovery_path"
+                print_info "  (Recovery source content saved to ${temp_recovery_path})"
+                log "Saved custom .bashrc recovery copy to $temp_recovery_path."
+            fi
         else
             print_success "Custom .bashrc created for '$USERNAME'."
             log "Custom .bashrc configuration completed for $USERNAME."
-            rm -f "$temp_fallback_path" 2>/dev/null
         fi
     fi
 
-    if [[ "$keep_temp_source_on_error" == false ]]; then
-        rm -f "$temp_source_bashrc" 2>/dev/null
-    fi
+    rm -f "$temp_source_bashrc" 2>/dev/null
 
     trap - INT TERM
 
@@ -2858,12 +2859,144 @@ validate_backup_port() {
     [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]
 }
 
+user_has_valid_login_shell() {
+    local username="$1"
+    local passwd_entry=""
+    if command -v getent >/dev/null 2>&1; then
+        passwd_entry=$(getent passwd "$username" 2>/dev/null || true)
+    elif [[ -r /etc/passwd ]]; then
+        passwd_entry=$(awk -F: -v u="$username" '$1 == u { print; exit }' /etc/passwd)
+    fi
+    # If account cannot be looked up via passwd database (e.g. non-existent user), caller handles existence separately
+    [[ -n "$passwd_entry" ]] || return 0
+
+    local user_shell="${passwd_entry##*:}"
+    # Per POSIX/OpenSSH, an empty shell field defaults to /bin/sh
+    if [[ -z "$user_shell" ]]; then
+        [[ -x /bin/sh ]]
+        return $?
+    fi
+    case "$user_shell" in
+        */nologin|*/false|*/sync|*/halt|*/shutdown|/dev/null)
+            return 1
+            ;;
+    esac
+    [[ -x "$user_shell" ]]
+}
+
+validate_authorized_key_option_value() {
+    local opt_name="${1,,}"
+    local opt_val="$2"
+
+    case "$opt_name" in
+        command)
+            [[ -n "$opt_val" ]] || return 1
+            ;;
+        principals)
+            [[ -n "$opt_val" && ! "$opt_val" =~ [[:space:][:cntrl:]] ]] || return 1
+            local -a princs=()
+            local p
+            IFS=',' read -ra princs <<< "$opt_val"
+            (( ${#princs[@]} > 0 )) || return 1
+            for p in "${princs[@]}"; do
+                [[ -n "$p" ]] || return 1
+            done
+            ;;
+        from)
+            [[ -n "$opt_val" && ! "$opt_val" =~ [[:space:][:cntrl:]] && "$opt_val" != *"," ]] || return 1
+            local -a pats=()
+            local pat clean_pat
+            IFS=',' read -ra pats <<< "$opt_val"
+            (( ${#pats[@]} > 0 )) || return 1
+            for pat in "${pats[@]}"; do
+                [[ -n "$pat" ]] || return 1
+                clean_pat="${pat#!}"
+                [[ -n "$clean_pat" ]] || return 1
+                if [[ "$clean_pat" == *"/"* ]]; then
+                    validate_ip_or_cidr "$clean_pat" || return 1
+                fi
+            done
+            ;;
+        expiry-time)
+            local exp_re='^([0-9]{4})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])(([01][0-9]|2[0-3])([0-5][0-9])([0-5][0-9])?)?([Zz])?$'
+            [[ "$opt_val" =~ $exp_re ]] || return 1
+            local yr="${BASH_REMATCH[1]}" mo="${BASH_REMATCH[2]}" dy="${BASH_REMATCH[3]}"
+            local hh="${BASH_REMATCH[5]:-00}" mm="${BASH_REMATCH[6]:-00}" ss="${BASH_REMATCH[7]:-00}"
+            local tz_z="${BASH_REMATCH[8]:-}"
+            local max_day=31
+            case "$mo" in
+                04|06|09|11) max_day=30 ;;
+                02)
+                    if (( 10#$yr % 4 == 0 && (10#$yr % 100 != 0 || 10#$yr % 400 == 0) )); then
+                        max_day=29
+                    else
+                        max_day=28
+                    fi
+                    ;;
+            esac
+            (( 10#$dy <= max_day )) || return 1
+            local exp_ts="${yr}${mo}${dy}${hh}${mm}${ss}"
+            local now_ts
+            if [[ -n "$tz_z" ]]; then
+                now_ts=$(date -u +%Y%m%d%H%M%S)
+            else
+                now_ts=$(date +%Y%m%d%H%M%S)
+            fi
+            [[ "$exp_ts" > "$now_ts" ]] || return 1
+            ;;
+        environment)
+            [[ "$opt_val" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
+            ;;
+        tunnel)
+            if [[ "${opt_val,,}" != "any" ]]; then
+                [[ "$opt_val" =~ ^[0-9]+$ ]] && (( 10#$opt_val <= 2147483647 )) || return 1
+            fi
+            ;;
+        permitopen)
+            local po_host="" po_port=""
+            if [[ "$opt_val" =~ ^\[([^][[:space:]]+)\]:(\*|[0-9]{1,5})$ ]]; then
+                po_host="${BASH_REMATCH[1]}"
+                po_port="${BASH_REMATCH[2]}"
+            elif [[ "$opt_val" =~ ^([^][[:space:]:]+):(\*|[0-9]{1,5})$ ]]; then
+                po_host="${BASH_REMATCH[1]}"
+                po_port="${BASH_REMATCH[2]}"
+            else
+                return 1
+            fi
+            [[ -n "$po_host" ]] || return 1
+            if [[ "$po_port" != "*" ]]; then
+                (( 10#$po_port >= 1 && 10#$po_port <= 65535 )) || return 1
+            fi
+            ;;
+        permitlisten)
+            local pl_port=""
+            if [[ "$opt_val" =~ ^(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[1]}"
+            elif [[ "$opt_val" =~ ^\[([^][[:space:]]+)\]:(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[2]}"
+            elif [[ "$opt_val" =~ ^([^][[:space:]:]+):(\*|[0-9]{1,5})$ ]]; then
+                pl_port="${BASH_REMATCH[2]}"
+            else
+                return 1
+            fi
+            if [[ "$pl_port" != "*" ]]; then
+                (( 10#$pl_port >= 1 && 10#$pl_port <= 65535 )) || return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 validate_authorized_keys_options() {
     local opts="$1"
     [[ -n "$opts" ]] || return 1
     local flag_re='^(restrict|cert-authority|no-touch-required|verify-required|(no-)?(port-forwarding|agent-forwarding|x11-forwarding|pty|user-rc))(,(.*))?$'
     local val_re='^(command|principals|from|expiry-time|environment|permitopen|permitlisten|tunnel)="(([^"\\]|\\.)*)"(,(.*))?$'
     local rem="$opts"
+    local seen_command=false seen_principals=false seen_from=false
     local had_nocasematch=false
     if shopt -q nocasematch; then
         had_nocasematch=true
@@ -2879,11 +3012,33 @@ validate_authorized_keys_options() {
             fi
             rem="${BASH_REMATCH[5]}"
         elif [[ "$rem" =~ $val_re ]]; then
-            if [[ -n "${BASH_REMATCH[4]}" && -z "${BASH_REMATCH[5]}" ]]; then
+            local matched_opt="${BASH_REMATCH[1],,}"
+            local matched_val="${BASH_REMATCH[2]}"
+            local has_comma="${BASH_REMATCH[4]}"
+            local next_rem="${BASH_REMATCH[5]}"
+            if [[ -n "$has_comma" && -z "$next_rem" ]]; then
                 rc=1
                 break
             fi
-            rem="${BASH_REMATCH[5]}"
+            case "$matched_opt" in
+                command)
+                    [[ "$seen_command" == false ]] || { rc=1; break; }
+                    seen_command=true
+                    ;;
+                principals)
+                    [[ "$seen_principals" == false ]] || { rc=1; break; }
+                    seen_principals=true
+                    ;;
+                from)
+                    [[ "$seen_from" == false ]] || { rc=1; break; }
+                    seen_from=true
+                    ;;
+            esac
+            if ! validate_authorized_key_option_value "$matched_opt" "$matched_val"; then
+                rc=1
+                break
+            fi
+            rem="$next_rem"
         else
             rc=1
             break
@@ -2933,34 +3088,89 @@ validate_ssh_key_wire_blob() {
             (( blob_len == 51 && klen == 32 )) || rc=1
             ;;
         sk-ssh-ed25519@openssh.com)
-            local k1=0 k2=0 k3=0 k4=0 klen
+            local k1=0 k2=0 k3=0 k4=0 klen a1=0 a2=0 a3=0 a4=0 alen
             read -r k1 k2 k3 k4 < <(dd if="$tmp_bin" bs=1 skip=30 count=4 2>/dev/null | od -An -tu1 -N4)
             klen=$(( (k1 << 24) | (k2 << 16) | (k3 << 8) | k4 ))
-            (( blob_len >= 71 && klen == 32 )) || rc=1
+            if (( blob_len >= 71 && klen == 32 )); then
+                read -r a1 a2 a3 a4 < <(dd if="$tmp_bin" bs=1 skip=66 count=4 2>/dev/null | od -An -tu1 -N4)
+                alen=$(( (a1 << 24) | (a2 << 16) | (a3 << 8) | a4 ))
+                (( alen >= 1 && 70 + alen == blob_len )) || rc=1
+            else
+                rc=1
+            fi
             ;;
         ssh-rsa)
-            # Enforce >= 1024-bit RSA modulus minimum matching sshd
-            (( blob_len >= 143 )) || rc=1
+            # Validate both RFC 4253 mpint wire fields (e and n), exact blob length, and >= 1024-bit modulus
+            local e1=0 e2=0 e3=0 e4=0 elen=0
+            read -r e1 e2 e3 e4 < <(dd if="$tmp_bin" bs=1 skip=11 count=4 2>/dev/null | od -An -tu1 -N4)
+            elen=$(( (e1 << 24) | (e2 << 16) | (e3 << 8) | e4 ))
+            if (( elen < 1 || elen > 512 || 19 + elen >= blob_len )); then
+                rc=1
+            else
+                local ef1=0 ef2=0 elast=0
+                read -r ef1 ef2 < <(dd if="$tmp_bin" bs=1 skip=15 count=2 2>/dev/null | od -An -tu1 -N2)
+                read -r elast < <(dd if="$tmp_bin" bs=1 skip=$(( 14 + elen )) count=1 2>/dev/null | od -An -tu1 -N1)
+                if (( ef1 >= 128 )) || (( ef1 == 0 && (elen < 2 || ef2 < 128) )) || \
+                   (( (elast & 1) == 0 )) || (( elen == 1 && ef1 < 3 )); then
+                    rc=1
+                else
+                    local n1=0 n2=0 n3=0 n4=0 nlen=0 n_off=$(( 19 + elen ))
+                    read -r n1 n2 n3 n4 < <(dd if="$tmp_bin" bs=1 skip=$(( 15 + elen )) count=4 2>/dev/null | od -An -tu1 -N4)
+                    nlen=$(( (n1 << 24) | (n2 << 16) | (n3 << 8) | n4 ))
+                    if (( nlen < 128 || n_off + nlen != blob_len )); then
+                        rc=1
+                    else
+                        local nf1=0 nf2=0 sig_bytes=$nlen msb=0
+                        read -r nf1 nf2 < <(dd if="$tmp_bin" bs=1 skip="$n_off" count=2 2>/dev/null | od -An -tu1 -N2)
+                        if (( nf1 >= 128 )) || (( nf1 == 0 && (nlen < 2 || nf2 < 128) )); then
+                            rc=1
+                        else
+                            msb=$nf1
+                            if (( nf1 == 0 )); then
+                                (( sig_bytes -= 1 ))
+                                msb=$nf2
+                            fi
+                            (( sig_bytes > 128 || (sig_bytes == 128 && msb >= 128) )) || rc=1
+                        fi
+                    fi
+                fi
+            fi
             ;;
-        ecdsa-sha2-nistp256)
-            local curve
+        ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)
+            local expected_curve="${key_type#ecdsa-sha2-}"
+            local c1=0 c2=0 c3=0 c4=0 clen=0 curve q1=0 q2=0 q3=0 q4=0 qlen=0 qfirst=0
+            read -r c1 c2 c3 c4 < <(dd if="$tmp_bin" bs=1 skip=23 count=4 2>/dev/null | od -An -tu1 -N4)
+            clen=$(( (c1 << 24) | (c2 << 16) | (c3 << 8) | c4 ))
             curve=$(dd if="$tmp_bin" bs=1 skip=27 count=8 2>/dev/null)
-            [[ "$curve" == "nistp256" ]] && (( blob_len == 104 || blob_len == 72 )) || rc=1
-            ;;
-        ecdsa-sha2-nistp384)
-            local curve
-            curve=$(dd if="$tmp_bin" bs=1 skip=27 count=8 2>/dev/null)
-            [[ "$curve" == "nistp384" ]] && (( blob_len == 136 || blob_len == 88 )) || rc=1
-            ;;
-        ecdsa-sha2-nistp521)
-            local curve
-            curve=$(dd if="$tmp_bin" bs=1 skip=27 count=8 2>/dev/null)
-            [[ "$curve" == "nistp521" ]] && (( blob_len == 172 || blob_len == 106 )) || rc=1
+            read -r q1 q2 q3 q4 < <(dd if="$tmp_bin" bs=1 skip=35 count=4 2>/dev/null | od -An -tu1 -N4)
+            qlen=$(( (q1 << 24) | (q2 << 16) | (q3 << 8) | q4 ))
+            read -r qfirst < <(dd if="$tmp_bin" bs=1 skip=39 count=1 2>/dev/null | od -An -tu1 -N1)
+            if (( clen != 8 || 39 + qlen != blob_len )) || [[ "$curve" != "$expected_curve" ]]; then
+                rc=1
+            else
+                case "$expected_curve" in
+                    nistp256) (( (qlen == 65 && qfirst == 4) || (qlen == 33 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                    nistp384) (( (qlen == 97 && qfirst == 4) || (qlen == 49 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                    nistp521) (( (qlen == 133 && qfirst == 4) || (qlen == 67 && (qfirst == 2 || qfirst == 3)) )) || rc=1 ;;
+                esac
+            fi
             ;;
         sk-ecdsa-sha2-nistp256@openssh.com)
-            local curve
+            local c1=0 c2=0 c3=0 c4=0 clen=0 curve q1=0 q2=0 q3=0 q4=0 qlen=0 qfirst=0 a1=0 a2=0 a3=0 a4=0 alen=0
+            read -r c1 c2 c3 c4 < <(dd if="$tmp_bin" bs=1 skip=38 count=4 2>/dev/null | od -An -tu1 -N4)
+            clen=$(( (c1 << 24) | (c2 << 16) | (c3 << 8) | c4 ))
             curve=$(dd if="$tmp_bin" bs=1 skip=42 count=8 2>/dev/null)
-            [[ "$curve" == "nistp256" ]] && (( blob_len >= 108 )) || rc=1
+            read -r q1 q2 q3 q4 < <(dd if="$tmp_bin" bs=1 skip=50 count=4 2>/dev/null | od -An -tu1 -N4)
+            qlen=$(( (q1 << 24) | (q2 << 16) | (q3 << 8) | q4 ))
+            read -r qfirst < <(dd if="$tmp_bin" bs=1 skip=54 count=1 2>/dev/null | od -An -tu1 -N1)
+            if (( clen != 8 || 58 + qlen >= blob_len )) || [[ "$curve" != "nistp256" ]] || \
+               ! (( (qlen == 65 && qfirst == 4) || (qlen == 33 && (qfirst == 2 || qfirst == 3)) )); then
+                rc=1
+            else
+                read -r a1 a2 a3 a4 < <(dd if="$tmp_bin" bs=1 skip=$(( 54 + qlen )) count=4 2>/dev/null | od -An -tu1 -N4)
+                alen=$(( (a1 << 24) | (a2 << 16) | (a3 << 8) | a4 ))
+                (( alen >= 1 && 58 + qlen + alen == blob_len )) || rc=1
+            fi
             ;;
         *)
             rc=1
@@ -3176,6 +3386,7 @@ verify_sshd_effective_pubkey_config() {
     local username="$1"
     local user_home="$2"
     local expected_auth_keys="$3"
+    local target_port="${4:-${SSH_PORT:-22}}"
     local sshd_bin=""
     if [[ -x /usr/sbin/sshd ]]; then
         sshd_bin="/usr/sbin/sshd"
@@ -3186,24 +3397,65 @@ verify_sshd_effective_pubkey_config() {
         return 1
     fi
 
-    local host_val sshd_dump
-    host_val=$(hostname 2>/dev/null || printf 'localhost')
-    if ! sshd_dump=$("$sshd_bin" -T -C "user=${username},host=${host_val},addr=127.0.0.1" 2>/dev/null); then
-        print_error "Failed to query effective sshd configuration via '$sshd_bin -T'."
-        return 1
+    # Detect intended client IP/hostname and local server IP/port when connected via SSH,
+    # while preserving full support for local VNC/serial console and cloud-init runs.
+    local client_ip="" local_ip="" client_host=""
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        local sc_client="" sc_local=""
+        read -r sc_client _ sc_local _ <<< "${SSH_CONNECTION}"
+        if validate_ip_or_cidr "$sc_client" && [[ "$sc_client" != *"/"* ]]; then
+            client_ip="$sc_client"
+        fi
+        if validate_ip_or_cidr "$sc_local" && [[ "$sc_local" != *"/"* ]]; then
+            local_ip="$sc_local"
+        fi
+    fi
+    if [[ -z "$client_ip" ]]; then
+        local who_ip=""
+        who_ip=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)
+        if [[ -n "$who_ip" ]] && validate_ip_or_cidr "$who_ip" && [[ "$who_ip" != *"/"* ]]; then
+            client_ip="$who_ip"
+        fi
+    fi
+    if [[ -z "$local_ip" ]]; then
+        if [[ -n "${LOCAL_IP_V4:-}" ]] && validate_ip_or_cidr "${LOCAL_IP_V4}" && [[ "${LOCAL_IP_V4}" != *"/"* ]]; then
+            local_ip="${LOCAL_IP_V4}"
+        elif [[ -n "${SERVER_IP_V4:-}" ]] && validate_ip_or_cidr "${SERVER_IP_V4}" && [[ "${SERVER_IP_V4}" != *"/"* ]]; then
+            local_ip="${SERVER_IP_V4}"
+        else
+            local_ip="127.0.0.1"
+        fi
     fi
 
-    local pubkey_auth auth_files_line
-    pubkey_auth=$(awk '$1 == "pubkeyauthentication" { print tolower($2); exit }' <<< "$sshd_dump")
-    if [[ "$pubkey_auth" != "yes" ]]; then
-        print_error "Effective sshd configuration has 'PubkeyAuthentication ${pubkey_auth:-unknown}' for '$username' (check /etc/ssh/sshd_config.d/ or Match blocks)."
-        return 1
-    fi
-
-    auth_files_line=$(awk '$1 == "authorizedkeysfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' <<< "$sshd_dump")
-    if [[ -z "$auth_files_line" ]]; then
-        print_error "Effective sshd configuration returned an empty AuthorizedKeysFile setting for '$username'."
-        return 1
+    local -a conn_specs=()
+    if [[ -n "$client_ip" ]]; then
+        if command -v getent >/dev/null 2>&1; then
+            client_host=$(getent hosts "$client_ip" 2>/dev/null | awk '{print $2; exit}' || true)
+        fi
+        client_host="${client_host:-$client_ip}"
+        conn_specs+=("user=${username},host=${client_host},addr=${client_ip},laddr=${local_ip},lport=${target_port}")
+    else
+        # Console / cloud-init run (no active SSH client): verify external public, private LAN/VPN,
+        # and any Match Address subnets configured in sshd_config so remote Match rules cannot lock out SSH.
+        local probe_ip
+        for probe_ip in "198.51.100.1" "10.0.0.1" "192.168.1.1" "100.64.0.1"; do
+            conn_specs+=("user=${username},host=${probe_ip},addr=${probe_ip},laddr=${local_ip},lport=${target_port}")
+        done
+        local -a ssh_cfg_files=("/etc/ssh/sshd_config")
+        local dropin_f
+        for dropin_f in /etc/ssh/sshd_config.d/*.conf; do
+            [[ -f "$dropin_f" ]] && ssh_cfg_files+=("$dropin_f")
+        done
+        local raw_tok cand_ip match_added=0
+        while IFS= read -r raw_tok; do
+            cand_ip="${raw_tok#!}"
+            cand_ip="${cand_ip%%/*}"
+            if [[ -n "$cand_ip" ]] && validate_ip_or_cidr "$cand_ip" && [[ "$cand_ip" != *"/"* ]]; then
+                conn_specs+=("user=${username},host=${cand_ip},addr=${cand_ip},laddr=${local_ip},lport=${target_port}")
+                (( match_added += 1 ))
+                (( match_added >= 8 )) && break
+            fi
+        done < <(awk 'tolower($1) == "match" { for (i = 2; i <= NF; i++) print $i }' "${ssh_cfg_files[@]}" 2>/dev/null | tr ',' '\n')
     fi
 
     local user_uid expected_canon="$expected_auth_keys"
@@ -3212,24 +3464,49 @@ verify_sshd_effective_pubkey_config() {
         expected_canon=$(realpath "$expected_auth_keys" 2>/dev/null || printf '%s' "$expected_auth_keys")
     fi
 
-    local -a tokens=()
-    local tok expanded expanded_canon
-    read -ra tokens <<< "$auth_files_line"
-    for tok in "${tokens[@]}"; do
-        expanded=$(expand_sshd_auth_keys_token "$tok" "$username" "$user_home" "$user_uid" || true)
-        [[ -z "$expanded" ]] && continue
-        expanded_canon="$expanded"
-        if command -v realpath >/dev/null 2>&1; then
-            expanded_canon=$(realpath "$expanded" 2>/dev/null || printf '%s' "$expanded")
+    local spec sshd_dump pubkey_auth auth_files_line
+    for spec in "${conn_specs[@]}"; do
+        if ! sshd_dump=$("$sshd_bin" -T -C "$spec" 2>/dev/null); then
+            print_error "Failed to query effective sshd configuration via '$sshd_bin -T -C $spec'."
+            return 1
         fi
-        if [[ "$expanded" == "$expected_auth_keys" || "$expanded_canon" == "$expected_canon" ]]; then
-            return 0
+
+        pubkey_auth=$(awk '$1 == "pubkeyauthentication" { print tolower($2); exit }' <<< "$sshd_dump")
+        if [[ "$pubkey_auth" != "yes" ]]; then
+            print_error "Effective sshd configuration has 'PubkeyAuthentication ${pubkey_auth:-unknown}' for '$spec' (check /etc/ssh/sshd_config.d/ or Match blocks)."
+            return 1
+        fi
+
+        auth_files_line=$(awk '$1 == "authorizedkeysfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' <<< "$sshd_dump")
+        if [[ -z "$auth_files_line" ]]; then
+            print_error "Effective sshd configuration returned an empty AuthorizedKeysFile setting for '$spec'."
+            return 1
+        fi
+
+        local -a tokens=()
+        local tok expanded expanded_canon matched=false
+        read -ra tokens <<< "$auth_files_line"
+        for tok in "${tokens[@]}"; do
+            expanded=$(expand_sshd_auth_keys_token "$tok" "$username" "$user_home" "$user_uid" || true)
+            [[ -z "$expanded" ]] && continue
+            expanded_canon="$expanded"
+            if command -v realpath >/dev/null 2>&1; then
+                expanded_canon=$(realpath "$expanded" 2>/dev/null || printf '%s' "$expanded")
+            fi
+            if [[ "$expanded" == "$expected_auth_keys" || "$expanded_canon" == "$expected_canon" ]]; then
+                matched=true
+                break
+            fi
+        done
+
+        if [[ "$matched" == false ]]; then
+            print_error "Effective sshd AuthorizedKeysFile ('$auth_files_line') for '$spec' does not include '$expected_auth_keys'."
+            print_info "An earlier /etc/ssh/sshd_config.d/*.conf file or Match block may be overriding AuthorizedKeysFile."
+            return 1
         fi
     done
 
-    print_error "Effective sshd AuthorizedKeysFile ('$auth_files_line') for '$username' does not include '$expected_auth_keys'."
-    print_info "An earlier /etc/ssh/sshd_config.d/*.conf file or Match block may be overriding AuthorizedKeysFile."
-    return 1
+    return 0
 }
 
 validate_quiet_mode_config() {
@@ -3247,6 +3524,12 @@ validate_quiet_mode_config() {
         env_bool_status "DU_USE_EXISTING_USER" || use_existing_rc=$?
         if [[ $use_existing_rc -eq 1 ]]; then
             print_error "Quiet mode aborted: User '$DU_USERNAME' already exists and DU_USE_EXISTING_USER is false."
+            exit 1
+        fi
+        if ! user_has_valid_login_shell "$DU_USERNAME"; then
+            local bad_shell
+            bad_shell=$(getent passwd "$DU_USERNAME" 2>/dev/null | cut -d: -f7 || true)
+            print_error "Quiet mode aborted: Existing user '$DU_USERNAME' has a non-login shell ('${bad_shell:-unknown}'). Choose a login-capable admin account."
             exit 1
         fi
         existing_home=$(getent passwd "$DU_USERNAME" | cut -d: -f6)
@@ -3561,12 +3844,20 @@ collect_config() {
     if [[ -n "${DU_USERNAME:-}" ]] && validate_username "${DU_USERNAME}"; then
         USERNAME="${DU_USERNAME}"
         if id "$USERNAME" &>/dev/null; then
-            print_warning "User '$USERNAME' already exists."
-            if confirm_with_env "DU_USE_EXISTING_USER" "Use this existing user?" "y"; then
-                USER_EXISTS=true
-            elif [[ $VERBOSE == false ]]; then
-                print_error "User '$USERNAME' already exists and DU_USE_EXISTING_USER is false."
-                exit 1
+            if ! user_has_valid_login_shell "$USERNAME"; then
+                print_error "Existing user '$USERNAME' has a non-login shell and cannot be used for SSH administration."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
+                USERNAME=""
+            else
+                print_warning "User '$USERNAME' already exists."
+                if confirm_with_env "DU_USE_EXISTING_USER" "Use this existing user?" "y"; then
+                    USER_EXISTS=true
+                elif [[ $VERBOSE == false ]]; then
+                    print_error "User '$USERNAME' already exists and DU_USE_EXISTING_USER is false."
+                    exit 1
+                fi
             fi
         else
             USER_EXISTS=false
@@ -3578,6 +3869,10 @@ collect_config() {
             read -rp "$(printf '%s' "${CYAN}Enter username for new admin user: ${NC}")" USERNAME
             if validate_username "$USERNAME"; then
                 if id "$USERNAME" &>/dev/null; then
+                    if ! user_has_valid_login_shell "$USERNAME"; then
+                        print_error "User '$USERNAME' has a non-login shell (e.g., nologin/false). Choose or create a login-capable user."
+                        continue
+                    fi
                     print_warning "User '$USERNAME' already exists."
                     if confirm "Use this existing user?"; then USER_EXISTS=true; break; fi
                 else
@@ -4437,7 +4732,7 @@ EOF
             return 1
         fi
     fi
-    if ! verify_sshd_effective_pubkey_config "$USERNAME" "$USER_HOME" "$AUTH_KEYS"; then
+    if ! verify_sshd_effective_pubkey_config "$USERNAME" "$USER_HOME" "$AUTH_KEYS" "$SSH_PORT"; then
         print_error "Aborting SSH hardening to prevent lockout because sshd will not read '$AUTH_KEYS' for '$USERNAME'."
         rm -f /etc/ssh/sshd_config.d/10-hardening.conf
         rm -f /etc/issue.net
@@ -6081,6 +6376,40 @@ configure_mesh_vpn() {
     esac
 }
 
+apply_configured_tailscale_flags_if_connected() {
+    local tmp_dir="$1"
+    [[ -n "${DU_TAILSCALE_FLAGS:-}" ]] || return 0
+
+    local -a raw_ts_flags=() ts_set_flags=()
+    local flag
+    read -ra raw_ts_flags <<< "${DU_TAILSCALE_FLAGS}"
+    for flag in "${raw_ts_flags[@]}"; do
+        case "$flag" in
+            --ssh|--advertise-exit-node|--accept-dns|--accept-routes)
+                ts_set_flags+=("$flag")
+                ;;
+            *)
+                print_warning "Ignoring unsupported DU_TAILSCALE_FLAGS option '$flag'."
+                ;;
+        esac
+    done
+
+    (( ${#ts_set_flags[@]} > 0 )) || return 0
+
+    # Use 'tailscale set' on already-connected nodes so specified flags apply idempotently
+    # without requiring --auth-key or resetting existing non-default preferences.
+    print_info "Applying configured DU_TAILSCALE_FLAGS to connected Tailscale node: ${ts_set_flags[*]}"
+    if tailscale set --operator="$USERNAME" "${ts_set_flags[@]}"; then
+        local ts_flags_str="${ts_set_flags[*]}"
+        printf '%s\n' "${ts_flags_str//--/}" > "${tmp_dir}/tailscale_flags"
+        print_success "Applied Tailscale options: ${ts_set_flags[*]}"
+        log "Applied DU_TAILSCALE_FLAGS via 'tailscale set': ${ts_set_flags[*]}"
+    else
+        print_warning "Failed to apply DU_TAILSCALE_FLAGS (${ts_set_flags[*]}) via 'tailscale set'."
+        log "Failed to apply DU_TAILSCALE_FLAGS via 'tailscale set': ${ts_set_flags[*]}"
+    fi
+}
+
 install_tailscale() {
     print_section "Tailscale VPN Installation and Configuration"
     local tmp_dir="${RUN_TMP_DIR:-/tmp}"
@@ -6093,6 +6422,7 @@ install_tailscale() {
             TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
             print_success "Service tailscaled is active and connected. Node IPv4 in tailnet: $TS_IPV4"
             echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+            apply_configured_tailscale_flags_if_connected "$tmp_dir"
             return 0
         else
             print_warning "Service tailscaled is installed but not active or connected."
@@ -6129,6 +6459,7 @@ install_tailscale() {
         TS_IPV4=$(echo "$TS_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "Unknown")
         print_info "Tailscale is already connected. Node IPv4 in tailnet: $TS_IPV4"
         echo "$TS_IPS" > "${tmp_dir}/tailscale_ips.txt"
+        apply_configured_tailscale_flags_if_connected "$tmp_dir"
         return 0
     fi
 
