@@ -174,9 +174,11 @@ USERNAME=""
 USER_EXISTS=false
 SERVER_NAME=""
 PRETTY_NAME=""
+OS_PRETTY_NAME="Unknown"
 SSH_PORT=""
 TIMEZONE="Etc/UTC"
 GENERATED_SUDO_PASS_FILE=""
+SUDO_PASSWORD_STATUS=""
 
 DETECTED_VIRT_TYPE=""
 DETECTED_MANUFACTURER=""
@@ -332,7 +334,10 @@ while [[ $# -gt 0 ]]; do
         --cleanup-only) CLEANUP_ONLY=true; shift ;;
         --skip-cleanup) SKIP_CLEANUP=true; shift ;;
         -h|--help) show_usage ;;
-        *) shift ;;
+        *)
+            printf '%s\n' "${RED}✗ Error: Unknown option '$1'. Run '$(basename "$0") --help' for usage.${NC}" >&2
+            exit 1
+            ;;
     esac
 done
 
@@ -3779,6 +3784,7 @@ check_system() {
         # shellcheck source=/dev/null
         source /etc/os-release
         ID=${ID:-unknown} # Populate global ID variable
+        OS_PRETTY_NAME="${PRETTY_NAME:-Unknown}"
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
            [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04|24.10|25.04|25.10|26.04)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
@@ -4166,16 +4172,14 @@ save_initial_sudo_password() {
         return 1
     fi
 
-    GENERATED_SUDO_PASS_FILE="${user_home}/.du_initial_sudo_password"
-    if [[ -L "$GENERATED_SUDO_PASS_FILE" ]]; then
-        print_error "Refusing to overwrite symlink at '$GENERATED_SUDO_PASS_FILE'."
+    local pass_file="${user_home}/.du_initial_sudo_password"
+    if [[ -L "$pass_file" ]]; then
+        print_error "Refusing to overwrite symlink at '$pass_file'."
         return 1
     fi
-    rm -f -- "$GENERATED_SUDO_PASS_FILE"
 
-    (
-        umask 077
-        cat <<EOF > "$GENERATED_SUDO_PASS_FILE"
+    local file_content
+    file_content=$(cat <<EOF
 # ==============================================================================
 # du_setup.sh — Initial Auto-Generated Sudo Password for '${username}'
 # ==============================================================================
@@ -4185,13 +4189,33 @@ save_initial_sudo_password() {
 # ==============================================================================
 ${rand_pass}
 EOF
-    )
-    chmod 600 "$GENERATED_SUDO_PASS_FILE"
-    local user_primary_group
-    user_primary_group=$(id -gn "$username" 2>/dev/null || printf '%s' "$username")
-    chown -h "${username}:${user_primary_group}" "$GENERATED_SUDO_PASS_FILE"
+)
 
-    if [[ -d "$(dirname "$notice_script")" ]]; then
+    if [[ $(id -u) -eq 0 ]] && id "$username" >/dev/null 2>&1; then
+        if ! sudo -u "$username" rm -f -- "$pass_file" || \
+           ! printf '%s\n' "$file_content" | sudo -u "$username" sh -c 'umask 077 && cat > "$1" && chmod 600 "$1"' _ "$pass_file"; then
+            print_error "Failed to write initial sudo password file '$pass_file' as '$username'."
+            return 1
+        fi
+    else
+        rm -f -- "$pass_file"
+        (
+            umask 077
+            printf '%s\n' "$file_content" > "$pass_file"
+        )
+        chmod 600 "$pass_file"
+        local user_primary_group
+        user_primary_group=$(id -gn "$username" 2>/dev/null || printf '%s' "$username")
+        chown -h "${username}:${user_primary_group}" "$pass_file" 2>/dev/null || true
+    fi
+
+    if [[ ! -f "$pass_file" || -L "$pass_file" ]]; then
+        print_error "Verification failed for initial sudo password file '$pass_file'."
+        return 1
+    fi
+    GENERATED_SUDO_PASS_FILE="$pass_file"
+
+    if [[ -d "$(dirname "$notice_script")" && ! -L "$notice_script" ]]; then
         cat <<'EOF' > "$notice_script"
 # Managed by du_setup.sh — self-clearing initial sudo password reminder
 if [ -n "${HOME:-}" ] && [ -f "$HOME/.du_initial_sudo_password" ]; then
@@ -4204,6 +4228,94 @@ fi
 EOF
         chmod 644 "$notice_script"
     fi
+}
+
+user_has_usable_password() {
+    local target_user="$1"
+    local shadow_entry="" shadow_field=""
+
+    if [[ -n "${DU_SHADOW_FILE:-}" ]]; then
+        [[ -r "${DU_SHADOW_FILE}" ]] || return 1
+        shadow_entry=$(awk -F: -v u="$target_user" '$1 == u { print; exit }' "$DU_SHADOW_FILE")
+        [[ -n "$shadow_entry" ]] || return 1
+        shadow_field=$(printf '%s\n' "$shadow_entry" | cut -d: -f2)
+        [[ -n "$shadow_field" && "$shadow_field" != "!"* && "$shadow_field" != "*"* ]]
+        return $?
+    fi
+
+    shadow_entry=$(getent shadow "$target_user" 2>/dev/null || true)
+    if [[ -n "$shadow_entry" ]]; then
+        shadow_field=$(printf '%s\n' "$shadow_entry" | cut -d: -f2)
+        if [[ -n "$shadow_field" && "$shadow_field" != "!"* && "$shadow_field" != "*"* ]]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    local pw_status=""
+    pw_status=$(passwd -S "$target_user" 2>/dev/null | awk '{print $2}' || true)
+    [[ "$pw_status" == "P" ]]
+}
+
+apply_user_password() {
+    local target_user="$1"
+    local raw_pass="$2"
+    if [[ -z "$target_user" || -z "$raw_pass" || "$raw_pass" == *$'\n'* || "$raw_pass" == *$'\r'* || "$target_user" == *:* ]]; then
+        return 1
+    fi
+    printf '%s:%s\n' "$target_user" "$raw_pass" | chpasswd >/dev/null 2>&1
+}
+
+write_nopasswd_sudoers() {
+    local target_user="$1"
+    local sudoers_dir="${DU_SUDOERS_D_DIR:-/etc/sudoers.d}"
+    local target_file="${sudoers_dir}/99-${target_user}-nopasswd"
+    mkdir -p "$sudoers_dir"
+    if [[ -L "$target_file" ]]; then
+        print_error "Refusing to overwrite symlink at '$target_file'."
+        return 1
+    fi
+    (
+        umask 0337
+        printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$target_user" > "$target_file"
+    )
+    chmod 0440 "$target_file"
+}
+
+find_external_nopasswd_sudoers_files() {
+    local target_user="$1"
+    local sudoers_dir="${DU_SUDOERS_D_DIR:-/etc/sudoers.d}"
+    local managed_file="${sudoers_dir}/99-${target_user}-nopasswd"
+    [[ -n "$target_user" && -d "$sudoers_dir" ]] || return 0
+
+    local user_groups=""
+    user_groups=" $(id -nG "$target_user" 2>/dev/null || true) sudo "
+
+    local f base line first_tok grp_name
+    for f in "$sudoers_dir"/*; do
+        [[ -f "$f" && -r "$f" ]] || continue
+        [[ "$f" == "$managed_file" ]] && continue
+        base=$(basename "$f")
+        # sudoers includedir ignores README, backup (~), and filenames containing '.'
+        [[ "$base" == "README" || "$base" == *.* || "$base" == *~ ]] && continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" == \#* || "$line" == Defaults* ]] && continue
+            if [[ "$line" == *NOPASSWD* ]]; then
+                first_tok="${line%%[[:space:]]*}"
+                if [[ "$first_tok" == "$target_user" || "$first_tok" == "ALL" ]]; then
+                    printf '%s\n' "$f"
+                    break
+                elif [[ "$first_tok" == %* ]]; then
+                    grp_name="${first_tok#%}"
+                    if [[ -n "$grp_name" && "$user_groups" == *" ${grp_name} "* ]]; then
+                        printf '%s\n' "$f"
+                        break
+                    fi
+                fi
+            fi
+        done < "$f"
+    done
 }
 
 setup_user() {
@@ -4248,12 +4360,13 @@ setup_user() {
 
         local password_configured=false
         if [[ -n "${DU_USER_PASSWORD:-}" ]]; then
-            if printf '%s:%s\n' "$USERNAME" "${DU_USER_PASSWORD}" | chpasswd >/dev/null 2>&1; then
+            if apply_user_password "$USERNAME" "${DU_USER_PASSWORD}"; then
+                SUDO_PASSWORD_STATUS="explicit"
                 print_success "Password for '$USERNAME' set from DU_USER_PASSWORD."
                 log "Password set for '$USERNAME' via DU_USER_PASSWORD."
                 password_configured=true
             else
-                print_error "Failed to apply DU_USER_PASSWORD via chpasswd (check system password policy)."
+                print_error "Failed to apply DU_USER_PASSWORD via chpasswd (check system password policy or invalid characters)."
                 if [[ $VERBOSE == false ]]; then
                     exit 1
                 fi
@@ -4262,15 +4375,15 @@ setup_user() {
             local nopasswd_rc=0
             env_bool_status "DU_PASSWORDLESS_SUDO" || nopasswd_rc=$?
             if [[ $nopasswd_rc -eq 0 ]]; then
-                echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/99-$USERNAME-nopasswd"
-                chmod 0440 "/etc/sudoers.d/99-$USERNAME-nopasswd"
+                write_nopasswd_sudoers "$USERNAME"
+                SUDO_PASSWORD_STATUS="nopasswd"
                 log "Passwordless sudo enabled for '$USERNAME' via DU_PASSWORDLESS_SUDO."
                 password_configured=true
             elif confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Generate a secure random password for you? (Recommended)" "y"; then
                 local RAND_PASS
                 RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
-                if [[ ${#RAND_PASS} -eq 24 ]] && printf '%s:%s\n' "$USERNAME" "$RAND_PASS" | chpasswd >/dev/null 2>&1; then
-                    save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"
+                if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                    SUDO_PASSWORD_STATUS="generated"
                     log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME"))."
                     password_configured=true
                 else
@@ -4278,6 +4391,7 @@ setup_user() {
                     exit 1
                 fi
             else
+                SUDO_PASSWORD_STATUS="none"
                 log "Password skipped in --quiet mode (no sudo password or passwordless sudo configured for '$USERNAME')."
                 password_configured=true
             fi
@@ -4296,19 +4410,20 @@ setup_user() {
                     if confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Generate a secure random password for you? (Recommended)" "y"; then
                         local RAND_PASS
                         RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
-                        if [[ ${#RAND_PASS} -eq 24 ]] && printf '%s:%s\n' "$USERNAME" "$RAND_PASS" | chpasswd >/dev/null 2>&1; then
-                            print_success "Generated random password for '$USERNAME'."
-                            printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS:${NC}"
+                        if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                            SUDO_PASSWORD_STATUS="generated"
+                            print_success "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                            printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS (also saved to $GENERATED_SUDO_PASS_FILE):${NC}"
                             printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
-                            log "Generated random password for '$USERNAME'."
+                            log "Generated random password for '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
                             break
                         else
                             print_error "Failed to set random password. Please try again."
                             continue
                         fi
                     elif confirm_with_env "DU_PASSWORDLESS_SUDO" "Enable passwordless sudo? (WARNING: Security Risk)" "n"; then
-                        echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/99-$USERNAME-nopasswd"
-                        chmod 0440 "/etc/sudoers.d/99-$USERNAME-nopasswd"
+                        write_nopasswd_sudoers "$USERNAME"
+                        SUDO_PASSWORD_STATUS="nopasswd"
                         print_warning "Passwordless sudo enabled for '$USERNAME'."
                         log "Passwordless sudo explicitly enabled for '$USERNAME'."
                         break
@@ -4316,12 +4431,14 @@ setup_user() {
                         print_info "Returning to password prompt..."
                         continue
                     else
+                        SUDO_PASSWORD_STATUS="none"
                         print_warning "Proceeding with NO password and NO sudo rights for '$USERNAME'."
                         log "Password setting skipped, no sudo rights for '$USERNAME'."
                         break
                     fi
                 elif [[ "$PASS1" == "$PASS2" ]]; then
-                    if printf '%s:%s\n' "$USERNAME" "$PASS1" | chpasswd >/dev/null 2>&1; then
+                    if apply_user_password "$USERNAME" "$PASS1"; then
+                        SUDO_PASSWORD_STATUS="explicit"
                         print_success "Password for '$USERNAME' updated."
                         break
                     else
@@ -4352,6 +4469,10 @@ setup_user() {
             log "Marked existing user '$USERNAME' as script-managed"
         fi
         USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+        if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+            print_error "Home directory for existing user '$USERNAME' was not found (${USER_HOME:-empty})."
+            exit 1
+        fi
         SSH_DIR="$USER_HOME/.ssh"
         AUTH_KEYS="$SSH_DIR/authorized_keys"
         if [[ -n "${DU_SSH_PUBLIC_KEY:-}" ]]; then
@@ -4368,6 +4489,71 @@ setup_user() {
         if ! ensure_and_validate_ssh_strict_modes "$USERNAME" "$USER_HOME" "true"; then
             print_error "Existing user '$USERNAME' home/SSH directory permissions violate OpenSSH StrictModes. Aborting to prevent lockout."
             exit 1
+        fi
+
+        # Idempotent password & sudo policy for pre-existing accounts (e.g., Proxmox Cloud-Init / Cloud VPS)
+        local existing_nopasswd_rc=0
+        env_bool_status "DU_PASSWORDLESS_SUDO" || existing_nopasswd_rc=$?
+
+        if [[ -n "${DU_USER_PASSWORD:-}" ]]; then
+            if apply_user_password "$USERNAME" "${DU_USER_PASSWORD}"; then
+                SUDO_PASSWORD_STATUS="explicit"
+                if [[ -f "${USER_HOME}/.du_initial_sudo_password" && ! -L "${USER_HOME}/.du_initial_sudo_password" ]]; then
+                    if [[ $(id -u) -eq 0 ]]; then
+                        sudo -u "$USERNAME" rm -f -- "${USER_HOME}/.du_initial_sudo_password" 2>/dev/null || true
+                    else
+                        rm -f -- "${USER_HOME}/.du_initial_sudo_password" 2>/dev/null || true
+                    fi
+                fi
+                print_success "Password for existing user '$USERNAME' set from DU_USER_PASSWORD."
+                log "Password set for existing user '$USERNAME' via DU_USER_PASSWORD."
+            else
+                print_error "Failed to apply DU_USER_PASSWORD for existing user '$USERNAME' via chpasswd (check system password policy or invalid characters)."
+                if [[ $VERBOSE == false ]]; then
+                    exit 1
+                fi
+            fi
+        elif [[ $existing_nopasswd_rc -eq 0 ]]; then
+            write_nopasswd_sudoers "$USERNAME"
+            SUDO_PASSWORD_STATUS="nopasswd"
+            print_warning "Passwordless sudo enabled for existing user '$USERNAME'."
+            log "Passwordless sudo enabled for existing user '$USERNAME' via DU_PASSWORDLESS_SUDO."
+        elif ! user_has_usable_password "$USERNAME"; then
+            print_info "Existing user '$USERNAME' has no active password set (locked or key-only account)."
+            if confirm_with_env "DU_GENERATE_RANDOM_PASSWORD" "Existing user '$USERNAME' has no password set. Generate a secure random sudo password? (Recommended)" "y"; then
+                local RAND_PASS
+                RAND_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 || true)
+                if [[ ${#RAND_PASS} -eq 24 ]] && apply_user_password "$USERNAME" "$RAND_PASS" && save_initial_sudo_password "$USER_HOME" "$USERNAME" "$RAND_PASS"; then
+                    SUDO_PASSWORD_STATUS="generated"
+                    print_success "Generated initial sudo password for existing user '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE)."
+                    if [[ $VERBOSE == true ]]; then
+                        printf '\n%s\n' "${YELLOW}⚠ SAVE THIS PASSWORD FOR SUDO ACCESS (also saved to $GENERATED_SUDO_PASS_FILE):${NC}"
+                        printf '  %s\n\n' "${BOLD}$RAND_PASS${NC}"
+                    fi
+                    log "Generated random password for existing user '$USERNAME' (saved to $GENERATED_SUDO_PASS_FILE, mode 0600, owned by $USERNAME:$(id -gn "$USERNAME" 2>/dev/null || printf '%s' "$USERNAME"))."
+                else
+                    print_error "Failed to generate and set initial sudo password for existing user '$USERNAME'."
+                    if [[ $VERBOSE == false ]]; then
+                        exit 1
+                    fi
+                fi
+            elif [[ $VERBOSE == true ]] && confirm_with_env "DU_PASSWORDLESS_SUDO" "Enable passwordless sudo for '$USERNAME'? (WARNING: Security Risk)" "n"; then
+                write_nopasswd_sudoers "$USERNAME"
+                SUDO_PASSWORD_STATUS="nopasswd"
+                print_warning "Passwordless sudo enabled for existing user '$USERNAME'."
+                log "Passwordless sudo explicitly enabled for existing user '$USERNAME'."
+            else
+                SUDO_PASSWORD_STATUS="none"
+                print_warning "No password configured for existing user '$USERNAME'."
+                log "Password generation skipped for existing passwordless user '$USERNAME'."
+            fi
+        else
+            SUDO_PASSWORD_STATUS="retained"
+            if [[ -f "${USER_HOME}/.du_initial_sudo_password" && ! -L "${USER_HOME}/.du_initial_sudo_password" ]]; then
+                GENERATED_SUDO_PASS_FILE="${USER_HOME}/.du_initial_sudo_password"
+            fi
+            print_info "Existing user '$USERNAME' already has an active password; retaining existing password."
+            log "Existing user '$USERNAME' already has an active password; retained unchanged."
         fi
     fi
 
@@ -7611,6 +7797,16 @@ final_cleanup() {
     log "Final system cleanup completed."
 }
 
+summary_warning() {
+    printf '%s\n' "${YELLOW}⚠ $1${NC}"
+    log "WARNING: $1"
+}
+
+summary_info() {
+    printf '%s\n' "${PURPLE}ℹ $1${NC}"
+    log "INFO: $1"
+}
+
 generate_summary() {
     local tmp_dir="${RUN_TMP_DIR:-/tmp}"
     # Create the report file and set permissions first
@@ -7618,7 +7814,8 @@ generate_summary() {
 
     # Using a subshell to group all output and tee it to the report file
     (
-    print_section "Setup Complete!"
+    printf '\n%s\n' "${BLUE}▓▓▓ Setup Complete! ▓▓▓${NC}"
+    printf '%s\n' "${BLUE}$(printf '═%.0s' {1..65})${NC}"
 
     printf '\n%s\n\n' "${GREEN}Server setup and hardening script has finished successfully.${NC}"
     printf '%s %s\n' "${CYAN}📋 A detailed report has been saved to:${NC}" "${BOLD}$REPORT_FILE${NC}"
@@ -7703,6 +7900,12 @@ generate_summary() {
     fi
     printf '\n'
 
+    local -a EXTERNAL_NOPASSWD_FILES=()
+    local ext_sudo_file
+    while IFS= read -r ext_sudo_file; do
+        [[ -n "$ext_sudo_file" ]] && EXTERNAL_NOPASSWD_FILES+=("$ext_sudo_file")
+    done < <(find_external_nopasswd_sudoers_files "$USERNAME")
+
     # --- Main Configuration Summary ---
     print_separator "Configuration Summary:"
     printf "  %-15s %s\n" "Admin User:" "$USERNAME"
@@ -7716,6 +7919,17 @@ generate_summary() {
     fi
     if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
         printf "  %-20s ${YELLOW}Saved to %s (mode 0600, owned by %s)${NC}\n" "Sudo Password:" "$GENERATED_SUDO_PASS_FILE" "$USERNAME"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "explicit" ]]; then
+        printf "  %-20s ${GREEN}Configured${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "retained" ]]; then
+        printf "  %-20s ${GREEN}Existing account password retained${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "nopasswd" ]]; then
+        printf "  %-20s ${YELLOW}Passwordless sudo (NOPASSWD enabled)${NC}\n" "Sudo Password:"
+    elif [[ "${SUDO_PASSWORD_STATUS:-}" == "none" ]]; then
+        printf "  %-20s ${RED}Not set (no usable password configured)${NC}\n" "Sudo Password:"
+    fi
+    if [[ ${#EXTERNAL_NOPASSWD_FILES[@]} -gt 0 ]]; then
+        printf "  %-20s ${YELLOW}NOPASSWD active via %s${NC}\n" "Sudoers Notice:" "${EXTERNAL_NOPASSWD_FILES[*]}"
     fi
 
     # --- DNS Status ---
@@ -7841,7 +8055,7 @@ generate_summary() {
     print_separator "System & Environment Information"
 
     # OS and Kernel Info
-    printf "%-20s %s\n" "OS:" "${PRETTY_NAME:-Unknown}"
+    printf "%-20s %s\n" "OS:" "${OS_PRETTY_NAME:-Unknown}"
     printf "%-20s %s\n" "Kernel:" "$(uname -r)"
     printf "%-20s %s\n" "Uptime:" "$(uptime -p 2>/dev/null || uptime | sed 's/.*up //;s/,.*//')"
 
@@ -7950,49 +8164,52 @@ generate_summary() {
 
     # --- Final Warnings and Actions ---
     if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
-        print_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
+        summary_warning "ACTION REQUIRED: The following services failed: ${FAILED_SERVICES[*]}. Verify with 'systemctl status <service>'."
     fi
     if [[ "${DOCKER_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Docker packages failed to install. Review '$LOG_FILE' and reinstall Docker manually."
+        summary_warning "ACTION REQUIRED: Docker packages failed to install. Review '$LOG_FILE' and reinstall Docker manually."
     fi
     if [[ "${DOCKER_SANITY_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Docker sanity check failed. Run 'docker run --rm hello-world' after reboot to verify."
+        summary_warning "ACTION REQUIRED: Docker sanity check failed. Run 'docker run --rm hello-world' after reboot to verify."
     fi
     if [[ "${TAILSCALE_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: Tailscale installation failed. Re-run the official installer and configure Tailscale manually."
+        summary_warning "ACTION REQUIRED: Tailscale installation failed. Re-run the official installer and configure Tailscale manually."
     fi
     if [[ "${NETBIRD_INSTALL_WARN:-false}" == true ]]; then
-        print_warning "ACTION REQUIRED: NetBird installation failed. Reinstall NetBird and run 'netbird up' manually."
+        summary_warning "ACTION REQUIRED: NetBird installation failed. Reinstall NetBird and run 'netbird up' manually."
     fi
     if [[ -n "${TS_COMMAND:-}" ]]; then
-        print_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
+        summary_warning "ACTION REQUIRED: Tailscale connection failed. Run the following command to connect manually:"
         printf '%s\n' "${CYAN}  $TS_COMMAND${NC}"
     fi
     if [[ -f /root/run_backup.sh ]] && [[ "${KEY_COPY_CHOICE:-2}" != "1" ]]; then
-        print_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
+        summary_warning "ACTION REQUIRED: Ensure the root SSH key (/root/.ssh/id_ed25519.pub) is copied to the backup destination."
     fi
     if [[ -n "${GENERATED_SUDO_PASS_FILE:-}" && -f "${GENERATED_SUDO_PASS_FILE}" ]]; then
-        print_warning "ACTION REQUIRED: Log in as '$USERNAME', save the initial sudo password from ~/.du_initial_sudo_password, and delete it with 'shred -u ~/.du_initial_sudo_password'."
+        summary_warning "ACTION REQUIRED: Log in as '$USERNAME', save the initial sudo password from ~/.du_initial_sudo_password, and delete it with 'shred -u ~/.du_initial_sudo_password'."
+    fi
+    if [[ ${#EXTERNAL_NOPASSWD_FILES[@]} -gt 0 && "${SUDO_PASSWORD_STATUS:-}" != "nopasswd" ]]; then
+        summary_warning "NOTE: Pre-existing passwordless sudo rule detected for '$USERNAME' in: ${EXTERNAL_NOPASSWD_FILES[*]} (left untouched; review if you want sudo to require a password)."
     fi
 
-    print_warning "A reboot is required to apply all changes cleanly."
+    summary_warning "A reboot is required to apply all changes cleanly."
     if [[ $VERBOSE == true ]]; then
         if confirm_with_env "DU_AUTO_REBOOT" "Reboot now?" "y"; then
-            print_info "Rebooting, bye!..."
+            summary_info "Rebooting, bye!..."
             sleep 3
             reboot
         else
-            print_warning "Please reboot manually with 'sudo reboot'."
+            summary_warning "Please reboot manually with 'sudo reboot'."
         fi
     else
         local auto_reboot_rc=0
         env_bool_status "DU_AUTO_REBOOT" || auto_reboot_rc=$?
         if [[ $auto_reboot_rc -eq 0 ]]; then
-            print_info "Quiet mode: DU_AUTO_REBOOT=true — rebooting now..."
+            summary_info "Quiet mode: DU_AUTO_REBOOT=true — rebooting now..."
             sleep 3
             reboot
         else
-            print_warning "Quiet mode enabled. Please reboot manually with 'sudo reboot'."
+            summary_warning "Quiet mode enabled. Please reboot manually with 'sudo reboot'."
         fi
     fi
 
