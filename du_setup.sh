@@ -1,8 +1,12 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.82.0 | 2026-11-01
+# Version: 0.82.1 | 2026-11-01
 # Changelog:
+# - v0.82.1: OpenSSH 10.4+ / Ubuntu 26.10 sshd -T case-insensitive compatibility.
+#            Optimized package installation and eliminated redundant apt-get update calls.
+#            Switched to netcat-openbsd and moved skopeo into Docker setup.
+#            Fast, resilient public IP detection with timeouts and protocol short-circuiting.
 # - v0.82.0: Add safe unattended automation (--config <file> + --quiet) with strict DU_* parser and pre-flight validation.
 #            Fix SIGPIPE crash in random password generation under pipefail, ERR/EXIT trap clobbering, and Tailscale key log leak.
 #            Prevent SSH/2FA/SUDO_USER lockouts, harden Fail2Ban ufw-probes against spoofed UDP DoS, and add Docker + UFW DOCKER-USER protection.
@@ -126,7 +130,7 @@
 set -euo pipefail
 
 # --- Update Configuration ---
-CURRENT_VERSION="0.82.0"
+CURRENT_VERSION="0.82.1"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -388,7 +392,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.82.0 | 2026-11-01                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.82.1 | 2026-11-01                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -3392,14 +3396,16 @@ verify_sshd_effective_pubkey_config() {
     local user_home="$2"
     local expected_auth_keys="$3"
     local target_port="${4:-${SSH_PORT:-22}}"
-    local sshd_bin=""
-    if [[ -x /usr/sbin/sshd ]]; then
-        sshd_bin="/usr/sbin/sshd"
-    elif command -v sshd >/dev/null 2>&1; then
-        sshd_bin=$(command -v sshd)
-    else
-        print_error "sshd binary not found while verifying effective SSH configuration."
-        return 1
+    local sshd_bin="${DU_SSHD_BIN:-}"
+    if [[ -z "$sshd_bin" ]]; then
+        if [[ -x /usr/sbin/sshd ]]; then
+            sshd_bin="/usr/sbin/sshd"
+        elif command -v sshd >/dev/null 2>&1; then
+            sshd_bin=$(command -v sshd)
+        else
+            print_error "sshd binary not found while verifying effective SSH configuration."
+            return 1
+        fi
     fi
 
     # Detect intended client IP/hostname and local server IP/port when connected via SSH,
@@ -3476,13 +3482,13 @@ verify_sshd_effective_pubkey_config() {
             return 1
         fi
 
-        pubkey_auth=$(awk '$1 == "pubkeyauthentication" { print tolower($2); exit }' <<< "$sshd_dump")
+        pubkey_auth=$(awk 'tolower($1) == "pubkeyauthentication" { print tolower($2); exit }' <<< "$sshd_dump")
         if [[ "$pubkey_auth" != "yes" ]]; then
             print_error "Effective sshd configuration has 'PubkeyAuthentication ${pubkey_auth:-unknown}' for '$spec' (check /etc/ssh/sshd_config.d/ or Match blocks)."
             return 1
         fi
 
-        auth_files_line=$(awk '$1 == "authorizedkeysfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' <<< "$sshd_dump")
+        auth_files_line=$(awk 'tolower($1) == "authorizedkeysfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }' <<< "$sshd_dump")
         if [[ -z "$auth_files_line" ]]; then
             print_error "Effective sshd configuration returned an empty AuthorizedKeysFile setting for '$spec'."
             return 1
@@ -3600,6 +3606,12 @@ validate_ufw_port() {
     [[ "$port" =~ ^[0-9]+(/tcp|/udp)?$ ]]
 }
 
+is_pkg_installed() {
+    local pkg="$1"
+    [[ -n "$pkg" ]] || return 1
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"
+}
+
 validate_ip_or_cidr() {
     local input="$1"
     # IPv4 address (simple check)
@@ -3642,6 +3654,20 @@ validate_ip_or_cidr() {
         return 1
     fi
     return 1
+}
+
+detect_public_ip() {
+    local family="$1" # 4 or 6
+    local default_val="$2"
+    local cand="" url
+    for url in "https://icanhazip.com" "https://ifconfig.me" "https://ip.me" "https://ip.wiredalter.com"; do
+        cand=$(curl "-$family" -sf --connect-timeout 3 --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+        if [[ -n "$cand" ]] && validate_ip_or_cidr "$cand" && [[ "$cand" != *"/"* ]]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
+    printf '%s\n' "$default_val"
 }
 
 # Convert size (e.g., 2G) to MB for validation/dd
@@ -3786,10 +3812,10 @@ check_system() {
         ID=${ID:-unknown} # Populate global ID variable
         OS_PRETTY_NAME="${PRETTY_NAME:-Unknown}"
 	if [[ $ID == "debian" && $VERSION_ID =~ ^(12|13)$ ]] || \
-           [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04|24.10|25.04|25.10|26.04)$ ]]; then
+           [[ $ID == "ubuntu" && $VERSION_ID =~ ^(20.04|22.04|24.04|24.10|25.04|25.10|26.04|26.10)$ ]]; then
             print_success "Compatible OS detected: $PRETTY_NAME"
         else
-            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12/13 or Ubuntu 20.04-26.04."
+            print_warning "Script not tested on $PRETTY_NAME. This is for Debian 12/13 or Ubuntu 20.04-26.10."
             if ! confirm "Continue anyway?"; then exit 1; fi
         fi
     else
@@ -3947,25 +3973,21 @@ collect_config() {
     fi
     # --- IP Detection ---
     print_info "Detecting network configuration..."
-    # 1. Get the Local LAN IP (Explicit Check)
-    # This prevents crashing on IPv6-only servers
+    # 1. Get Local LAN IPv4 and Public IPv4 with explicit route check
     if ip -4 route get 8.8.8.8 >/dev/null 2>&1; then
         LOCAL_IP_V4=$(ip -4 route get 8.8.8.8 | head -1 | awk -F'src ' '{print $2}' | awk '{print $1}')
+        SERVER_IP_V4=$(detect_public_ip 4 "Unknown")
     else
         LOCAL_IP_V4=""
+        SERVER_IP_V4="Not available"
     fi
-    # 2. Get Public IPs with timeouts
-    SERVER_IP_V4=$(curl -4 -sf --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
-                   curl -4 -sf --connect-timeout 4 --max-time 5 https://ip.wiredalter.com 2>/dev/null || \
-                   curl -4 -sf --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
-                   curl -4 -sf --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
-                   echo "Unknown")
 
-    SERVER_IP_V6=$(curl -6 -sf --connect-timeout 4 --max-time 5 https://ip.me 2>/dev/null || \
-                   curl -6 -sf --connect-timeout 4 --max-time 5 https://ip.wiredalter.com 2>/dev/null || \
-                   curl -6 -sf --connect-timeout 4 --max-time 5 https://ifconfig.me 2>/dev/null || \
-                   curl -6 -sf --connect-timeout 4 --max-time 5 https://icanhazip.com 2>/dev/null || \
-                   echo "Not available")
+    # 2. Get Public IPv6 with explicit route check
+    if ip -6 route get 2001:4860:4860::8888 >/dev/null 2>&1; then
+        SERVER_IP_V6=$(detect_public_ip 6 "Not available")
+    else
+        SERVER_IP_V6="Not available"
+    fi
 
     # --- Display Summary ---
     printf '\n%s\n' "${YELLOW}Configuration Summary:${NC}"
@@ -4010,16 +4032,30 @@ install_packages() {
         exit 1
     fi
     print_info "Installing essential packages..."
-    if ! apt-get install -y -qq \
-        ufw unattended-upgrades chrony rsync wget \
-        vim htop iotop nethogs netcat-traditional ncdu \
-        tree rsyslog cron jq gawk coreutils perl skopeo git \
-        apt-listchanges ca-certificates gnupg logrotate make \
-        ssh openssh-client openssh-server; then
-        print_error "Failed to install one or more essential packages."
-        exit 1
+    local -a candidate_packages=(
+        ufw unattended-upgrades chrony rsync wget
+        vim htop iotop nethogs netcat-openbsd ncdu
+        tree rsyslog cron jq gawk coreutils perl git
+        apt-listchanges ca-certificates gnupg logrotate make
+        ssh openssh-client openssh-server
+    )
+    local -a missing_pkgs=()
+    local pkg
+    for pkg in "${candidate_packages[@]}"; do
+        if ! is_pkg_installed "$pkg"; then
+            missing_pkgs+=("$pkg")
+        fi
+    done
+
+    if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+        if ! apt-get install -y -qq "${missing_pkgs[@]}"; then
+            print_error "Failed to install one or more essential packages: ${missing_pkgs[*]}"
+            exit 1
+        fi
+        print_success "Installed essential packages: ${missing_pkgs[*]}"
+    else
+        print_success "All essential packages are already installed."
     fi
-    print_success "Essential packages installed."
     log "Package installation completed."
 }
 
@@ -5220,9 +5256,14 @@ configure_2fa() {
 
     # 1. Install Dependencies
     print_info "Installing libpam-google-authenticator and qrencode..."
-    if ! apt-get update -qq || ! apt-get install -y -qq libpam-google-authenticator qrencode; then
-        print_error "Failed to install required packages. Aborting 2FA setup."
-        return 1
+    local -a missing_2fa_pkgs=()
+    is_pkg_installed libpam-google-authenticator || missing_2fa_pkgs+=("libpam-google-authenticator")
+    is_pkg_installed qrencode || missing_2fa_pkgs+=("qrencode")
+    if [[ ${#missing_2fa_pkgs[@]} -gt 0 ]]; then
+        if ! apt-get install -y -qq "${missing_2fa_pkgs[@]}"; then
+            print_error "Failed to install required packages: ${missing_2fa_pkgs[*]}. Aborting 2FA setup."
+            return 1
+        fi
     fi
 
     local USER_HOME
@@ -5983,7 +6024,7 @@ configure_secure_dns() {
     if ! command -v systemd-resolve >/dev/null 2>&1 && ! command -v resolvectl >/dev/null 2>&1; then
          print_warning "systemd-resolved is not installed on this system."
          if confirm "Install and enable systemd-resolved to handle encrypted DNS?" "y"; then
-             if ! apt-get update -qq || ! apt-get install -y -qq systemd-resolved; then
+             if ! apt-get install -y -qq systemd-resolved; then
                  print_error "Failed to install systemd-resolved."
                  log "Failed to install systemd-resolved for secure DNS."
                  return 0
@@ -6333,6 +6374,10 @@ install_docker() {
     print_section "Docker Installation"
     if command -v docker >/dev/null 2>&1; then
         print_info "Docker already installed."
+        if ! is_pkg_installed skopeo; then
+            print_info "Installing skopeo for container image inspection..."
+            apt-get install -y -qq skopeo 2>/dev/null || true
+        fi
         configure_docker_ufw_hardening
         install_dtop_optional
         return 0
@@ -6345,8 +6390,8 @@ install_docker() {
     chmod a+r /etc/apt/keyrings/docker.gpg
     # shellcheck source=/dev/null
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-    print_info "Installing Docker packages..."
-    if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    print_info "Installing Docker packages and skopeo..."
+    if ! apt-get update -qq || ! apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin skopeo; then
         print_error "Docker package installation failed. Once the script is complete, manually check and install it."
         DOCKER_INSTALL_WARN=true
         return 0
@@ -6866,10 +6911,17 @@ install_netbird() {
         fi
     else
         print_info "Adding NetBird repository and installing package..."
-        if ! apt-get update -qq || ! apt-get install -y -qq ca-certificates curl gnupg; then
-            print_error "Failed to install dependencies for NetBird."
-            NETBIRD_INSTALL_WARN=true
-            return 0
+        local -a missing_nb_deps=()
+        local dep
+        for dep in ca-certificates curl gnupg; do
+            is_pkg_installed "$dep" || missing_nb_deps+=("$dep")
+        done
+        if [[ ${#missing_nb_deps[@]} -gt 0 ]]; then
+            if ! apt-get install -y -qq "${missing_nb_deps[@]}"; then
+                print_error "Failed to install dependencies for NetBird."
+                NETBIRD_INSTALL_WARN=true
+                return 0
+            fi
         fi
 
         curl -sSL https://pkgs.netbird.io/debian/public.key | gpg --dearmor --output /usr/share/keyrings/netbird-archive-keyring.gpg 2>/dev/null
@@ -7038,7 +7090,7 @@ setup_backup() {
     if [[ "$KEY_COPY_CHOICE" == "1" ]]; then
         if ! command -v sshpass >/dev/null 2>&1; then
             print_info "Installing sshpass for automated key copying..."
-            if ! { apt-get update -qq && apt-get install -y -qq sshpass; }; then
+            if ! apt-get install -y -qq sshpass; then
                 print_warning "Failed to install sshpass. Falling back to manual copy."
                 KEY_COPY_CHOICE=2
             fi
@@ -7707,17 +7759,19 @@ configure_security_audit() {
     DEBSECAN_VULNS="Not run"
 
     # Install and run Lynis
-    print_info "Installing Lynis..."
-    if ! apt-get update -qq; then
-        print_error "Failed to update package lists. Cannot install Lynis."
-        log "apt-get update failed for Lynis installation."
-        return 1
-    elif ! apt-get install -y -qq lynis; then
-        print_warning "Failed to install Lynis. Skipping Lynis audit."
-        log "Lynis installation failed."
-    else
+    if ! command -v lynis >/dev/null 2>&1 && ! is_pkg_installed lynis; then
+        print_info "Installing Lynis..."
+        if ! apt-get install -y -qq lynis; then
+            print_warning "Failed to install Lynis. Skipping Lynis audit."
+            log "Lynis installation failed."
+            return 1
+        fi
+    fi
+
+    if command -v lynis >/dev/null 2>&1; then
         print_info "Running Lynis audit (non-interactive mode, this will take a few minutes)..."
-	print_warning "Review audit results in $AUDIT_LOG for security recommendations."
+        print_info "Note: Lynis audit may flag developer tools (e.g., make, git). These are intentionally retained for system administration and build tasks."
+        print_warning "Review audit results in $AUDIT_LOG for security recommendations."
         if lynis audit system --quick >> "$AUDIT_LOG" 2>&1; then
             print_success "Lynis audit completed. Check $AUDIT_LOG for details."
             log "Lynis audit completed successfully."
@@ -7731,6 +7785,9 @@ configure_security_audit() {
             print_error "Lynis audit failed. Check $AUDIT_LOG for details."
             log "Lynis audit failed."
         fi
+    else
+        print_warning "Lynis binary not found. Skipping Lynis audit."
+        log "Lynis binary missing."
     fi
 
     # Check if system is Debian before running debsecan

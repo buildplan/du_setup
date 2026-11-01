@@ -1,20 +1,20 @@
 # Debian & Ubuntu Server Setup & Hardening Script
 
 [![Debian Compatibility](https://img.shields.io/badge/Compatibility–Debian%2012%7C13-%23A81D33?style=flat&labelColor=555&logo=debian&logoColor=white)](https://www.debian.org/releases/)
-[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04%7C26.04-%23E95420?style=flat&labelColor=555&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)  
+[![Ubuntu Compatibility](https://img.shields.io/badge/Compatibility–Ubuntu%2022.04%7C24.04%7C26.04%7C26.10-%23E95420?style=flat&labelColor=555&logo=ubuntu&logoColor=white)](https://ubuntu.com/download/server)  
 [![Shell Script Linter](https://github.com/buildplan/du_setup/actions/workflows/lint.yml/badge.svg)](https://github.com/buildplan/du_setup/actions/workflows/lint.yml)
 [![Codacy Security Scan](https://github.com/buildplan/du_setup/actions/workflows/codacy.yml/badge.svg?branch=main)](https://github.com/buildplan/du_setup/actions/workflows/codacy.yml)
 
 -----
 
-**Version:** v0.82.0
+**Version:** v0.82.1
 
 **Last Updated:** 2026-11-01
 
 **Compatible With:**
 
 * Debian 12, 13
-* Ubuntu 20.04, 22.04, 24.04, 26.04 (24.10, 25.04 & 25.10 experimental)
+* Ubuntu 20.04, 22.04, 24.04, 26.04, 26.10 (24.10, 25.04 & 25.10 experimental)
 
 ## Overview
 
@@ -88,12 +88,12 @@ sha256sum du_setup.sh
 
 Compare the output hash to the one below. They must match exactly.
 
-`ebc56ee34ef26994dce28362274bdceda2be48ce3ae1c3819ef62b78ae8d0555`
+`913d3d81140917d1b9ba4057293b13d2dc6cf57c7eb8ae9406c02f1761b9101b`
 
 Or echo the hash to check, it should output: `du_setup.sh: OK`
 
 ```bash
-echo ebc56ee34ef26994dce28362274bdceda2be48ce3ae1c3819ef62b78ae8d0555 du_setup.sh | sha256sum --check
+echo 913d3d81140917d1b9ba4057293b13d2dc6cf57c7eb8ae9406c02f1761b9101b du_setup.sh | sha256sum --check
 ```
 
 ### 3. Run the Script
