@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Debian and Ubuntu Server Hardening Interactive Script
-# Version: 0.82.1 | 2026-11-01
+# Version: 0.82.2 | 2026-11-22
 # Changelog:
+# - v0.82.2: Normalize system PATH at startup (/usr/local/sbin, /usr/sbin, /sbin) to fix 'command not found' (e.g., usermod) under minimal root shells.
+#            Expand minimal-server dependency checks (ca-certificates, passwd, adduser, iproute2, procps) and refresh Bash command cache after installs.
+#            Safely handle missing locales package, text editor fallback in cleanup, and unguarded wget fallback.
 # - v0.82.1: OpenSSH 10.4+ / Ubuntu 26.10 sshd -T case-insensitive compatibility.
 #            Optimized package installation and eliminated redundant apt-get update calls.
 #            Switched to netcat-openbsd and moved skopeo into Docker setup.
@@ -129,8 +132,23 @@
 
 set -euo pipefail
 
+# Ensure standard system and admin binary directories are in PATH.
+# Minimal Debian/Ubuntu root environments (e.g., 'su' without '-', 'sudo su', or non-login SSH)
+# often omit /usr/sbin and /sbin, breaking commands such as usermod, adduser, ufw, sshd, and sysctl.
+ensure_system_path() {
+    local dir
+    for dir in /usr/local/sbin /usr/sbin /sbin /usr/local/bin /usr/bin /bin; do
+        case ":${PATH:-}:" in
+            *":${dir}:"*) ;;
+            *) PATH="${PATH:+${PATH}:}${dir}" ;;
+        esac
+    done
+    export PATH
+}
+ensure_system_path
+
 # --- Update Configuration ---
-CURRENT_VERSION="0.82.1"
+CURRENT_VERSION="0.82.2"
 SCRIPT_URL="https://raw.githubusercontent.com/buildplan/du_setup/refs/heads/main/du_setup.sh"
 CHECKSUM_URL="${SCRIPT_URL}.sha256"
 
@@ -370,7 +388,7 @@ if [[ $EUID -ne 0 ]]; then
     fi
     printf "\n"
     printf "%s%sAlternative methods:%s\n" "$BOLD" "$YELLOW" "$NC"
-    printf "  %ssudo su %s    # Switch to root\n" "$CYAN" "$NC"
+    printf "  %ssudo -i%s     # Switch to root with a full login PATH (or: su -)\n" "$CYAN" "$NC"
     if [[ -n "$ORIGINAL_ARGS" ]]; then
         printf "  And run: %s%s %s%s\n" "$CYAN" "$0" "$ORIGINAL_ARGS" "$NC"
     else
@@ -392,7 +410,7 @@ print_header() {
     printf '%s\n' "${CYAN}╔═════════════════════════════════════════════════════════════════╗${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}║       DEBIAN/UBUNTU SERVER SETUP AND HARDENING SCRIPT           ║${NC}"
-    printf '%s\n' "${CYAN}║                      v0.82.1 | 2026-11-01                       ║${NC}"
+    printf '%s\n' "${CYAN}║                      v0.82.2 | 2026-11-22                       ║${NC}"
     printf '%s\n' "${CYAN}║                                                                 ║${NC}"
     printf '%s\n' "${CYAN}╚═════════════════════════════════════════════════════════════════╝${NC}"
     printf '\n'
@@ -939,11 +957,23 @@ cleanup_provider_packages() {
                 cp /root/.ssh/authorized_keys "$backup_file"
                 log "Backed up /root/.ssh/authorized_keys to $backup_file"
 
-                print_warning "IMPORTANT: Do NOT delete ALL keys or you'll be locked out!"
-                print_info "Opening /root/.ssh/authorized_keys for manual review..."
-                read -rp "Press Enter to continue..."
+                local editor_bin=""
+                local candidate_editor
+                for candidate_editor in "${EDITOR:-}" nano vim vi; do
+                    if [[ -n "$candidate_editor" ]] && command -v "$candidate_editor" >/dev/null 2>&1; then
+                        editor_bin="$candidate_editor"
+                        break
+                    fi
+                done
+                if [[ -n "$editor_bin" ]]; then
+                    print_warning "IMPORTANT: Do NOT delete ALL keys or you'll be locked out!"
+                    print_info "Opening /root/.ssh/authorized_keys with '$editor_bin' for manual review..."
+                    read -rp "Press Enter to continue..."
 
-                "${EDITOR:-nano}" /root/.ssh/authorized_keys
+                    "$editor_bin" /root/.ssh/authorized_keys
+                else
+                    print_warning "No text editor found (checked EDITOR, nano, vim, vi). Please review /root/.ssh/authorized_keys manually."
+                fi
 
                 if [[ ! -s /root/.ssh/authorized_keys ]]; then
                     print_error "WARNING: authorized_keys is empty! This could lock you out."
@@ -3776,8 +3806,22 @@ check_dependencies() {
     print_section "Checking Dependencies"
     local missing_deps=()
     command -v curl >/dev/null || missing_deps+=("curl")
+    is_pkg_installed ca-certificates || missing_deps+=("ca-certificates")
     command -v sudo >/dev/null || missing_deps+=("sudo")
     command -v gpg >/dev/null || missing_deps+=("gpg")
+    if ! command -v usermod >/dev/null || ! command -v chpasswd >/dev/null || \
+       ! command -v groupadd >/dev/null || ! command -v userdel >/dev/null; then
+        missing_deps+=("passwd")
+    fi
+    command -v adduser >/dev/null || missing_deps+=("adduser")
+    if ! command -v ip >/dev/null || ! command -v ss >/dev/null; then
+        missing_deps+=("iproute2")
+    fi
+    if ! command -v ps >/dev/null || ! command -v pgrep >/dev/null || \
+       ! command -v pkill >/dev/null || ! command -v sysctl >/dev/null || \
+       ! command -v free >/dev/null; then
+        missing_deps+=("procps")
+    fi
 
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
         print_info "Installing missing dependencies: ${missing_deps[*]}"
@@ -3785,6 +3829,7 @@ check_dependencies() {
             print_error "Failed to install dependencies: ${missing_deps[*]}"
             exit 1
         fi
+        hash -r
         print_success "Dependencies installed."
     else
         print_success "All essential dependencies are installed."
@@ -3840,8 +3885,8 @@ check_system() {
 
     if curl -s --head https://deb.debian.org >/dev/null || \
        curl -s --head https://archive.ubuntu.com >/dev/null || \
-       wget -q --spider https://deb.debian.org || \
-       wget -q --spider https://archive.ubuntu.com; then
+       { command -v wget >/dev/null 2>&1 && wget -q --spider https://deb.debian.org; } || \
+       { command -v wget >/dev/null 2>&1 && wget -q --spider https://archive.ubuntu.com; }; then
         print_success "Internet connectivity confirmed."
     else
         print_error "No internet connectivity. Please check your network."
@@ -4052,6 +4097,7 @@ install_packages() {
             print_error "Failed to install one or more essential packages: ${missing_pkgs[*]}"
             exit 1
         fi
+        hash -r
         print_success "Installed essential packages: ${missing_pkgs[*]}"
     else
         print_success "All essential packages are already installed."
@@ -4665,17 +4711,26 @@ configure_system() {
     fi
 
     if confirm "Configure system locales interactively?"; then
-        dpkg-reconfigure locales
-        print_info "Applying new locale settings to the current session..."
-        if [[ -f /etc/default/locale ]]; then
-            # shellcheck disable=SC1091
-            . /etc/default/locale
-            # shellcheck disable=SC2046
-            export $(grep -v '^#' /etc/default/locale | cut -d= -f1)
-            print_success "Locale environment updated for this session."
-            log "Sourced /etc/default/locale to update script's environment."
-        else
-            print_warning "Could not find /etc/default/locale to update session environment."
+        if ! is_pkg_installed locales; then
+            print_info "Installing 'locales' package..."
+            if ! apt-get install -y -qq locales; then
+                print_warning "Failed to install 'locales' package. Skipping locale configuration."
+                log "Skipped locale configuration: failed to install locales package."
+            fi
+        fi
+        if is_pkg_installed locales; then
+            dpkg-reconfigure locales
+            print_info "Applying new locale settings to the current session..."
+            if [[ -f /etc/default/locale ]]; then
+                # shellcheck disable=SC1091
+                . /etc/default/locale
+                # shellcheck disable=SC2046
+                export $(grep -v '^#' /etc/default/locale | cut -d= -f1)
+                print_success "Locale environment updated for this session."
+                log "Sourced /etc/default/locale to update script's environment."
+            else
+                print_warning "Could not find /etc/default/locale to update session environment."
+            fi
         fi
     else
         print_info "Skipping locale configuration."
